@@ -1,26 +1,169 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f6f7f9;
+  --surface: #ffffff;
+  --border: #e4e7ec;
+  --border-strong: #d0d5dd;
+  --foreground: #101828;
+  --muted: #475467;
+  --muted-foreground: #98a2b3;
+
+  --primary: #5b5bf0;
+  --primary-hover: #4a4ae0;
+  --primary-foreground: #ffffff;
+  --primary-tint: #eef0ff;
+
+  --success: #067647;
+  --success-tint: #ecfdf3;
+  --success-border: #abefc6;
+
+  --warning: #b54708;
+  --warning-tint: #fffaeb;
+  --warning-border: #fedf89;
+
+  --danger: #b42318;
+  --danger-tint: #fef3f2;
+  --danger-border: #fecdca;
+
+  --info: #175cd3;
+  --info-tint: #eff8ff;
+  --info-border: #b2ddff;
+
+  --violet: #6941c6;
+  --violet-tint: #f9f5ff;
+  --violet-border: #e9d7fe;
+
+  --shadow-xs: 0 1px 2px 0 rgba(16, 24, 40, 0.05);
+  --shadow-sm: 0 1px 3px 0 rgba(16, 24, 40, 0.08), 0 1px 2px -1px rgba(16, 24, 40, 0.06);
+  --shadow-md: 0 4px 8px -2px rgba(16, 24, 40, 0.08), 0 2px 4px -2px rgba(16, 24, 40, 0.04);
+  --shadow-lg: 0 12px 16px -4px rgba(16, 24, 40, 0.08), 0 4px 6px -2px rgba(16, 24, 40, 0.03);
+  --shadow-focus: 0 0 0 4px rgba(91, 91, 240, 0.15);
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
   --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  color-scheme: light;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--primary-tint);
+  color: var(--primary);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+  border: 2px solid var(--background);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+
+.focus-ring {
+  outline: none;
+  transition: box-shadow 0.15s ease;
+}
+.focus-ring:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+.animate-fade-in { animation: fade-in 0.2s ease both; }
+.animate-slide-up { animation: slide-up 0.25s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+.skeleton {
+  background: linear-gradient(90deg, var(--border) 25%, #edeef2 37%, var(--border) 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Marketing landing page — a separate token set from the workspace app's  */
+/* --primary/indigo system. Consumer-facing: a premium mortgage-SaaS       */
+/* palette (light, airy, one confident savings-green accent) built to sit  */
+/* next to a real quote form, not an internal ops dashboard.               */
+/* ---------------------------------------------------------------------- */
+.mkt {
+  --mkt-bg: #fbfbf8;
+  --mkt-bg-alt: #f2f5f1;
+  --mkt-card: #ffffff;
+  --mkt-ink: #16211b;
+  --mkt-body: #46524a;
+  --mkt-muted: #7c8880;
+  --mkt-border: #e4e8e0;
+  --mkt-primary: #0e8f5f;
+  --mkt-primary-hover: #0b7a51;
+  --mkt-primary-tint: #e7f5ec;
+  --mkt-primary-ink: #073a27;
+  --mkt-accent: #eef2ea;
+
+  background: var(--mkt-bg);
+  color: var(--mkt-ink);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+.mkt-mono {
+  font-family: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.mkt-balance {
+  text-wrap: balance;
+}
+
+@keyframes mkt-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(0.85); }
+}
+.mkt-pulse {
+  animation: mkt-pulse 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mkt-pulse {
+    animation: none;
+  }
 }

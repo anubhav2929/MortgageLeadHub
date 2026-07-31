@@ -30,11 +30,16 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files — real secrets never get committed, but the template must, since
+# DEPLOY.md sends you to it for the full env var list.
 .env*
+!.env.example
 
 # vercel
 .vercel
+
+# local mock-store snapshot (persistence.ts) — demo data, not source
+/.data/
 
 # typescript
 *.tsbuildinfo

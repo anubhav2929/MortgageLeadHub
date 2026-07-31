@@ -55,25 +55,64 @@ function fromSerializable(parsed: Record<string, unknown>): Database {
   return db;
 }
 
-// --- Postgres (Neon serverless driver — HTTP-based, no connection pool to
-// manage, works from any serverless/edge runtime) -----------------------
+// --- Postgres ------------------------------------------------------------
+//
+// Neon exposes an HTTP query endpoint, so it uses its serverless driver. A
+// Supabase connection string is regular Postgres over its pooler, so it uses
+// postgres.js instead. Picking the driver from the hostname keeps the single
+// DATABASE_URL contract while supporting both hosted databases safely.
 
 let sqlClient: import("@neondatabase/serverless").NeonQueryFunction<false, false> | null = null;
+let postgresClient: import("postgres").Sql | null = null;
 let schemaReady: Promise<void> | null = null;
 
-async function getSql() {
+function usesNeonDriver() {
+  return new URL(env.DATABASE_URL!).hostname.endsWith(".neon.tech");
+}
+
+async function getNeonSql() {
   if (!sqlClient) {
     const { neon } = await import("@neondatabase/serverless");
     sqlClient = neon(env.DATABASE_URL!);
   }
+  return sqlClient;
+}
+
+async function getPostgresSql() {
+  if (!postgresClient) {
+    const { default: postgres } = await import("postgres");
+    postgresClient = postgres(env.DATABASE_URL!, {
+      connect_timeout: 10,
+      idle_timeout: 10,
+      max: 1,
+      prepare: false,
+      ssl: "require",
+    });
+  }
+  return postgresClient;
+}
+
+async function ensureSchema() {
   if (!schemaReady) {
-    schemaReady = sqlClient!`
-      CREATE TABLE IF NOT EXISTS mlh_store (
-        key TEXT PRIMARY KEY,
-        value JSONB NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `
+    schemaReady = (usesNeonDriver()
+      ? getNeonSql().then(
+          (sql) => sql`
+            CREATE TABLE IF NOT EXISTS mlh_store (
+              key TEXT PRIMARY KEY,
+              value JSONB NOT NULL,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+          `
+        )
+      : getPostgresSql().then(
+          (sql) => sql`
+            CREATE TABLE IF NOT EXISTS mlh_store (
+              key TEXT PRIMARY KEY,
+              value JSONB NOT NULL,
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+          `
+        ))
       .then(() => undefined)
       .catch((err) => {
         // Don't cache a rejected promise forever — a transient failure here
@@ -84,7 +123,6 @@ async function getSql() {
       });
   }
   await schemaReady;
-  return sqlClient!;
 }
 
 // Deliberately does NOT catch here. A real connection/query error must not
@@ -94,20 +132,30 @@ async function getSql() {
 // getDb() would seed fresh over it, silently discarding every real lead.
 // Letting the error propagate means the request fails loudly instead.
 async function loadFromPostgres(): Promise<Database | null> {
-  const sql = await getSql();
-  const rows = await sql`SELECT value FROM mlh_store WHERE key = 'main' LIMIT 1`;
+  await ensureSchema();
+  const rows = usesNeonDriver()
+    ? await (await getNeonSql())`SELECT value FROM mlh_store WHERE key = 'main' LIMIT 1`
+    : await (await getPostgresSql())`SELECT value FROM mlh_store WHERE key = 'main' LIMIT 1`;
   if (rows.length === 0) return null;
   return fromSerializable(rows[0].value as Record<string, unknown>);
 }
 
 async function saveToPostgres(db: Database) {
-  const sql = await getSql();
+  await ensureSchema();
   const value = toSerializable(db);
-  await sql`
-    INSERT INTO mlh_store (key, value, updated_at)
-    VALUES ('main', ${JSON.stringify(value)}::jsonb, now())
-    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
-  `;
+  if (usesNeonDriver()) {
+    await (await getNeonSql())`
+      INSERT INTO mlh_store (key, value, updated_at)
+      VALUES ('main', ${JSON.stringify(value)}::jsonb, now())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    `;
+  } else {
+    await (await getPostgresSql())`
+      INSERT INTO mlh_store (key, value, updated_at)
+      VALUES ('main', ${JSON.stringify(value)}::jsonb, now())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    `;
+  }
 }
 
 // --- Local file (dev fallback) ------------------------------------------

@@ -15,7 +15,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import postgres, { type Sql } from "postgres";
+import { Pool } from "pg";
 import { capabilities, env } from "@/lib/env";
 import type { Database } from "@/domain/store";
 
@@ -59,12 +59,12 @@ function fromSerializable(parsed: Record<string, unknown>): Database {
 // --- Postgres ------------------------------------------------------------
 //
 // Neon exposes an HTTP query endpoint, so it uses its serverless driver. A
-// Supabase connection string is regular Postgres over its pooler, so it uses
-// postgres.js instead. Picking the driver from the hostname keeps the single
+// Supabase connection strings use regular Postgres over its pooler, so they
+// use the standard Node Postgres client. Picking the driver from the hostname keeps the single
 // DATABASE_URL contract while supporting both hosted databases safely.
 
 let sqlClient: import("@neondatabase/serverless").NeonQueryFunction<false, false> | null = null;
-let postgresClient: Sql | null = null;
+let postgresPool: Pool | null = null;
 let schemaReady: Promise<void> | null = null;
 
 function usesNeonDriver() {
@@ -79,17 +79,17 @@ async function getNeonSql() {
   return sqlClient;
 }
 
-async function getPostgresSql() {
-  if (!postgresClient) {
-    postgresClient = postgres(env.DATABASE_URL!, {
-      connect_timeout: 10,
-      idle_timeout: 10,
+function getPostgresPool() {
+  if (!postgresPool) {
+    postgresPool = new Pool({
+      connectionString: env.DATABASE_URL!,
+      connectionTimeoutMillis: 10_000,
+      idleTimeoutMillis: 10_000,
       max: 1,
-      prepare: false,
-      ssl: "require",
+      ssl: { rejectUnauthorized: false },
     });
   }
-  return postgresClient;
+  return postgresPool;
 }
 
 async function ensureSchema() {
@@ -104,15 +104,13 @@ async function ensureSchema() {
             )
           `
         )
-      : getPostgresSql().then(
-          (sql) => sql`
-            CREATE TABLE IF NOT EXISTS mlh_store (
-              key TEXT PRIMARY KEY,
-              value JSONB NOT NULL,
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-          `
-        ))
+      : getPostgresPool().query(`
+          CREATE TABLE IF NOT EXISTS mlh_store (
+            key TEXT PRIMARY KEY,
+            value JSONB NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          )
+        `))
       .then(() => undefined)
       .catch((err) => {
         // Don't cache a rejected promise forever — a transient failure here
@@ -135,7 +133,7 @@ async function loadFromPostgres(): Promise<Database | null> {
   await ensureSchema();
   const rows = usesNeonDriver()
     ? await (await getNeonSql())`SELECT value FROM mlh_store WHERE key = 'main' LIMIT 1`
-    : await (await getPostgresSql())`SELECT value FROM mlh_store WHERE key = 'main' LIMIT 1`;
+    : (await getPostgresPool().query<{ value: Record<string, unknown> }>("SELECT value FROM mlh_store WHERE key = 'main' LIMIT 1")).rows;
   if (rows.length === 0) return null;
   return fromSerializable(rows[0].value as Record<string, unknown>);
 }
@@ -150,11 +148,12 @@ async function saveToPostgres(db: Database) {
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
     `;
   } else {
-    await (await getPostgresSql())`
-      INSERT INTO mlh_store (key, value, updated_at)
-      VALUES ('main', ${JSON.stringify(value)}::jsonb, now())
-      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
-    `;
+    await getPostgresPool().query(
+      `INSERT INTO mlh_store (key, value, updated_at)
+       VALUES ($1, $2::jsonb, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      ["main", JSON.stringify(value)]
+    );
   }
 }
 

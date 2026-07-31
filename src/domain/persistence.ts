@@ -15,6 +15,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import postgres, { type Sql } from "postgres";
 import { capabilities, env } from "@/lib/env";
 import type { Database } from "@/domain/store";
 
@@ -63,7 +64,7 @@ function fromSerializable(parsed: Record<string, unknown>): Database {
 // DATABASE_URL contract while supporting both hosted databases safely.
 
 let sqlClient: import("@neondatabase/serverless").NeonQueryFunction<false, false> | null = null;
-let postgresClient: import("postgres").Sql | null = null;
+let postgresClient: Sql | null = null;
 let schemaReady: Promise<void> | null = null;
 
 function usesNeonDriver() {
@@ -80,7 +81,6 @@ async function getNeonSql() {
 
 async function getPostgresSql() {
   if (!postgresClient) {
-    const { default: postgres } = await import("postgres");
     postgresClient = postgres(env.DATABASE_URL!, {
       connect_timeout: 10,
       idle_timeout: 10,

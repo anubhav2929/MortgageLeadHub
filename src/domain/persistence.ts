@@ -81,12 +81,24 @@ async function getNeonSql() {
 
 function getPostgresPool() {
   if (!postgresPool) {
+    const databaseUrl = new URL(env.DATABASE_URL!);
+    const isSupabase = databaseUrl.hostname.endsWith(".supabase.com");
+    const supabaseCa = env.SUPABASE_CA_CERT?.replace(/\\n/g, "\n");
+
+    if (isSupabase && !supabaseCa) {
+      throw new Error("[persistence] SUPABASE_CA_CERT is required for verified Supabase TLS in production.");
+    }
+
+    // node-postgres lets the URL's sslmode override the explicit SSL options.
+    // Remove it so the Supabase root CA below is always used for certificate
+    // and hostname verification.
+    databaseUrl.searchParams.delete("sslmode");
     postgresPool = new Pool({
-      connectionString: env.DATABASE_URL!,
+      connectionString: databaseUrl.toString(),
       connectionTimeoutMillis: 10_000,
       idleTimeoutMillis: 10_000,
       max: 1,
-      ssl: { rejectUnauthorized: false },
+      ssl: isSupabase ? { ca: supabaseCa, rejectUnauthorized: true } : { rejectUnauthorized: false },
     });
   }
   return postgresPool;

@@ -70,6 +70,7 @@ In the Vercel project's **Settings → Environment Variables**, set whichever of
 | Variable | Powers |
 |---|---|
 | `DATABASE_URL` or `POSTGRES_URL` | **Required in production** (the app refuses to boot without a database URL — `src/instrumentation.ts`) — `POSTGRES_URL` is set automatically if you provisioned Vercel Postgres in Step 1 |
+| `SUPABASE_CA_CERT` | Required when using Supabase rather than Vercel Postgres/Neon. Download Supabase's root certificate from **Database → Settings → SSL Configuration**, then paste the full PEM into this variable. |
 | `APP_URL` | Base URL used in invite/reset-password email links and the Vapi webhook callback. Leave blank on Vercel — falls back to the auto-populated `VERCEL_URL`. |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` | Real SMS + outbound voice — **free trial credit at twilio.com/try-twilio** |
 | `ANTHROPIC_API_KEY` | Real AI drafts (email/SMS/call scripts) and conversation extraction — paid, usage-based |

@@ -6,6 +6,7 @@
 
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { connection } from "next/server";
 import { generateToken } from "@/core/auth";
 import { getDb, saveDb } from "@/domain/store";
 import type { User } from "@/domain/types";
@@ -16,11 +17,15 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 /** Returns the logged-in user, or null — never redirects. For pages (like
  *  /login) that need to branch on auth state without forcing navigation. */
 export async function getOptionalUser(): Promise<User | null> {
-  const db = await getDb();
+  // Login/session state is inherently request-specific. This boundary also
+  // prevents Next from opening a production database connection while it
+  // prerenders /login during `next build`.
+  await connection();
   const store = await cookies();
   const token = store.get(SESSION_COOKIE)?.value;
   if (!token) return null;
 
+  const db = await getDb();
   const session = db.sessions.get(token);
   if (!session || new Date(session.expiresAt).getTime() < Date.now()) return null;
 

@@ -35,12 +35,12 @@ Locally, the CRM's data store is a JSON file (`.data/db.json`) written to local 
 
 Without a database, every cold start resets the CRM back to seed data, and a lead submitted five minutes before a demo could simply be gone.
 
-The fix is already built in: set `DATABASE_URL` and the store persists to Postgres instead of a local file — no other code changes needed (`src/domain/persistence.ts`). It's the same one-blob-per-row approach as everything else in this codebase: simulate/fallback until the env var is set, live the moment it is.
+The fix is already built in: set `DATABASE_URL` (or use Vercel Postgres' automatically supplied `POSTGRES_URL`) and the store persists to Postgres instead of a local file — no other code changes needed (`src/domain/persistence.ts`). It's the same one-blob-per-row approach as everything else in this codebase: simulate/fallback until the env var is set, live the moment it is.
 
 ## Step 1 — Provision Postgres
 
 1. In the [Vercel dashboard](https://vercel.com/dashboard), open your project → **Storage** → **Create Database** → **Postgres** (this provisions a Neon-backed Postgres instance).
-2. Vercel automatically adds a `DATABASE_URL` env var to the project — you don't need to copy/paste a connection string yourself.
+2. Vercel Postgres supplies `POSTGRES_URL` to the project automatically (the app accepts it directly). If your integration supplies `DATABASE_URL` instead, that works too — you don't need to copy/paste a connection string.
 3. No schema setup needed — the app creates its one table (`mlh_store`) automatically on first request.
 
 If you'd rather use your own Neon/Supabase/RDS Postgres instance instead of Vercel's, just set `DATABASE_URL` to that connection string in the project's environment variables — anything Postgres-compatible works.
@@ -69,7 +69,7 @@ In the Vercel project's **Settings → Environment Variables**, set whichever of
 
 | Variable | Powers |
 |---|---|
-| `DATABASE_URL` | **Required in production** (the app refuses to boot without it — `src/instrumentation.ts`) — set automatically if you provisioned Vercel Postgres in Step 1 |
+| `DATABASE_URL` or `POSTGRES_URL` | **Required in production** (the app refuses to boot without a database URL — `src/instrumentation.ts`) — `POSTGRES_URL` is set automatically if you provisioned Vercel Postgres in Step 1 |
 | `APP_URL` | Base URL used in invite/reset-password email links and the Vapi webhook callback. Leave blank on Vercel — falls back to the auto-populated `VERCEL_URL`. |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` | Real SMS + outbound voice — **free trial credit at twilio.com/try-twilio** |
 | `ANTHROPIC_API_KEY` | Real AI drafts (email/SMS/call scripts) and conversation extraction — paid, usage-based |

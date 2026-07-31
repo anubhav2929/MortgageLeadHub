@@ -6,6 +6,16 @@
 
 import { z } from "zod";
 
+// Vercel's Postgres integrations commonly expose POSTGRES_URL, while Neon,
+// Supabase, and manually configured projects tend to use DATABASE_URL. Accept
+// both names so attaching a Vercel database cannot accidentally put a
+// production deployment into the non-persistent local-file fallback.
+function getDatabaseUrl(): string | undefined {
+  return [process.env.DATABASE_URL, process.env.POSTGRES_URL, process.env.POSTGRES_URL_NON_POOLING].find((value) => value?.trim());
+}
+
+const databaseUrl = getDatabaseUrl();
+
 const envSchema = z.object({
   DATABASE_URL: z.string().optional(),
   TWILIO_ACCOUNT_SID: z.string().optional(),
@@ -30,7 +40,7 @@ const envSchema = z.object({
 });
 
 const parsed = envSchema.safeParse({
-  DATABASE_URL: process.env.DATABASE_URL,
+  DATABASE_URL: databaseUrl,
   TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN,
   TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER,

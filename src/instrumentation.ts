@@ -7,13 +7,13 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
 
-  const { announceCapabilitiesOnce } = await import("@/lib/env");
+  const { announceCapabilitiesOnce, capabilities } = await import("@/lib/env");
   announceCapabilitiesOnce();
 
   const isProduction = process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production";
-  if (isProduction && !process.env.DATABASE_URL) {
+  if (isProduction && !capabilities.hasDatabase) {
     throw new Error(
-      "[MortgageLeadHub] Refusing to start in production without DATABASE_URL — without it, every cold start resets to seed data and concurrent instances won't share leads. Provision Vercel Postgres/Neon and set DATABASE_URL. See DEPLOY.md."
+      "[MortgageLeadHub] Refusing to start in production without a database URL — set DATABASE_URL or Vercel's POSTGRES_URL. Without it, every cold start resets to seed data and concurrent instances won't share leads. See DEPLOY.md."
     );
   }
 }

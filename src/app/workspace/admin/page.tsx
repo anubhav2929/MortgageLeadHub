@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ShieldX, Users, UserPlus, GitBranch, FileText, ShieldOff, Power, ScrollText, Plug, SlidersHorizontal, HeartHandshake, ShieldQuestion } from "lucide-react";
+import { ShieldX, Users, UserPlus, GitBranch, FileText, ShieldOff, Power, ScrollText, Plug, SlidersHorizontal, HeartHandshake, ShieldQuestion, FileClock } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -13,13 +13,16 @@ import { KillSwitchPanel } from "@/components/admin/kill-switch-panel";
 import { AuditLogPanel } from "@/components/admin/audit-log-panel";
 import { IntegrationsPanel } from "@/components/admin/integrations-panel";
 import { ReferralPartnersPanel } from "@/components/admin/referral-partners-panel";
+import { IntakeDraftsPanel } from "@/components/admin/intake-drafts-panel";
 import { can } from "@/core/rbac";
 import {
   getKillSwitch,
   getSystemConfig,
   listAuditLogs,
   listCadencePlans,
+  DRAFT_RETENTION_DAYS,
   listDisclosures,
+  listIntakeDrafts,
   listOfficers,
   listReferralPartners,
   listRecentFailedAttempts,
@@ -44,7 +47,7 @@ export default async function AdminPage() {
     );
   }
 
-  const [officers, users, config, cadencePlans, disclosures, suppressions, killSwitch, auditLogs, referralPartners, killSwitchBlocks, recentFailures] = await Promise.all([
+  const [officers, users, config, cadencePlans, disclosures, suppressions, killSwitch, auditLogs, referralPartners, killSwitchBlocks, recentFailures, intakeDrafts] = await Promise.all([
     listOfficers(),
     listUsers(),
     getSystemConfig(),
@@ -56,6 +59,7 @@ export default async function AdminPage() {
     listReferralPartners(),
     listRecentKillSwitchBlocks(),
     listRecentFailedAttempts(),
+    listIntakeDrafts(),
   ]);
 
   return (
@@ -125,6 +129,14 @@ export default async function AdminPage() {
               <ScrollText className="h-3.5 w-3.5" /> Audit log
             </span>
           </TabsTrigger>
+          <TabsTrigger value="drafts">
+            <span className="flex items-center gap-1.5">
+              <FileClock className="h-3.5 w-3.5" /> Incomplete leads
+              {intakeDrafts.length > 0 && (
+                <span className="rounded-full bg-[var(--background)] px-1.5 text-[10px] text-[var(--muted-foreground)]">{intakeDrafts.length}</span>
+              )}
+            </span>
+          </TabsTrigger>
         </TabsList>
 
         <div className="pt-5">
@@ -161,6 +173,9 @@ export default async function AdminPage() {
           </TabsContent>
           <TabsContent value="audit">
             <AuditLogPanel logs={auditLogs} />
+          </TabsContent>
+          <TabsContent value="drafts">
+            <IntakeDraftsPanel drafts={intakeDrafts} canManage={user.role === "ADMIN"} retentionDays={DRAFT_RETENTION_DAYS} />
           </TabsContent>
         </div>
       </Tabs>

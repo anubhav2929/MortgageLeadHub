@@ -60,8 +60,9 @@ export function QuickStartForm() {
 
       <div className="mt-4 grid grid-cols-2 gap-3">
         <div>
-          <label className="mb-1.5 block text-[12.5px] font-medium text-[var(--mkt-ink)]">Property state</label>
+          <label htmlFor="qsf-state" className="mb-1.5 block text-[12.5px] font-medium text-[var(--mkt-ink)]">Property state</label>
           <select
+            id="qsf-state"
             value={stateCode}
             onChange={(e) => setStateCode(e.target.value)}
             className="focus-ring h-11 w-full rounded-lg border border-[var(--mkt-border)] bg-white px-3 text-[14px] text-[var(--mkt-ink)]"
@@ -75,14 +76,15 @@ export function QuickStartForm() {
           </select>
         </div>
         <div>
-          <label className="mb-1.5 block text-[12.5px] font-medium text-[var(--mkt-ink)]">Est. home value</label>
+          <label htmlFor="qsf-home-value" className="mb-1.5 block text-[12.5px] font-medium text-[var(--mkt-ink)]">Est. home value</label>
           <div className="relative">
             <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[14px] text-[var(--mkt-muted)]">$</span>
             <input
-              type="number"
+              id="qsf-home-value"
+              type="text"
               inputMode="numeric"
-              value={homeValue}
-              onChange={(e) => setHomeValue(e.target.value)}
+              value={homeValue ? Number(homeValue).toLocaleString("en-US") : ""}
+              onChange={(e) => setHomeValue(e.target.value.replace(/[^\d]/g, ""))}
               placeholder="450,000"
               className="focus-ring h-11 w-full rounded-lg border border-[var(--mkt-border)] bg-white pl-6 pr-3 text-[14px] text-[var(--mkt-ink)] placeholder:text-[var(--mkt-muted)]"
             />

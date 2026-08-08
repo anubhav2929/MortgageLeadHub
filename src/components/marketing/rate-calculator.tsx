@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { Calculator, ArrowRight } from "lucide-react";
+import { trackEvent } from "@/lib/analytics";
 
 // A representative example rate for today's market — NOT a quote or offer.
 // Real pricing depends on credit, program, and lock date, which is exactly
@@ -48,22 +49,24 @@ export function RateCalculator() {
         <div className="mt-8 rounded-2xl border border-[var(--mkt-border)] bg-white p-6 shadow-[0_2px_8px_rgba(22,33,27,0.04),0_20px_48px_-24px_rgba(22,33,27,0.18)] sm:p-8">
           <div className="grid gap-4 sm:grid-cols-3">
             <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-[var(--mkt-ink)]">Current loan balance</label>
+              <label htmlFor="rc-balance" className="mb-1.5 block text-[12.5px] font-medium text-[var(--mkt-ink)]">Current loan balance</label>
               <div className="relative">
                 <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[14px] text-[var(--mkt-muted)]">$</span>
                 <input
-                  type="number"
+                  id="rc-balance"
+                  type="text"
                   inputMode="numeric"
-                  value={balance}
-                  onChange={(e) => setBalance(e.target.value)}
+                  value={balance ? Number(balance.replace(/[^\d]/g, "")).toLocaleString("en-US") : ""}
+                  onChange={(e) => setBalance(e.target.value.replace(/[^\d]/g, ""))}
                   className="focus-ring h-11 w-full rounded-lg border border-[var(--mkt-border)] bg-white pl-6 pr-3 text-[14px] text-[var(--mkt-ink)]"
                 />
               </div>
             </div>
             <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-[var(--mkt-ink)]">Current rate</label>
+              <label htmlFor="rc-rate" className="mb-1.5 block text-[12.5px] font-medium text-[var(--mkt-ink)]">Current rate</label>
               <div className="relative">
                 <input
+                  id="rc-rate"
                   type="number"
                   inputMode="decimal"
                   step="0.01"
@@ -75,8 +78,9 @@ export function RateCalculator() {
               </div>
             </div>
             <div>
-              <label className="mb-1.5 block text-[12.5px] font-medium text-[var(--mkt-ink)]">Years remaining</label>
+              <label htmlFor="rc-years" className="mb-1.5 block text-[12.5px] font-medium text-[var(--mkt-ink)]">Years remaining</label>
               <input
+                id="rc-years"
                 type="number"
                 inputMode="numeric"
                 value={years}
@@ -120,6 +124,7 @@ export function RateCalculator() {
             </p>
             <Link
               href="/apply"
+              onClick={() => trackEvent("calculator_used", { savings: result ? Math.round(result.savings) : 0 })}
               className="flex w-full shrink-0 items-center justify-center gap-2 rounded-lg bg-[var(--mkt-primary)] px-5 py-3 text-[14px] font-semibold text-white transition-colors hover:bg-[var(--mkt-primary-hover)] sm:w-auto"
             >
               Get my real rate

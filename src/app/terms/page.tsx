@@ -2,13 +2,13 @@ import type { Metadata } from "next";
 import { MktNav } from "@/components/marketing/mkt-nav";
 import { MktFooter } from "@/components/marketing/mkt-footer";
 
-export const metadata: Metadata = { title: "Terms of Service — MortgageLeadHub" };
+export const metadata: Metadata = { title: "Terms of Service — Equity Flow Group" };
 
 export default function TermsPage() {
   return (
     <div className="mkt flex-1 overflow-y-auto">
       <MktNav />
-      <div className="mx-auto max-w-2xl px-6 py-16">
+      <main className="mx-auto max-w-2xl px-6 py-16">
         <h1 className="text-2xl font-semibold text-[var(--mkt-ink)]">Terms of Service</h1>
         <p className="mt-2 text-xs text-[var(--mkt-muted)]">Last updated: template — replace before a real launch.</p>
 
@@ -44,7 +44,7 @@ export default function TermsPage() {
             </p>
           </section>
         </div>
-      </div>
+      </main>
       <MktFooter />
     </div>
   );

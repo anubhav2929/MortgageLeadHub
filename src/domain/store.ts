@@ -15,6 +15,7 @@ import type {
   DisclosureVersion,
   ExportRecord,
   FieldCandidate,
+  IntakeDraft,
   KillSwitchState,
   Lead,
   LeadEvent,
@@ -58,6 +59,7 @@ export interface Database {
   referralPartners: Map<string, ReferralPartner>;
   sessions: Map<string, Session>; // keyed by token
   authTokens: Map<string, AuthToken>; // keyed by token — invite/reset links
+  intakeDrafts: Map<string, IntakeDraft>; // keyed by clientDraftId — see IntakeDraft
 }
 
 declare global {
@@ -70,7 +72,7 @@ export const DEFAULT_CONFIG: SystemConfig = {
   minSpacingHours: 4,
   quietHoursStart: 8,
   quietHoursEnd: 21,
-  senderName: "MortgageLeadHub Team",
+  senderName: "Equity Flow Group Team",
   senderEmail: "leads@mortgageleadhub.demo",
   scoringWeights: { equity: 40, margin: 25, compliance: 20, behavior: 15 },
   hotLeadThreshold: 80,
@@ -102,6 +104,7 @@ function createEmptyDb(): Database {
     referralPartners: new Map(),
     sessions: new Map(),
     authTokens: new Map(),
+    intakeDrafts: new Map(),
   };
 }
 
@@ -112,6 +115,7 @@ function hydrateDefaults(db: Database): Database {
   if (!db.referralPartners) db.referralPartners = new Map();
   if (!db.sessions) db.sessions = new Map();
   if (!db.authTokens) db.authTokens = new Map();
+  if (!db.intakeDrafts) db.intakeDrafts = new Map();
   if (!db.config.senderName) db.config.senderName = DEFAULT_CONFIG.senderName;
   if (!db.config.senderEmail) db.config.senderEmail = DEFAULT_CONFIG.senderEmail;
   if (!db.config.scoringWeights) db.config.scoringWeights = { ...DEFAULT_CONFIG.scoringWeights };

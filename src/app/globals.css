@@ -7,7 +7,8 @@
   --border-strong: #d0d5dd;
   --foreground: #101828;
   --muted: #475467;
-  --muted-foreground: #98a2b3;
+  /* Darkened from #98a2b3 to meet WCAG AA 4.5:1 text contrast (was ~2.4:1 on --background). */
+  --muted-foreground: #5c687c;
 
   --primary: #5b5bf0;
   --primary-hover: #4a4ae0;
@@ -132,10 +133,12 @@ body {
   --mkt-card: #ffffff;
   --mkt-ink: #16211b;
   --mkt-body: #46524a;
-  --mkt-muted: #7c8880;
+  /* Darkened from #7c8880 to meet WCAG AA 4.5:1 text contrast (was ~3.7:1 on white cards). */
+  --mkt-muted: #656f68;
   --mkt-border: #e4e8e0;
-  --mkt-primary: #0e8f5f;
-  --mkt-primary-hover: #0b7a51;
+  /* Darkened from #0e8f5f (was ~4.1:1 as small text) — reuses the old hover shade, which already met AA. */
+  --mkt-primary: #0b7a51;
+  --mkt-primary-hover: #085e3e;
   --mkt-primary-tint: #e7f5ec;
   --mkt-primary-ink: #073a27;
   --mkt-accent: #eef2ea;

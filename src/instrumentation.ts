@@ -13,7 +13,7 @@ export async function register() {
   const isProduction = process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production";
   if (isProduction && !capabilities.hasDatabase) {
     throw new Error(
-      "[MortgageLeadHub] Refusing to start in production without a database URL — set DATABASE_URL or Vercel's POSTGRES_URL. Without it, every cold start resets to seed data and concurrent instances won't share leads. See DEPLOY.md."
+      "[Equity Flow Group] Refusing to start in production without a database URL — set DATABASE_URL or Vercel's POSTGRES_URL. Without it, every cold start resets to seed data and concurrent instances won't share leads. See DEPLOY.md."
     );
   }
 }

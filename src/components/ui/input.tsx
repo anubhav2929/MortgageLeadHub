@@ -17,6 +17,49 @@ export const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTML
 );
 Input.displayName = "Input";
 
+/** A dollar-amount input that displays comma grouping while typing (e.g.
+ *  "450,000") but hands the parent a plain digit string ("450000") — plain
+ *  `type="number"` inputs can't render thousands separators at all, which
+ *  made every home-value/balance field hard to read at a glance. The `$`
+ *  prefix is rendered *inside* this component (not by wrapping it at the
+ *  call site) so this stays a single element — callers that pass it through
+ *  `Field`'s `cloneElement`-based id/aria wiring need the id to land on the
+ *  actual `<input>`, not on an outer positioning `<div>`. */
+export const CurrencyInput = forwardRef<
+  HTMLInputElement,
+  Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type"> & {
+    value: string;
+    onChange: (rawDigits: string) => void;
+    prefix?: string;
+  }
+>(({ className, value, onChange, prefix, ...props }, ref) => {
+  const digits = value.replace(/[^\d]/g, "");
+  const display = digits ? Number(digits).toLocaleString("en-US") : "";
+  const input = (
+    <input
+      ref={ref}
+      type="text"
+      inputMode="numeric"
+      value={display}
+      onChange={(e) => onChange(e.target.value.replace(/[^\d]/g, ""))}
+      className={cn(
+        "focus-ring h-9 w-full rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] text-sm text-[var(--foreground)] placeholder:text-[var(--muted-foreground)] transition-shadow",
+        prefix ? "pl-6 pr-3" : "px-3",
+        className
+      )}
+      {...props}
+    />
+  );
+  if (!prefix) return input;
+  return (
+    <div className="relative">
+      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-[var(--muted-foreground)]">{prefix}</span>
+      {input}
+    </div>
+  );
+});
+CurrencyInput.displayName = "CurrencyInput";
+
 export const Textarea = forwardRef<
   HTMLTextAreaElement,
   React.TextareaHTMLAttributes<HTMLTextAreaElement>

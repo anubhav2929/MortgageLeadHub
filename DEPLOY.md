@@ -76,6 +76,7 @@ In the Vercel project's **Settings → Environment Variables**, set whichever of
 | `ANTHROPIC_API_KEY` | Real AI drafts (email/SMS/call scripts) and conversation extraction — paid, usage-based |
 | `NVIDIA_API_KEY` (+ optional `NVIDIA_MODEL`) | **Free-tier alternative to Anthropic** for AI-drafted messages only (call scripts, email/SMS drafts, Reddit signal replies) — get a key at **build.nvidia.com**. If `ANTHROPIC_API_KEY` is set, that's used instead; extraction/classification still need Anthropic specifically. Leave both blank and drafts are a fixed canned message instead of AI-generated — the send still works either way. |
 | `RESEND_API_KEY` / `RESEND_FROM_EMAIL` | Real outbound email — also required for real invite/password-reset emails to send |
+| `RESEND_INBOUND_WEBHOOK_SECRET` | Turns on inbound email — borrower replies get matched to their lead and turned into a task. Set up receiving + a webhook for `email.received` in the Resend dashboard pointed at `/api/webhooks/resend-inbound`, then set this to that webhook's signing secret. See `src/domain/inboundEmail.ts`. |
 | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | Real lead discovery search |
 | `PROPERTY_DATA_API_KEY` | Real property valuation/AVM via RentCast — **free tier at rentcast.io** (50 requests/month, no card). Only fires for leads with a street address on file. |
 | `VAPI_API_KEY` / `VAPI_PHONE_NUMBER_ID` / `VAPI_WEBHOOK_SECRET` | Live AI voice-agent qualification calls — see "Voice AI agent" below. All three are required together. |

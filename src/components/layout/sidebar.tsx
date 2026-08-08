@@ -26,7 +26,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             <Landmark className="h-4 w-4" />
           </div>
           <div>
-            <p className="text-[13px] font-semibold leading-tight text-[var(--foreground)]">MortgageLeadHub</p>
+            <p className="text-[13px] font-semibold leading-tight text-[var(--foreground)]">Equity Flow Group</p>
             <p className="text-[11px] leading-tight text-[var(--muted-foreground)]">Officer workspace</p>
           </div>
         </div>

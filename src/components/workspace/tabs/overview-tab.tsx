@@ -106,6 +106,20 @@ export function OverviewTab({
         canRefer={canRefer}
       />
 
+      {person?.dataQualityFlags && person.dataQualityFlags.length > 0 && (
+        <Card className="border-[var(--warning-border)] bg-[var(--warning-tint)]">
+          <CardContent className="flex items-start gap-2.5 p-4">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
+            <div>
+              <p className="text-[13px] font-semibold text-[var(--foreground)]">Data quality flag on contact info</p>
+              <p className="mt-0.5 text-xs leading-relaxed text-[var(--muted-foreground)]">
+                {person.dataQualityFlags.join("; ")} — verify this is a real contact before spending an attempt on it.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>

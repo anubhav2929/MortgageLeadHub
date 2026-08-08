@@ -15,6 +15,7 @@ const TASK_TYPES: TaskType[] = [
   "PRIORITY_CALLBACK_REQUESTED",
   "HOT_LEAD_ALERT",
   "BORROWER_MESSAGE",
+  "INBOUND_EMAIL",
 ];
 
 export function TaskQueueFilters({

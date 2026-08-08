@@ -1,7 +1,37 @@
 import { CheckCircle2 } from "lucide-react";
 import { QuickStartForm } from "@/components/marketing/quick-start-form";
+import { ABTest } from "@/components/marketing/ab-test";
 
 const TRUST_POINTS = ["No impact to your credit score", "Licensed loan officers, real people", "Free, no obligation to proceed"];
+
+function HeroCopyA() {
+  return (
+    <>
+      <h1 className="mkt-balance text-[42px] font-semibold leading-[1.1] tracking-tight text-[var(--mkt-ink)] sm:text-[54px]">
+        Refinance your rate, or turn your equity into cash.
+      </h1>
+      <p className="mt-5 max-w-lg text-[17px] leading-relaxed text-[var(--mkt-body)]">
+        Tell us about your home, and a licensed loan officer will walk you through real options for lowering
+        your payment or accessing the equity you&apos;ve built — no pressure, no spam, no surprise calls at
+        9pm.
+      </p>
+    </>
+  );
+}
+
+function HeroCopyB() {
+  return (
+    <>
+      <h1 className="mkt-balance text-[42px] font-semibold leading-[1.1] tracking-tight text-[var(--mkt-ink)] sm:text-[54px]">
+        See what your home&apos;s equity could do for you.
+      </h1>
+      <p className="mt-5 max-w-lg text-[17px] leading-relaxed text-[var(--mkt-body)]">
+        A two-minute form connects you with a licensed loan officer who&apos;ll lay out your real options — lower
+        payments, cash out, or both — with no obligation and no pressure to move forward.
+      </p>
+    </>
+  );
+}
 
 export function Hero() {
   return (
@@ -17,15 +47,7 @@ export function Hero() {
             <span className="text-[12px] font-medium text-[var(--mkt-body)]">A licensed officer follows up within minutes</span>
           </div>
 
-          <h1 className="mkt-balance text-[42px] font-semibold leading-[1.1] tracking-tight text-[var(--mkt-ink)] sm:text-[54px]">
-            Refinance your rate, or turn your equity into cash.
-          </h1>
-
-          <p className="mt-5 max-w-lg text-[17px] leading-relaxed text-[var(--mkt-body)]">
-            Tell us about your home, and a licensed loan officer will walk you through real options for lowering
-            your payment or accessing the equity you&apos;ve built — no pressure, no spam, no surprise calls at
-            9pm.
-          </p>
+          <ABTest testKey="homepage_hero_copy" variants={{ A: <HeroCopyA />, B: <HeroCopyB /> }} />
 
           <ul className="mt-7 flex flex-col gap-2.5 sm:flex-row sm:flex-wrap sm:gap-x-6 sm:gap-y-2">
             {TRUST_POINTS.map((point) => (

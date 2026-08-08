@@ -165,7 +165,7 @@ export function PostSubmitChat({
     if (started.current) return;
     started.current = true;
     (async () => {
-      await say(`Hey ${displayName}, this is Morgan from MortgageLeadHub 👋`, 450);
+      await say(`Hey ${displayName}, this is Morgan from Equity Flow Group 👋`, 450);
       await say(`Looks like you're looking to ${GOAL_PHRASE[goal]} with ${INTENT_PHRASE[intent]} in ${where} — did I get that right?`, 800);
       setStage("confirm");
     })();

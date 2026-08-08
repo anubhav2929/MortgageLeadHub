@@ -6,17 +6,37 @@ import { cloneElement, useEffect, useMemo, useRef, useState, useTransition } fro
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input, Label, Select } from "@/components/ui/input";
+import { CurrencyInput, Input, Label, Select } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { PostSubmitChat } from "@/components/intake/post-submit-chat";
-import { submitIntakeAction, type IntakeInput } from "@/domain/actions";
+import { discardIntakeDraftAction, saveIntakeDraftAction, submitIntakeAction, type IntakeInput } from "@/domain/actions";
 import { STATE_NAMES } from "@/domain/stateTimezone";
 import { STATE_CITIES, isKnownCity } from "@/domain/stateCities";
 import { cn } from "@/lib/utils";
+import { trackEvent } from "@/lib/analytics";
 import type { LoanIntent } from "@/domain/types";
 
 const STEPS = ["Purpose", "Contact", "Property", "Timeline & credit", "Consent"];
 const DRAFT_KEY = "mlh_intake_draft_v1";
+const CLIENT_DRAFT_ID_KEY = "mlh_intake_draft_id_v1";
+const DRAFT_SAVE_DEBOUNCE_MS = 2000;
+
+/** Stable per-browser id for this in-progress inquiry — persisted
+ *  alongside the form draft itself so repeated autosaves (and a page
+ *  refresh mid-form) update the same server-side row instead of leaving a
+ *  new one behind every time. */
+function getOrCreateClientDraftId(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    const existing = window.localStorage.getItem(CLIENT_DRAFT_ID_KEY);
+    if (existing) return existing;
+    const id = crypto.randomUUID();
+    window.localStorage.setItem(CLIENT_DRAFT_ID_KEY, id);
+    return id;
+  } catch {
+    return "";
+  }
+}
 
 const INTENT_OPTIONS: { value: LoanIntent; label: string; description: string; icon: React.ElementType }[] = [
   { value: "REFINANCE", label: "Refinance", description: "Lower your rate, payment, or term", icon: RefreshCw },
@@ -26,9 +46,9 @@ const INTENT_OPTIONS: { value: LoanIntent; label: string; description: string; i
 
 const DISCLOSURES = {
   voice:
-    "By checking this box, I consent to receive phone calls from MortgageLeadHub and its licensed partners about my inquiry, including calls made using an automatic telephone dialing system, an artificial or prerecorded voice, or an AI voice assistant. Calls may be recorded for quality and compliance purposes, and I may request a human representative at any time.",
-  sms: "By checking this box, I consent to receive text messages from MortgageLeadHub about my inquiry, including messages sent using an automatic telephone dialing system. Message and data rates may apply. Reply STOP to opt out at any time.",
-  email: "By checking this box, I consent to receive email communications from MortgageLeadHub about my inquiry.",
+    "By checking this box, I consent to receive phone calls from Equity Flow Group and its licensed partners about my inquiry, including calls made using an automatic telephone dialing system, an artificial or prerecorded voice, or an AI voice assistant. Calls may be recorded for quality and compliance purposes, and I may request a human representative at any time.",
+  sms: "By checking this box, I consent to receive text messages from Equity Flow Group about my inquiry, including messages sent using an automatic telephone dialing system. Message and data rates may apply. Reply STOP to opt out at any time.",
+  email: "By checking this box, I consent to receive email communications from Equity Flow Group about my inquiry.",
 };
 
 // Mirrors the server's normalizePhone() (submitIntakeAction) so a bad phone
@@ -208,19 +228,39 @@ export function IntakeWizard({
   } | null>(null);
   const [isPending, startTransition] = useTransition();
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
+  const [clientDraftId] = useState(getOrCreateClientDraftId);
+  const draftSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Persist on every change while the form is in progress; cleared on a
   // successful submit (see submit()) so a completed inquiry never resurfaces.
+  // Two copies: localStorage for instant same-device restore (existing
+  // behavior), and a debounced server-side save so the lead is recoverable
+  // even if this browser/device is never seen again — see IntakeDraft.
   useEffect(() => {
     if (result || typeof window === "undefined") return;
     const hasAnyInput = form.firstName || form.lastName || form.phone || form.email || form.intent;
     if (!hasAnyInput) return;
     window.localStorage.setItem(DRAFT_KEY, JSON.stringify({ form, step }));
-  }, [form, step, result]);
+
+    if (!clientDraftId) return;
+    if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+    draftSaveTimer.current = setTimeout(() => {
+      saveIntakeDraftAction(clientDraftId, step, form as unknown as Record<string, unknown>);
+    }, DRAFT_SAVE_DEBOUNCE_MS);
+    return () => {
+      if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+    };
+  }, [form, step, result, clientDraftId]);
 
   useEffect(() => {
     stepHeadingRef.current?.focus();
   }, [step]);
+
+  // Fires once per mount, not once per step — a returning visitor picking
+  // up a saved draft still only counts as one "started" for funnel math.
+  useEffect(() => {
+    trackEvent("intake_started");
+  }, []);
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -228,6 +268,13 @@ export function IntakeWizard({
 
   function startOver() {
     window.localStorage.removeItem(DRAFT_KEY);
+    // Best-effort — the visitor is gone either way, and the 30-day
+    // retention purge (see purgeStaleIntakeDrafts) is the actual backstop
+    // if this fails or the tab closes before it resolves.
+    if (clientDraftId) {
+      discardIntakeDraftAction(clientDraftId);
+      window.localStorage.removeItem(CLIENT_DRAFT_ID_KEY);
+    }
     setForm({ ...INITIAL, intent: initialIntent ?? null, stateCode: initialStateCode ?? "", estimatedValue: initialEstimatedValue ?? "" });
     setStep(0);
     setErrors({});
@@ -258,6 +305,7 @@ export function IntakeWizard({
     const stepErrors = validateStep(step);
     setErrors(stepErrors);
     if (Object.keys(stepErrors).length > 0) return;
+    trackEvent("intake_step_completed", { step, step_name: STEPS[step] });
     setStep((s) => Math.min(STEPS.length - 1, s + 1));
   }
   function prev() {
@@ -292,10 +340,13 @@ export function IntakeWizard({
         hasExistingHomeEquityLoan: form.hasExistingHomeEquityLoan ?? undefined,
         intakeDurationSeconds: Math.round((Date.now() - startedAt) / 1000),
         consents: { voice: form.voice, sms: form.sms, email: form.email_, recording: form.voice },
-      });
+      }, clientDraftId || undefined);
       if (res.ok && res.publicRef && res.slaDueAt) {
+        trackEvent("intake_submitted", { intent: form.intent! });
         setSubmitError(null);
         window.localStorage.removeItem(DRAFT_KEY);
+        window.localStorage.removeItem(CLIENT_DRAFT_ID_KEY);
+        if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
         setResult({
           publicRef: res.publicRef,
           slaDueAt: res.slaDueAt,
@@ -486,10 +537,10 @@ export function IntakeWizard({
                   </Field>
                   <div />
                   <Field id="estimatedValue" label="Estimated value (optional)">
-                    <Input type="number" inputMode="numeric" value={form.estimatedValue} onChange={(e) => update("estimatedValue", e.target.value)} placeholder="450000" />
+                    <CurrencyInput prefix="$" value={form.estimatedValue} onChange={(v) => update("estimatedValue", v)} placeholder="450,000" />
                   </Field>
                   <Field id="currentBalance" label="Current balance (optional)">
-                    <Input type="number" inputMode="numeric" value={form.currentBalance} onChange={(e) => update("currentBalance", e.target.value)} placeholder="300000" />
+                    <CurrencyInput prefix="$" value={form.currentBalance} onChange={(v) => update("currentBalance", v)} placeholder="300,000" />
                   </Field>
                   {form.stateCode === "TX" && (form.intent === "CASH_OUT" || form.intent === "HOME_EQUITY") && (
                     <Field
@@ -602,18 +653,26 @@ export function IntakeWizard({
           </p>
         )}
         {step === STEPS.length - 1 && (
-          <p className="mb-3 text-xs leading-relaxed text-[var(--muted-foreground)]">
-            This is an inquiry, not a loan application. Submitting this form does not affect your credit score and is
-            not an approval or offer of credit. A licensed loan officer will follow up to discuss your options. See our{" "}
-            <a href="/privacy" target="_blank" rel="noreferrer" className="font-medium text-[var(--primary)] hover:underline">
-              Privacy Policy
-            </a>{" "}
-            and{" "}
-            <a href="/terms" target="_blank" rel="noreferrer" className="font-medium text-[var(--primary)] hover:underline">
-              Terms of Service
-            </a>
-            .
-          </p>
+          <>
+            <p className="mb-2 text-xs leading-relaxed text-[var(--muted-foreground)]">
+              This is an inquiry, not a loan application. Submitting this form does not affect your credit score and is
+              not an approval or offer of credit. A licensed loan officer will follow up to discuss your options. See our{" "}
+              <a href="/privacy" target="_blank" rel="noreferrer" className="font-medium text-[var(--primary)] hover:underline">
+                Privacy Policy
+              </a>{" "}
+              and{" "}
+              <a href="/terms" target="_blank" rel="noreferrer" className="font-medium text-[var(--primary)] hover:underline">
+                Terms of Service
+              </a>
+              .
+            </p>
+            <p className="mb-3 text-xs leading-relaxed text-[var(--muted-foreground)]">
+              <span className="font-medium text-[var(--foreground)]">Fair Credit Reporting Act:</span> submitting this
+              form does not authorize a credit report or score pull. If you later apply with a licensed officer, they
+              may pull your credit in connection with that application — under the FCRA you have the right to know
+              what&apos;s in your credit file, dispute inaccurate information, and obtain a copy of your report.
+            </p>
+          </>
         )}
         <div className="flex items-center justify-between">
           <Button

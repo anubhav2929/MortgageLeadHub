@@ -57,14 +57,14 @@ export default async function BorrowerStatusPage({ params }: PageProps) {
   const goneQuiet = stage === "reaching_out" && lead.attemptsTotal >= 2;
 
   return (
-    <div className="flex-1 overflow-y-auto bg-[var(--background)]">
+    <main className="flex-1 overflow-y-auto bg-[var(--background)]">
       <div className="mx-auto max-w-lg px-6 py-12">
         <div className="mb-8 flex items-center gap-2.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-[var(--radius-md)] bg-[var(--primary)] text-white">
             <Landmark className="h-4 w-4" />
           </div>
           <div>
-            <p className="text-[15px] font-semibold text-[var(--foreground)]">MortgageLeadHub</p>
+            <h1 className="text-[15px] font-semibold text-[var(--foreground)]">Equity Flow Group</h1>
             <p className="text-xs text-[var(--muted-foreground)]">Inquiry status</p>
           </div>
         </div>
@@ -172,7 +172,7 @@ export default async function BorrowerStatusPage({ params }: PageProps) {
           <StatusMessageForm publicRef={lead.publicRef} />
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 

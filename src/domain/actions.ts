@@ -6,7 +6,7 @@ import { sendSms } from "@/adapters/sms";
 import { placeCall } from "@/adapters/voice";
 import { placeVoiceAgentCall } from "@/adapters/voiceAgent";
 import { sendEmail } from "@/adapters/email";
-import { extractFieldsFromTranscript, generateOutreachContent, classifySignalIntent, generateSignalReply } from "@/adapters/llm";
+import { extractFieldsFromTranscript, generateOutreachContent, classifySignalIntent, generateSignalReply, validateIntakeIdentity } from "@/adapters/llm";
 import { searchForSignals } from "@/adapters/leadDiscovery";
 import { getPropertyValuation } from "@/adapters/propertyData";
 import { promoteCandidate, type RawCandidate } from "@/core/extraction/promote";
@@ -1020,15 +1020,15 @@ export async function createUserAction(input: CreateUserInput): Promise<ActionRe
   const inviteUrl = `${getAppUrl()}/accept-invite?token=${inviteToken}`;
   const emailResult = await sendEmail({
     to: input.email.trim(),
-    subject: "You've been added to MortgageLeadHub",
-    text: `Hi ${input.name.split(" ")[0]},\n\n${user.name} added you to MortgageLeadHub as ${roleLabel}. Set your password to get started:\n${inviteUrl}\n\nThis link expires in 7 days.\n\n— MortgageLeadHub`,
+    subject: "You've been added to Equity Flow Group",
+    text: `Hi ${input.name.split(" ")[0]},\n\n${user.name} added you to Equity Flow Group as ${roleLabel}. Set your password to get started:\n${inviteUrl}\n\nThis link expires in 7 days.\n\n— Equity Flow Group`,
     idempotencyKey,
     from: `${db.config.senderName} <${db.config.senderEmail}>`,
   });
   let smsResult: { simulated: boolean } | null = null;
   const phone = input.phone ? normalizePhone(input.phone) : null;
   if (phone) {
-    smsResult = await sendSms({ to: phone, body: `Hi ${input.name.split(" ")[0]}, you've been added to MortgageLeadHub as ${roleLabel}. Check your email to sign in.`, idempotencyKey: newId("idem") });
+    smsResult = await sendSms({ to: phone, body: `Hi ${input.name.split(" ")[0]}, you've been added to Equity Flow Group as ${roleLabel}. Check your email to sign in.`, idempotencyKey: newId("idem") });
   }
 
   const notified = [emailResult.simulated ? "email (simulated)" : "email", phone ? (smsResult?.simulated ? "text (simulated)" : "text") : null].filter(Boolean).join(" and ");
@@ -1086,8 +1086,8 @@ export async function resendInviteAction(userId: string): Promise<ActionResult> 
   const roleLabel = target.role.replace("_", " ").toLowerCase();
   const emailResult = await sendEmail({
     to: target.email,
-    subject: "You've been added to MortgageLeadHub",
-    text: `Hi ${target.name.split(" ")[0]},\n\n${user.name} added you to MortgageLeadHub as ${roleLabel}. Set your password to get started:\n${inviteUrl}\n\nThis link expires in 7 days.\n\n— MortgageLeadHub`,
+    subject: "You've been added to Equity Flow Group",
+    text: `Hi ${target.name.split(" ")[0]},\n\n${user.name} added you to Equity Flow Group as ${roleLabel}. Set your password to get started:\n${inviteUrl}\n\nThis link expires in 7 days.\n\n— Equity Flow Group`,
     idempotencyKey: newId("idem"),
     from: `${db.config.senderName} <${db.config.senderEmail}>`,
   });
@@ -1680,7 +1680,7 @@ function normalizePhone(raw: string): string | null {
   return null;
 }
 
-export async function submitIntakeAction(input: IntakeInput): Promise<IntakeResult> {
+export async function submitIntakeAction(input: IntakeInput, clientDraftId?: string): Promise<IntakeResult> {
   // This is the one public, unauthenticated write path in the whole app —
   // real schema validation (type/length/enum bounds) belongs right here,
   // not just a truthiness check, since anyone can POST to it directly.
@@ -1711,16 +1711,19 @@ export async function submitIntakeAction(input: IntakeInput): Promise<IntakeResu
   const createdAt = nowIso();
   const timezone = STATE_TIMEZONE[input.stateCode] ?? "UNKNOWN";
 
+  const identity = await validateIntakeIdentity({ firstName: input.firstName, lastName: input.lastName, email: input.email });
+
   db.people.set(personId, {
     id: personId,
     leadId,
     role: "PRIMARY",
-    firstName: input.firstName.trim(),
-    lastName: input.lastName.trim(),
+    firstName: identity.firstName,
+    lastName: identity.lastName,
     phoneE164: phone,
     email: input.email.trim(),
     preferredContactWindow: input.bestContactTime,
     timezone,
+    ...(identity.flags.length > 0 ? { dataQualityFlags: identity.flags } : {}),
   });
 
   const consentDefs: { scope: ConsentRecord["scope"]; granted: boolean; disclosureVersionId: string }[] = [
@@ -1912,16 +1915,84 @@ export async function submitIntakeAction(input: IntakeInput): Promise<IntakeResu
     }
   }
 
+  // A completed, consented submission supersedes whatever pre-consent draft
+  // led here — leaving it around would just be a second, redundant copy of
+  // the same PII sitting outside the consent-gated pipeline.
+  if (clientDraftId) db.intakeDrafts.delete(clientDraftId);
+
   saveDb();
   revalidatePath("/workspace/leads");
   revalidatePath("/workspace");
   return { ok: true, publicRef, slaDueAt, referralType };
 }
 
+// Autosaves a visitor's in-progress intake form before they've consented to
+// anything — see IntakeDraft's own comment for why this deliberately never
+// touches db.leads. No schema validation: a draft is allowed to be
+// incomplete by definition, and this is the one write path in the app that
+// intentionally accepts a same-origin request with almost no shape checking
+// on the payload (bounded only by the size below), since blocking on
+// validation would defeat the point of an autosave.
+const MAX_DRAFT_SNAPSHOT_BYTES = 20_000;
+
+export async function saveIntakeDraftAction(clientDraftId: string, furthestStep: number, formSnapshot: Record<string, unknown>): Promise<ActionResult> {
+  if (!clientDraftId || typeof clientDraftId !== "string" || clientDraftId.length > 64) {
+    return { ok: false, message: "Invalid draft id." };
+  }
+  if (JSON.stringify(formSnapshot).length > MAX_DRAFT_SNAPSHOT_BYTES) {
+    return { ok: false, message: "Draft payload too large." };
+  }
+
+  const db = await getDb();
+  const existing = db.intakeDrafts.get(clientDraftId);
+  const now = nowIso();
+  db.intakeDrafts.set(clientDraftId, {
+    id: clientDraftId,
+    clientDraftId,
+    formSnapshot,
+    furthestStep,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  });
+  saveDb();
+  return { ok: true, message: "Draft saved." };
+}
+
+/** Public — called by the borrower's own browser when they click "Start
+ *  over" on the intake form. No auth check by design: same trust model as
+ *  saveIntakeDraftAction itself (an anonymous visitor discarding their own
+ *  in-progress, not-yet-consented data), gated only by knowing the random
+ *  client-generated id, which never leaves their own browser's localStorage. */
+export async function discardIntakeDraftAction(clientDraftId: string): Promise<ActionResult> {
+  if (!clientDraftId || typeof clientDraftId !== "string") return { ok: false, message: "Invalid draft id." };
+  const db = await getDb();
+  db.intakeDrafts.delete(clientDraftId);
+  saveDb();
+  return { ok: true, message: "Draft discarded." };
+}
+
+/** Admin-only — deleting someone else's draft from the ops-facing panel
+ *  (e.g. a right-to-delete request), as opposed to discardIntakeDraftAction
+ *  above which is the borrower discarding their own. */
+export async function deleteIntakeDraftAction(draftId: string): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  if (user.role !== "ADMIN") {
+    return { ok: false, message: "Only Admin can delete an intake draft." };
+  }
+  const db = await getDb();
+  if (!db.intakeDrafts.delete(draftId)) {
+    return { ok: false, message: "Draft not found." };
+  }
+  await audit(user.id, user.name, "DELETE_INTAKE_DRAFT", "IntakeDraft", draftId, "ALLOW");
+  saveDb();
+  revalidatePath("/workspace/admin");
+  return { ok: true, message: "Draft deleted." };
+}
+
 // "Connect the loan officer in the background" — route to the best-fit
 // available officer immediately instead of leaving a hot lead unassigned in
 // the queue while the borrower is still engaged.
-async function autoAssignOfficer(db: Database, lead: Lead, reason: string) {
+export async function autoAssignOfficer(db: Database, lead: Lead, reason: string) {
   if (lead.assignedOfficerId) return db.officers.get(lead.assignedOfficerId);
   // Computed from today's OFFICER_ASSIGNED events, not the stored
   // currentLoad counter — see computeOfficerLoadToday for why (that
@@ -2157,7 +2228,7 @@ async function deliverOutreachLocked(
     providerError = result.error;
     body = smsBody;
   } else {
-    subject = `${officerFirstName} from MortgageLeadHub — following up on your inquiry`;
+    subject = `${officerFirstName} from Equity Flow Group — following up on your inquiry`;
     const statusUrl = `${getAppUrl()}/status/${lead.publicRef}`;
     const emailBody = `${content.body}\n\nTrack your inquiry anytime: ${statusUrl}`;
     const result = await sendEmail({ to: person?.email ?? "", subject, text: emailBody, idempotencyKey, from: `${db.config.senderName} <${db.config.senderEmail}>` });

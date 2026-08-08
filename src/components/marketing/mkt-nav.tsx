@@ -5,8 +5,9 @@ import Link from "next/link";
 import { Landmark, Menu, X } from "lucide-react";
 
 const LINKS = [
-  { href: "#how-it-works", label: "How it works" },
-  { href: "#faq", label: "FAQ" },
+  { href: "/#how-it-works", label: "How it works" },
+  { href: "/tools", label: "Calculators" },
+  { href: "/#faq", label: "FAQ" },
 ];
 
 export function MktNav() {
@@ -19,7 +20,7 @@ export function MktNav() {
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--mkt-primary)] text-white">
             <Landmark className="h-4 w-4" />
           </span>
-          <span className="whitespace-nowrap text-[15px] font-semibold text-[var(--mkt-ink)]">MortgageLeadHub</span>
+          <span className="whitespace-nowrap text-[15px] font-semibold text-[var(--mkt-ink)]">Equity Flow Group</span>
         </Link>
         <nav className="hidden items-center gap-8 lg:flex">
           {LINKS.map((link) => (
@@ -32,13 +33,6 @@ export function MktNav() {
           </Link>
         </nav>
         <div className="flex shrink-0 items-center gap-2">
-          <Link
-            href="/apply"
-            className="shrink-0 whitespace-nowrap rounded-lg bg-[var(--mkt-primary)] px-3.5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-[var(--mkt-primary-hover)] sm:px-4 sm:text-[13.5px]"
-          >
-            <span className="sm:hidden">Apply</span>
-            <span className="hidden sm:inline">Check my options</span>
-          </Link>
           <button
             onClick={() => setOpen((o) => !o)}
             aria-label={open ? "Close menu" : "Open menu"}

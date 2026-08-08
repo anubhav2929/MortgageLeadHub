@@ -12,13 +12,15 @@ export default function Home() {
   return (
     <div className="mkt flex-1 overflow-y-auto">
       <MktNav />
-      <Hero />
-      <TrustBar />
-      <RateCalculator />
-      <ValueProps />
-      <HowItWorks />
-      <Faq />
-      <CtaBand />
+      <main>
+        <Hero />
+        <TrustBar />
+        <RateCalculator />
+        <ValueProps />
+        <HowItWorks />
+        <Faq />
+        <CtaBand />
+      </main>
       <MktFooter />
     </div>
   );

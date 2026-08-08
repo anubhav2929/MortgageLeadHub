@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ToastProvider } from "@/components/ui/toast";
 import { DemoBanner } from "@/components/layout/demo-banner";
+import { GoogleAnalytics } from "@/components/layout/google-analytics";
 import { getAppUrl } from "@/lib/env";
 import "./globals.css";
 
@@ -21,10 +22,10 @@ const geistMono = Geist_Mono({
 // not applied site-wide.
 export const metadata: Metadata = {
   metadataBase: new URL(getAppUrl()),
-  title: "MortgageLeadHub",
+  title: "Equity Flow Group",
   description: "Refinance your rate or access your home equity — a licensed officer follows up within minutes.",
   openGraph: {
-    title: "MortgageLeadHub",
+    title: "Equity Flow Group",
     description: "Refinance your rate or access your home equity — a licensed officer follows up within minutes.",
     type: "website",
   },
@@ -38,6 +39,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
       <body className="flex h-dvh flex-col overflow-hidden bg-[var(--background)]">
+        <GoogleAnalytics measurementId={process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID} />
         <DemoBanner />
         <ToastProvider>{children}</ToastProvider>
       </body>

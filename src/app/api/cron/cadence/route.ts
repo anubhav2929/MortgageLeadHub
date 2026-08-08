@@ -15,6 +15,7 @@
 
 import { NextResponse } from "next/server";
 import { runCadenceTick } from "@/domain/cadenceEngine";
+import { purgeStaleIntakeDrafts } from "@/domain/queries";
 import { safeCompare } from "@/core/auth";
 import { env } from "@/lib/env";
 
@@ -37,5 +38,12 @@ export async function GET(request: Request) {
 
   const summary = await runCadenceTick();
   console.log(`[cadence-engine] processed=${summary.processed} delivered=${summary.delivered} blocked=${summary.blocked} exhausted=${summary.exhausted} errors=${summary.errors.length}`);
-  return NextResponse.json({ ok: true, ...summary });
+
+  // Piggybacks on the same scheduled trigger rather than a second cron job —
+  // pre-consent draft PII (src/domain/types.ts IntakeDraft) shouldn't outlive
+  // its retention window just because nobody wired up a dedicated job for it.
+  const purgedDrafts = await purgeStaleIntakeDrafts();
+  if (purgedDrafts > 0) console.log(`[intake-drafts] purged ${purgedDrafts} draft(s) past retention`);
+
+  return NextResponse.json({ ok: true, ...summary, purgedDrafts });
 }

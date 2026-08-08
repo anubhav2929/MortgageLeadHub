@@ -1,7 +1,7 @@
 // Password hashing — scrypt (Node's built-in crypto, no new dependency).
 // Stored as "saltHex:hashHex" so each password gets a fresh random salt.
 
-import { randomBytes, scrypt, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, scrypt, scryptSync, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 
 const scryptAsync = promisify(scrypt);
@@ -47,4 +47,34 @@ export function safeCompare(a: string, b: string): boolean {
     return false;
   }
   return timingSafeEqual(bufA, bufB);
+}
+
+/** Verifies a Resend webhook request, signed the same way as any Svix
+ *  webhook (Resend uses Svix under the hood) — implemented against Node's
+ *  built-in crypto instead of the `svix` package, matching this codebase's
+ *  no-new-dependency-for-one-function convention (see hashPassword above).
+ *  Algorithm: https://docs.svix.com/receiving/verifying-payloads/how-manual */
+export function verifySvixSignature(
+  secret: string,
+  headers: { id: string | null; timestamp: string | null; signature: string | null },
+  rawBody: string
+): boolean {
+  const { id, timestamp, signature } = headers;
+  if (!id || !timestamp || !signature) return false;
+
+  // Reject stale/future timestamps outside a 5-minute window, same
+  // tolerance Svix's own libraries default to — narrows the window a
+  // captured-and-replayed request could still be accepted in.
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > 300) return false;
+
+  const secretBytes = Buffer.from(secret.replace(/^whsec_/, ""), "base64");
+  const signedContent = `${id}.${timestamp}.${rawBody}`;
+  const expected = createHmac("sha256", secretBytes).update(signedContent).digest("base64");
+
+  // svix-signature is space-delimited "v1,<base64sig>" pairs — any match wins.
+  return signature.split(" ").some((candidate) => {
+    const sig = candidate.startsWith("v1,") ? candidate.slice(3) : candidate;
+    return safeCompare(sig, expected);
+  });
 }

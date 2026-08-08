@@ -41,16 +41,19 @@ function minutesFromNow(n: number, from: Date) {
 }
 
 const DISCLOSURE_TEXT_TCPA_SMS =
-  "By checking this box, I consent to receive text messages from MortgageLeadHub and its licensed partners about my refinance or home equity inquiry, including messages sent using an automatic telephone dialing system. Message and data rates may apply. Consent is not a condition of purchase. Reply STOP to opt out at any time, HELP for help.";
+  "By checking this box, I consent to receive text messages from Equity Flow Group and its licensed partners about my refinance or home equity inquiry, including messages sent using an automatic telephone dialing system. Message and data rates may apply. Consent is not a condition of purchase. Reply STOP to opt out at any time, HELP for help.";
 
 const DISCLOSURE_TEXT_TCPA_VOICE =
-  "By checking this box, I consent to receive phone calls from MortgageLeadHub and its licensed partners about my refinance or home equity inquiry, including calls made using an automatic telephone dialing system or an artificial or prerecorded voice. Consent is not a condition of purchase.";
+  "By checking this box, I consent to receive phone calls from Equity Flow Group and its licensed partners about my refinance or home equity inquiry, including calls made using an automatic telephone dialing system or an artificial or prerecorded voice. Consent is not a condition of purchase.";
 
 const DISCLOSURE_TEXT_RECORDING =
   "This call may be recorded and may include an AI voice assistant for quality and compliance purposes. You may request a human representative at any time.";
 
 const DISCLOSURE_TEXT_EMAIL =
-  "By checking this box, I consent to receive email communications from MortgageLeadHub about my inquiry.";
+  "By checking this box, I consent to receive email communications from Equity Flow Group about my inquiry.";
+
+const DISCLOSURE_TEXT_FCRA =
+  "Submitting this form does not authorize a credit report or credit score pull, and does not affect your credit score. If you move forward with a licensed loan officer and formally apply, they may obtain your credit report or score in connection with that application. Under the Fair Credit Reporting Act (FCRA), you have the right to know what is in your credit file, to dispute incomplete or inaccurate information with the consumer reporting agency, and to obtain a copy of your credit report. Learn more at consumerfinance.gov/learnmore.";
 
 export function seedDatabase(db: Database) {
   const now = new Date();
@@ -92,6 +95,16 @@ export function seedDatabase(db: Database) {
       key: "email_v1",
       version: 1,
       bodyText: DISCLOSURE_TEXT_EMAIL,
+      effectiveFrom: daysAgo(200, now),
+      approvedBy: "Dana Whitfield (Compliance)",
+      approvedAt: daysAgo(200, now),
+      status: "APPROVED",
+    },
+    {
+      id: "disc_fcra_v1",
+      key: "fcra_v1",
+      version: 1,
+      bodyText: DISCLOSURE_TEXT_FCRA,
       effectiveFrom: daysAgo(200, now),
       approvedBy: "Dana Whitfield (Compliance)",
       approvedAt: daysAgo(200, now),
@@ -160,7 +173,7 @@ export function seedDatabase(db: Database) {
   ];
   users.forEach((u) => db.users.set(u.id, u));
   console.log(
-    `\n[MortgageLeadHub] Seeded demo accounts (password for all: "MlhDemo#2026" — change in any real deployment):\n  ${users.map((u) => `${u.email} (${u.role})`).join("\n  ")}\n`
+    `\n[Equity Flow Group] Seeded demo accounts (password for all: "MlhDemo#2026" — change in any real deployment):\n  ${users.map((u) => `${u.email} (${u.role})`).join("\n  ")}\n`
   );
 
   // ---- Cadence plans --------------------------------------------------------
@@ -538,7 +551,7 @@ export function seedDatabase(db: Database) {
       escalated: false,
       redactionApplied: false,
       transcript: [
-        { turn: 1, role: "AGENT", text: "Hi, this is Alex calling on behalf of MortgageLeadHub about your refinance inquiry — is now an okay time?", at: minutesAgo(12, now) },
+        { turn: 1, role: "AGENT", text: "Hi, this is Alex calling on behalf of Equity Flow Group about your refinance inquiry — is now an okay time?", at: minutesAgo(12, now) },
         { turn: 2, role: "BORROWER", text: "Yeah, sure, go ahead.", at: minutesAgo(11, now) },
         { turn: 3, role: "AGENT", text: "Great — just confirming, is this Miguel?", at: minutesAgo(11, now) },
         { turn: 4, role: "BORROWER", text: "That's me.", at: minutesAgo(11, now) },
@@ -676,7 +689,7 @@ export function seedDatabase(db: Database) {
       summary:
         "Borrower wants to consolidate ~$28k of credit card debt via cash-out refi. Primary residence, stable W-2 income (band only). No hardship indicators. Prefers evening callback.",
       transcript: [
-        { turn: 1, role: "AGENT", text: "Hi, this is Alex from MortgageLeadHub calling about the inquiry you submitted online — is this Sarah?", at: minutesAgo(300, now) },
+        { turn: 1, role: "AGENT", text: "Hi, this is Alex from Equity Flow Group calling about the inquiry you submitted online — is this Sarah?", at: minutesAgo(300, now) },
         { turn: 2, role: "BORROWER", text: "Yes, this is Sarah.", at: minutesAgo(299, now) },
         { turn: 3, role: "AGENT", text: "Perfect. Just so you know, this call may be recorded, and you can ask for a human at any time. What's the main reason you're looking into this?", at: minutesAgo(299, now) },
         { turn: 4, role: "BORROWER", text: "I've got some credit card debt piling up, I wanted to see about pulling equity out to pay it down.", at: minutesAgo(298, now) },

@@ -3,13 +3,13 @@ import Link from "next/link";
 import { MktNav } from "@/components/marketing/mkt-nav";
 import { MktFooter } from "@/components/marketing/mkt-footer";
 
-export const metadata: Metadata = { title: "Privacy Policy — MortgageLeadHub" };
+export const metadata: Metadata = { title: "Privacy Policy — Equity Flow Group" };
 
 export default function PrivacyPage() {
   return (
     <div className="mkt flex-1 overflow-y-auto">
       <MktNav />
-      <div className="mx-auto max-w-2xl px-6 py-16">
+      <main className="mx-auto max-w-2xl px-6 py-16">
         <h1 className="text-2xl font-semibold text-[var(--mkt-ink)]">Privacy Policy</h1>
         <p className="mt-2 text-xs text-[var(--mkt-muted)]">Last updated: template — replace before a real launch.</p>
 
@@ -52,6 +52,20 @@ export default function PrivacyPage() {
             </p>
           </section>
           <section>
+            <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Fair Credit Reporting Act (FCRA)</h2>
+            <p className="mt-2">
+              Submitting the intake form does not authorize a credit report or credit score pull and does not affect
+              your credit score. If you move forward and formally apply with a licensed loan officer, they may obtain
+              your credit report or score in connection with that application. Under the FCRA, you have the right to
+              know what is in your credit file, to dispute incomplete or inaccurate information with the consumer
+              reporting agency, and to obtain a copy of your credit report. Learn more at{" "}
+              <a href="https://consumerfinance.gov/learnmore" target="_blank" rel="noreferrer" className="font-medium text-[var(--mkt-primary)] hover:underline">
+                consumerfinance.gov/learnmore
+              </a>
+              .
+            </p>
+          </section>
+          <section>
             <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Contact</h2>
             <p className="mt-2">
               Questions about this policy or your data can be directed to the loan officer assigned to your inquiry,
@@ -59,7 +73,7 @@ export default function PrivacyPage() {
             </p>
           </section>
         </div>
-      </div>
+      </main>
       <MktFooter />
     </div>
   );

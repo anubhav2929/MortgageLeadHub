@@ -99,8 +99,8 @@ export async function requestPasswordResetAction(email: string): Promise<AuthRes
   const resetUrl = `${getAppUrl()}/reset-password?token=${token}`;
   await sendEmail({
     to: user.email,
-    subject: "Reset your MortgageLeadHub password",
-    text: `Hi ${user.name.split(" ")[0]},\n\nReset your password:\n${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, you can ignore this email.\n\n— MortgageLeadHub`,
+    subject: "Reset your Equity Flow Group password",
+    text: `Hi ${user.name.split(" ")[0]},\n\nReset your password:\n${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, you can ignore this email.\n\n— Equity Flow Group`,
     idempotencyKey: newId("idem"),
     from: `${db.config.senderName} <${db.config.senderEmail}>`,
   });

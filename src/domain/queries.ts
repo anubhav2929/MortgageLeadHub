@@ -12,6 +12,7 @@ import type {
   DisclosureVersion,
   FieldCandidate,
   FieldStatus,
+  IntakeDraft,
   Lead,
   LeadEvent,
   LeadField,
@@ -286,6 +287,30 @@ export async function listSignals(): Promise<DiscoveredSignal[]> {
 export async function listAuditLogs(): Promise<AuditLog[]> {
   const db = await getDb();
   return db.auditLogs.slice().sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+}
+
+export async function listIntakeDrafts(): Promise<IntakeDraft[]> {
+  const db = await getDb();
+  return Array.from(db.intakeDrafts.values()).sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+}
+
+export const DRAFT_RETENTION_DAYS = 30;
+
+/** Called from the cron route (never client-triggerable) — pre-consent PII
+ *  sitting in db.intakeDrafts doesn't get to live forever just because
+ *  nobody remembered to clean it up. Returns how many were purged. */
+export async function purgeStaleIntakeDrafts(): Promise<number> {
+  const db = await getDb();
+  const cutoff = Date.now() - DRAFT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  let purged = 0;
+  for (const [id, draft] of db.intakeDrafts) {
+    if (new Date(draft.updatedAt).getTime() < cutoff) {
+      db.intakeDrafts.delete(id);
+      purged++;
+    }
+  }
+  if (purged > 0) saveDb();
+  return purged;
 }
 
 export async function getKillSwitch() {

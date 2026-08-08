@@ -24,9 +24,9 @@ export function MktFooter() {
       <div className="mx-auto max-w-6xl px-6 py-12">
         <div className="flex flex-col gap-8 sm:flex-row sm:justify-between">
           <div className="max-w-sm">
-            <p className="text-[14px] font-semibold text-[var(--mkt-ink)]">MortgageLeadHub</p>
+            <p className="text-[14px] font-semibold text-[var(--mkt-ink)]">Equity Flow Group</p>
             <p className="mt-2 text-[12.5px] leading-relaxed text-[var(--mkt-muted)]">
-              MortgageLeadHub Lending, NMLS #{NMLS_ID}. Equal Housing Lender. Licensed in {LICENSED_STATES_LABEL}.
+              Equity Flow Group Lending, NMLS #{NMLS_ID}. Equal Housing Lender. Licensed in {LICENSED_STATES_LABEL}.
             </p>
           </div>
           <div className="flex gap-10">
@@ -36,9 +36,12 @@ export function MktFooter() {
                 <Link href="/apply" className="text-[13px] text-[var(--mkt-body)] hover:text-[var(--mkt-ink)]">
                   Check my options
                 </Link>
-                <a href="#faq" className="text-[13px] text-[var(--mkt-body)] hover:text-[var(--mkt-ink)]">
+                <Link href="/tools" className="text-[13px] text-[var(--mkt-body)] hover:text-[var(--mkt-ink)]">
+                  Free calculators
+                </Link>
+                <Link href="/#faq" className="text-[13px] text-[var(--mkt-body)] hover:text-[var(--mkt-ink)]">
                   FAQ
-                </a>
+                </Link>
                 <Link href="/status" className="text-[13px] text-[var(--mkt-body)] hover:text-[var(--mkt-ink)]">
                   Check my inquiry status
                 </Link>

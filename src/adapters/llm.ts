@@ -212,6 +212,117 @@ function simulateExtraction(transcript: ConversationTurn[]): ExtractedField[] {
 }
 
 // ---------------------------------------------------------------------------
+// Intake identity validation — SPEC.md task-list "AI Validation" item. Runs
+// synchronously on the public, unauthenticated submit path, so it must be
+// fast and must never block or reject a submission: it only normalizes
+// name casing and flags placeholder-looking data for an officer to verify.
+// Same simulate-by-default shape as the rest of this file — a deterministic
+// heuristic always runs; a real model call only refines it further.
+// ---------------------------------------------------------------------------
+
+export interface IdentityValidationInput {
+  firstName: string;
+  lastName: string;
+  email: string;
+}
+
+export interface IdentityValidationResult {
+  firstName: string;
+  lastName: string;
+  flags: string[];
+  simulated: boolean;
+}
+
+const PLACEHOLDER_NAME_RE = /^(test|asdf|qwerty|xxx+|none|n\/a|na|unknown|foo|bar|abc|sample|example|first ?name|last ?name)$/i;
+const DISPOSABLE_EMAIL_DOMAINS = ["mailinator.com", "guerrillamail.com", "10minutemail.com", "tempmail.com", "trashmail.com"];
+
+function toTitleCase(name: string): string {
+  return name
+    .trim()
+    .replace(/\s+/g, " ")
+    .split(/(-|'|\s)/)
+    .map((part) => (/^[a-z]/i.test(part) ? part.charAt(0).toUpperCase() + part.slice(1).toLowerCase() : part))
+    .join("");
+}
+
+function heuristicFlags(firstName: string, lastName: string, email: string): string[] {
+  const flags: string[] = [];
+  for (const [label, value] of [
+    ["first name", firstName],
+    ["last name", lastName],
+  ] as const) {
+    const trimmed = value.trim();
+    if (PLACEHOLDER_NAME_RE.test(trimmed)) flags.push(`${label} looks like placeholder text`);
+    else if (/^(.)\1*$/.test(trimmed)) flags.push(`${label} is a repeated character`);
+    else if (/\d/.test(trimmed)) flags.push(`${label} contains digits`);
+    else if (trimmed.length < 2) flags.push(`${label} is unusually short`);
+  }
+  const domain = email.split("@")[1]?.toLowerCase();
+  if (domain && DISPOSABLE_EMAIL_DOMAINS.includes(domain)) flags.push("email uses a disposable/temporary domain");
+  return flags;
+}
+
+export async function validateIntakeIdentity(input: IdentityValidationInput): Promise<IdentityValidationResult> {
+  const heuristic: IdentityValidationResult = {
+    firstName: toTitleCase(input.firstName),
+    lastName: toTitleCase(input.lastName),
+    flags: heuristicFlags(input.firstName, input.lastName, input.email),
+    simulated: true,
+  };
+
+  if (!capabilities.hasAnthropic && !capabilities.hasNvidia) return heuristic;
+
+  const system =
+    "You review a mortgage intake form's name fields for data quality. Normalize each name to standard title " +
+    "case (preserve legitimate multi-part names, hyphens, and apostrophes). Flag ONLY if a name is clearly " +
+    "placeholder/test data, gibberish, or obviously not a real human name — never flag a name just because it's " +
+    "unusual or non-English. Keep flags short (a few words each). If nothing is wrong, return an empty flags array.";
+  const user = `firstName: "${input.firstName}"\nlastName: "${input.lastName}"`;
+
+  try {
+    if (capabilities.hasAnthropic) {
+      const { default: Anthropic } = await import("@anthropic-ai/sdk");
+      const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY! });
+      const message = await client.messages.create({
+        model: MODEL,
+        max_tokens: 200,
+        system,
+        tools: [
+          {
+            name: "record_validation",
+            description: "Record the normalized names and any data quality flags.",
+            input_schema: {
+              type: "object",
+              properties: {
+                firstName: { type: "string" },
+                lastName: { type: "string" },
+                flags: { type: "array", items: { type: "string" } },
+              },
+              required: ["firstName", "lastName", "flags"],
+            },
+          },
+        ],
+        tool_choice: { type: "tool", name: "record_validation" },
+        messages: [{ role: "user", content: user }],
+      });
+      const toolUse = message.content.find((b) => b.type === "tool_use");
+      if (!toolUse || toolUse.type !== "tool_use") throw new Error("Model did not return the expected tool call");
+      const result = toolUse.input as { firstName: string; lastName: string; flags: string[] };
+      return { firstName: result.firstName || heuristic.firstName, lastName: result.lastName || heuristic.lastName, flags: result.flags, simulated: false };
+    }
+    const result = await callNvidiaJSON<{ firstName: string; lastName: string; flags: string[] }>(
+      system,
+      `${user}\nReply as JSON shaped exactly like {"firstName": "...", "lastName": "...", "flags": ["..."]}.`,
+      200
+    );
+    return { firstName: result.firstName || heuristic.firstName, lastName: result.lastName || heuristic.lastName, flags: result.flags ?? [], simulated: false };
+  } catch (err) {
+    console.error("[AI identity validation] falling back to heuristic:", err);
+    return heuristic;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AI-generated outreach content — "AI dialer" script + AI email agent.
 // Same compliance prohibitions as the conversational agent (SPEC.md F-05):
 // never quote a rate/payment/approval odds, never claim approval, never give
@@ -329,7 +440,7 @@ function simulateOutreachContent(input: OutreachContentInput): OutreachContentRe
   }
   return {
     body:
-      `Hi, this is ${input.officerFirstName} from MortgageLeadHub following up on your ${intentLabel} inquiry. ` +
+      `Hi, this is ${input.officerFirstName} from Equity Flow Group following up on your ${intentLabel} inquiry. ` +
       `Do you have a couple of minutes to talk through your options?`,
     simulated: true,
   };

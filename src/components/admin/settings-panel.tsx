@@ -97,7 +97,7 @@ export function SettingsPanel({ config, canEdit }: { config: SystemConfig; canEd
         <CardContent className="grid gap-5 sm:grid-cols-2">
           <div>
             <Label>Sender name</Label>
-            <Input value={form.senderName} disabled={!canEdit} onChange={(e) => update("senderName", e.target.value)} placeholder="MortgageLeadHub Team" />
+            <Input value={form.senderName} disabled={!canEdit} onChange={(e) => update("senderName", e.target.value)} placeholder="Equity Flow Group Team" />
             <p className="mt-1 text-xs text-[var(--muted-foreground)]">Shown as the From display name.</p>
           </div>
           <div>

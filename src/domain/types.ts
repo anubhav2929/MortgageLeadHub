@@ -74,7 +74,8 @@ export type TaskType =
   | "NO_ELIGIBLE_OFFICER"
   | "PRIORITY_CALLBACK_REQUESTED"
   | "HOT_LEAD_ALERT"
-  | "BORROWER_MESSAGE";
+  | "BORROWER_MESSAGE"
+  | "INBOUND_EMAIL";
 
 export type TaskStatus = "OPEN" | "COMPLETED" | "CANCELLED";
 
@@ -122,6 +123,10 @@ export interface Person {
   email: string;
   preferredContactWindow: ContactWindow;
   timezone: string | "UNKNOWN";
+  /** Set only when non-empty — AI/heuristic identity check flagged the
+   *  submitted name as placeholder-like or malformed. Officer should verify
+   *  before treating this as a real contact. See adapters/llm.ts validateIdentity. */
+  dataQualityFlags?: string[];
 }
 
 export interface ConsentRecord {
@@ -531,4 +536,28 @@ export interface DiscoveredSignal {
   reviewNote?: string;
   reviewedAt?: string;
   promotedLeadId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Intake drafts — a visitor who started the form and dropped off before
+// consenting. Deliberately NOT a Lead for the same reason DiscoveredSignal
+// isn't: no consent exists yet, so it must never enter the automated
+// PolicyGate/cadence pipeline (that pipeline only ever reads db.leads). A
+// human decides whether and how to follow up, same as a discovered signal.
+// Purged automatically after DRAFT_RETENTION_DAYS (see the cron route) —
+// this is PII sitting outside the consent-gated flow, so it doesn't get to
+// live forever just because nobody remembered to clean it up.
+// ---------------------------------------------------------------------------
+export interface IntakeDraft {
+  id: string;
+  /** Client-generated, stored in the borrower's localStorage — lets repeat
+   *  autosaves update the same row instead of creating a new one per keystroke. */
+  clientDraftId: string;
+  /** Whatever subset of the intake form was filled in when this was last
+   *  saved — no schema validation, since a draft is allowed to be incomplete
+   *  by definition. */
+  formSnapshot: Record<string, unknown>;
+  furthestStep: number;
+  createdAt: string;
+  updatedAt: string;
 }

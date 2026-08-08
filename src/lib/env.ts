@@ -26,6 +26,7 @@ const envSchema = z.object({
   NVIDIA_MODEL: z.string().optional(),
   RESEND_API_KEY: z.string().optional(),
   RESEND_FROM_EMAIL: z.string().optional(),
+  RESEND_INBOUND_WEBHOOK_SECRET: z.string().optional(),
   VAPI_API_KEY: z.string().optional(),
   VAPI_PHONE_NUMBER_ID: z.string().optional(),
   VAPI_WEBHOOK_SECRET: z.string().optional(),
@@ -50,6 +51,7 @@ const parsed = envSchema.safeParse({
   NVIDIA_MODEL: process.env.NVIDIA_MODEL,
   RESEND_API_KEY: process.env.RESEND_API_KEY,
   RESEND_FROM_EMAIL: process.env.RESEND_FROM_EMAIL,
+  RESEND_INBOUND_WEBHOOK_SECRET: process.env.RESEND_INBOUND_WEBHOOK_SECRET,
   VAPI_API_KEY: process.env.VAPI_API_KEY,
   VAPI_PHONE_NUMBER_ID: process.env.VAPI_PHONE_NUMBER_ID,
   VAPI_WEBHOOK_SECRET: process.env.VAPI_WEBHOOK_SECRET,
@@ -85,6 +87,9 @@ export const capabilities = {
   hasAnthropic: Boolean(env.ANTHROPIC_API_KEY),
   hasNvidia: Boolean(env.NVIDIA_API_KEY),
   hasResend: Boolean(env.RESEND_API_KEY),
+  // Requires the webhook secret too, same fail-closed pattern as
+  // hasLiveVoiceAgent — the inbound route rejects everything without it.
+  hasInboundEmail: Boolean(env.RESEND_API_KEY && env.RESEND_INBOUND_WEBHOOK_SECRET),
   hasVoiceAgent: Boolean(env.VAPI_API_KEY || env.RETELL_API_KEY),
   // The full, genuinely-callable Vapi setup — see adapters/voiceAgent.ts.
   hasLiveVoiceAgent: Boolean(env.VAPI_API_KEY && env.VAPI_PHONE_NUMBER_ID && env.VAPI_WEBHOOK_SECRET),
@@ -102,10 +107,11 @@ export function announceCapabilitiesOnce() {
     `Extraction (Anthropic): ${capabilities.hasAnthropic ? "LIVE" : "simulated — set ANTHROPIC_API_KEY"}`,
     `AI messaging (outreach drafts & signal replies): ${capabilities.hasAnthropic ? "LIVE (Anthropic)" : capabilities.hasNvidia ? "LIVE (NVIDIA NIM, free tier)" : "simulated — set ANTHROPIC_API_KEY or NVIDIA_API_KEY"}`,
     `Email (Resend): ${capabilities.hasResend ? "LIVE" : "simulated — set RESEND_API_KEY"}`,
+    `Inbound email (Resend receiving): ${capabilities.hasInboundEmail ? "LIVE — webhook wired at /api/webhooks/resend-inbound" : "not configured — set RESEND_INBOUND_WEBHOOK_SECRET and add the webhook in the Resend dashboard (see DEPLOY.md)"}`,
     `Voice AI agent (Vapi): ${capabilities.hasLiveVoiceAgent ? "LIVE — outbound calls + webhook wired" : capabilities.hasVoiceAgent ? "API key present but VAPI_PHONE_NUMBER_ID/VAPI_WEBHOOK_SECRET missing — see adapters/voiceAgent.ts" : "not configured — set VAPI_API_KEY, VAPI_PHONE_NUMBER_ID, VAPI_WEBHOOK_SECRET"}`,
     `Lead discovery (Reddit): ${capabilities.hasLeadDiscovery ? "LIVE" : "simulated — set REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET"}`,
     `Property valuation/AVM (RentCast): ${capabilities.hasPropertyData ? "LIVE for leads with a street address, simulated otherwise" : "simulated — set PROPERTY_DATA_API_KEY (free tier at rentcast.io)"}`,
     `Automated cadence engine: endpoint ready at /api/cron/cadence (${env.CRON_SECRET ? "protected by CRON_SECRET" : "UNPROTECTED — set CRON_SECRET before scheduling it"}) — needs a scheduler (Vercel Cron or an external pinger) actually hitting it; see vercel.json.`,
   ];
-  console.log(`\n[MortgageLeadHub] Provider status:\n  ${lines.join("\n  ")}\n`);
+  console.log(`\n[Equity Flow Group] Provider status:\n  ${lines.join("\n  ")}\n`);
 }

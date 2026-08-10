@@ -24,6 +24,7 @@ import { countsAgainstAttemptCap, decideRetry, describeFailure, shouldSuppressCh
 import { computeOfficerLoadToday } from "@/domain/queries";
 import { buildGateInput, evaluateForLead } from "@/domain/gateHelpers";
 import { getCurrentUser } from "@/domain/session";
+import { audit } from "@/domain/audit";
 import { getDb, newId, nowIso, saveDb, withLeadLock, type Database } from "@/domain/store";
 import { getAppUrl } from "@/lib/runtimeConfig";
 import { formatDateTime } from "@/lib/utils";
@@ -60,30 +61,6 @@ export async function pushEvent(partial: Omit<LeadEvent, "id" | "correlationId" 
     correlationId: newId("corr"),
     recordedAt: nowIso(),
     ...partial,
-  });
-}
-
-export async function audit(
-  actorId: string,
-  actorName: string,
-  action: string,
-  resourceType: string,
-  resourceId: string,
-  result: "ALLOW" | "DENY",
-  metadata?: Record<string, unknown>
-) {
-  const db = await getDb();
-  db.auditLogs.push({
-    id: newId("audit"),
-    actorId,
-    actorName,
-    action,
-    resourceType,
-    resourceId,
-    ipAddress: "127.0.0.1",
-    result,
-    at: nowIso(),
-    metadata,
   });
 }
 

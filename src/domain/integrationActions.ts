@@ -14,7 +14,7 @@
 import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/domain/session";
 import { getDb, nowIso, saveDb } from "@/domain/store";
-import { audit } from "@/domain/actions";
+import { audit } from "@/domain/audit";
 import { decryptSecret, encryptSecret, isSecretStorageEnabled, maskSecret } from "@/core/secretBox";
 import { ALL_INTEGRATION_KEYS, INTEGRATIONS, isSecretKey } from "@/core/integrationRegistry";
 import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";

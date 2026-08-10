@@ -8,7 +8,7 @@
 import { redirect } from "next/navigation";
 import { sendEmail } from "@/adapters/email";
 import { hashPassword, verifyPassword, generateToken } from "@/core/auth";
-import { audit } from "@/domain/actions";
+import { audit } from "@/domain/audit";
 import { createSession, destroySession } from "@/domain/session";
 import { getDb, newId, saveDb } from "@/domain/store";
 import { getAppUrl } from "@/lib/runtimeConfig";

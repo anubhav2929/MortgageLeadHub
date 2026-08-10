@@ -1,4 +1,5 @@
 // Resolves provider configuration at call time, not at module load.
+// Deployment trigger: keep this runtime resolution server-side on Vercel.
 //
 // This exists because of a specific bug class. `lib/env.ts` computes its
 // `capabilities` object once, when the module is first imported, from

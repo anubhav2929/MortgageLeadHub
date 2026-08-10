@@ -15,6 +15,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import { Pool } from "pg";
 import { capabilities, env } from "@/lib/env";
 import type { Database } from "@/domain/store";
@@ -65,7 +66,7 @@ function fromSerializable(parsed: Record<string, unknown>): Database {
 // use the standard Node Postgres client. Picking the driver from the hostname keeps the single
 // DATABASE_URL contract while supporting both hosted databases safely.
 
-let sqlClient: import("@neondatabase/serverless").NeonQueryFunction<false, false> | null = null;
+let sqlClient: NeonQueryFunction<false, false> | null = null;
 let postgresPool: Pool | null = null;
 let schemaReady: Promise<void> | null = null;
 
@@ -73,9 +74,8 @@ function usesNeonDriver() {
   return new URL(env.DATABASE_URL!).hostname.endsWith(".neon.tech");
 }
 
-async function getNeonSql() {
+function getNeonSql() {
   if (!sqlClient) {
-    const { neon } = await import("@neondatabase/serverless");
     sqlClient = neon(env.DATABASE_URL!);
   }
   return sqlClient;
@@ -109,8 +109,8 @@ function getPostgresPool() {
 async function ensureSchema() {
   if (!schemaReady) {
     schemaReady = (usesNeonDriver()
-      ? getNeonSql().then(
-          (sql) => sql`
+      ? Promise.resolve(
+          getNeonSql()`
             CREATE TABLE IF NOT EXISTS mlh_store (
               key TEXT PRIMARY KEY,
               value JSONB NOT NULL,
@@ -146,7 +146,7 @@ async function ensureSchema() {
 async function loadFromPostgres(): Promise<Database | null> {
   await ensureSchema();
   const rows = usesNeonDriver()
-    ? await (await getNeonSql())`SELECT value FROM mlh_store WHERE key = 'main' LIMIT 1`
+    ? await getNeonSql()`SELECT value FROM mlh_store WHERE key = 'main' LIMIT 1`
     : (await getPostgresPool().query<{ value: Record<string, unknown> }>("SELECT value FROM mlh_store WHERE key = 'main' LIMIT 1")).rows;
   if (rows.length === 0) return null;
   return fromSerializable(rows[0].value as Record<string, unknown>);
@@ -156,7 +156,7 @@ async function saveToPostgres(db: Database) {
   await ensureSchema();
   const value = toSerializable(db);
   if (usesNeonDriver()) {
-    await (await getNeonSql())`
+    await getNeonSql()`
       INSERT INTO mlh_store (key, value, updated_at)
       VALUES ('main', ${JSON.stringify(value)}::jsonb, now())
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()

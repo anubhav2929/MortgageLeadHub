@@ -3,7 +3,7 @@
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { Tabs } from "@/components/ui/tabs";
 
-const VALID_TABS = ["overview", "timeline", "package", "conversation", "consent", "tasks", "notes"];
+const VALID_TABS = ["overview", "timeline", "package", "calls", "conversation", "consent", "tasks", "notes"];
 
 /** URL-backed so a tab selection survives refresh/back-forward and can be
  *  linked directly (e.g. from a notification pointing straight at Tasks). */

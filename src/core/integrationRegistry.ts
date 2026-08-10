@@ -211,6 +211,14 @@ export const INTEGRATIONS: IntegrationDef[] = [
         optional: true,
         help: "Authenticates carrier delivery callbacks. Until it is set, texts and calls stay 'sent' and a carrier rejection is never seen.",
       },
+      {
+        key: "INBOUND_PHONE_NUMBER",
+        label: "Inbound phone number",
+        secret: false,
+        optional: true,
+        placeholder: "+12132892042",
+        help: "The number borrowers call in on. Shown to officers on each lead so they know which line to expect a callback from.",
+      },
     ],
     setupSteps: [
       "APP_URL only needs setting if you're not on Vercel, or you're using a custom domain that differs from the deployment URL.",

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { ArrowLeft, Phone, MessageSquare, Mail, ThumbsUp, ThumbsDown, ShieldQuestion, UserCog } from "lucide-react";
+import { ArrowLeft, Phone, MessageSquare, Mail, ThumbsUp, ThumbsDown, ShieldQuestion, UserCog, Pencil } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
@@ -11,6 +11,8 @@ import { Textarea } from "@/components/ui/input";
 import { ActionButton } from "@/components/workspace/action-button";
 import { LogCallButton } from "@/components/workspace/log-call-button";
 import { DialerModal } from "@/components/workspace/dialer-modal";
+import { LeadEditModal } from "@/components/workspace/lead-edit-modal";
+import type { EditableLeadFields } from "@/domain/actions";
 import { EmailComposeModal } from "@/components/workspace/email-compose-modal";
 import { SmsComposeModal } from "@/components/workspace/sms-compose-modal";
 import { useToast } from "@/components/ui/toast";
@@ -31,6 +33,9 @@ export function LeadDetailHeader({
   canMarkWonLost,
   canAcknowledge,
   assignedOfficerName,
+  canEdit,
+  canDelete,
+  editable,
 }: {
   lead: Lead;
   fullName: string;
@@ -39,11 +44,15 @@ export function LeadDetailHeader({
   canMarkWonLost: boolean;
   canAcknowledge: boolean;
   assignedOfficerName?: string;
+  canEdit: boolean;
+  canDelete: boolean;
+  editable: EditableLeadFields;
 }) {
   const [closeModal, setCloseModal] = useState<"WON" | "LOST" | null>(null);
   const [reviewModal, setReviewModal] = useState(false);
   const [takeOverModal, setTakeOverModal] = useState(false);
   const [dialerOpen, setDialerOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
   const [smsOpen, setSmsOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -142,6 +151,11 @@ export function LeadDetailHeader({
               </Button>
             </>
           )}
+          {canEdit && (
+            <Button variant="secondary" size="sm" onClick={() => setEditOpen(true)}>
+              <Pencil className="h-3.5 w-3.5" /> Edit
+            </Button>
+          )}
           {canCallNow && <LogCallButton publicRef={lead.publicRef} />}
           <Button variant="ghost" size="sm" onClick={() => setReviewModal(true)}>
             <ShieldQuestion className="h-3.5 w-3.5" /> Request compliance review
@@ -231,6 +245,13 @@ export function LeadDetailHeader({
         }
       />
 
+      <LeadEditModal
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        publicRef={lead.publicRef}
+        initial={editable}
+        canDelete={canDelete}
+      />
       {dialerOpen && <DialerModal publicRef={lead.publicRef} fullName={fullName} onClose={() => setDialerOpen(false)} />}
       {emailOpen && <EmailComposeModal publicRef={lead.publicRef} onClose={() => setEmailOpen(false)} />}
       {smsOpen && <SmsComposeModal publicRef={lead.publicRef} onClose={() => setSmsOpen(false)} />}

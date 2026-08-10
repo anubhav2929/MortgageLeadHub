@@ -28,8 +28,14 @@ import { audit } from "@/domain/audit";
 import { getDb, newId, nowIso, saveDb, withLeadLock, type Database } from "@/domain/store";
 import { getAppUrl } from "@/lib/runtimeConfig";
 import { formatDateTime } from "@/lib/utils";
+import { STATE_NAMES } from "@/domain/stateTimezone";
 import type {
   AttemptOutcome,
+  ContactWindow,
+  CreditRange,
+  GoalType,
+  Occupancy,
+  Timeline,
   CadenceStep,
   Channel,
   ConsentRecord,
@@ -2616,4 +2622,169 @@ export async function referLeadToPartnerAction(publicRef: string, partnerId: str
   saveDb();
   revalidateLead(publicRef);
   return { ok: true, message: `Referred to ${partner.name}.` };
+}
+
+// ---------------------------------------------------------------------------
+// Manual lead editing and deletion.
+//
+// Two things a CRM has to allow that automation can't do for you: correcting
+// data the borrower mistyped, and removing a record that shouldn't exist
+// (duplicate, test row, wrong person). Both are audited, because both change
+// what the compliance record says happened.
+// ---------------------------------------------------------------------------
+
+export interface EditableLeadFields {
+  firstName: string;
+  lastName: string;
+  phoneE164: string;
+  email: string;
+  city: string;
+  stateCode: string;
+  addressLine1?: string;
+  intent: LoanIntent;
+  goal: GoalType;
+  timeline: Timeline;
+  creditRange: CreditRange;
+  occupancy: Occupancy;
+  estimatedValue?: number;
+  currentBalance?: number;
+  preferredContactWindow: ContactWindow;
+}
+
+export async function updateLeadDetailsAction(
+  publicRef: string,
+  input: EditableLeadFields
+): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  const lead = await requireLead(publicRef);
+  if (!can({ role: user.role, officerId: user.officerId }, "EDIT_FIELDS", lead)) {
+    return { ok: false, message: "You don't have permission to edit this lead." };
+  }
+
+  // The phone number is the one field with a hard format requirement — every
+  // downstream carrier call depends on it being E.164.
+  const normalizedPhone = normalizePhone(input.phoneE164);
+  if (!normalizedPhone) return { ok: false, message: "Enter a valid US phone number." };
+  if (!input.email.includes("@")) return { ok: false, message: "Enter a valid email address." };
+  if (!input.firstName.trim() || !input.lastName.trim()) {
+    return { ok: false, message: "First and last name are required." };
+  }
+  if (!STATE_NAMES[input.stateCode]) return { ok: false, message: "Select a state we're licensed in." };
+
+  const db = await getDb();
+  const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
+
+  // Record what actually changed, so the audit entry is reviewable rather
+  // than just "someone edited this lead at 3pm".
+  const changes: string[] = [];
+  const track = (field: string, before: unknown, after: unknown) => {
+    if (before !== after) changes.push(field);
+  };
+
+  if (person) {
+    track("firstName", person.firstName, input.firstName.trim());
+    track("lastName", person.lastName, input.lastName.trim());
+    track("phone", person.phoneE164, normalizedPhone);
+    track("email", person.email, input.email.trim());
+    track("preferredContactWindow", person.preferredContactWindow, input.preferredContactWindow);
+
+    person.firstName = input.firstName.trim();
+    person.lastName = input.lastName.trim();
+    person.phoneE164 = normalizedPhone;
+    person.email = input.email.trim();
+    person.preferredContactWindow = input.preferredContactWindow;
+
+    // A corrected phone/email clears the undeliverable flag — the whole point
+    // of the correction is that the old value was the problem.
+    if (changes.includes("phone")) {
+      person.dataQualityFlags = (person.dataQualityFlags ?? []).filter((f) => f !== "PHONE_UNDELIVERABLE");
+    }
+    if (changes.includes("email")) {
+      person.dataQualityFlags = (person.dataQualityFlags ?? []).filter((f) => f !== "EMAIL_UNDELIVERABLE");
+    }
+    if (input.stateCode !== lead.stateCode) person.timezone = STATE_TIMEZONE[input.stateCode] ?? "UNKNOWN";
+  }
+
+  track("city", lead.city, input.city.trim());
+  track("stateCode", lead.stateCode, input.stateCode);
+  track("intent", lead.intent, input.intent);
+  track("goal", lead.goal, input.goal);
+  track("timeline", lead.timeline, input.timeline);
+  track("creditRange", lead.creditRange, input.creditRange);
+  track("occupancy", lead.occupancy, input.occupancy);
+  track("estimatedValue", lead.estimatedValue, input.estimatedValue);
+  track("currentBalance", lead.currentBalance, input.currentBalance);
+
+  lead.city = input.city.trim();
+  lead.stateCode = input.stateCode;
+  lead.addressLine1 = input.addressLine1?.trim() || undefined;
+  lead.intent = input.intent;
+  lead.goal = input.goal;
+  lead.timeline = input.timeline;
+  lead.creditRange = input.creditRange;
+  lead.occupancy = input.occupancy;
+  lead.estimatedValue = input.estimatedValue;
+  lead.currentBalance = input.currentBalance;
+  lead.updatedAt = nowIso();
+
+  if (changes.length === 0) return { ok: true, message: "No changes to save." };
+
+  await pushEvent({
+    leadId: lead.id,
+    type: "FIELD_CORRECTED",
+    actorType: "OFFICER",
+    actorId: user.id,
+    actorName: user.name,
+    occurredAt: nowIso(),
+    payload: { manual: true, fields: changes },
+  });
+  await audit(user.id, user.name, "EDIT_LEAD", "Lead", lead.id, "ALLOW", { fields: changes });
+  saveDb();
+  revalidateLead(publicRef);
+  revalidatePath("/workspace/leads");
+  return { ok: true, message: `Saved — updated ${changes.length} field${changes.length === 1 ? "" : "s"}.` };
+}
+
+/**
+ * Permanently remove a lead and everything hanging off it.
+ *
+ * Admin-only, and deliberately not offered to officers: deleting a lead
+ * destroys the consent and contact record that proves what we were allowed to
+ * do and what we actually did. That evidence is exactly what a regulator asks
+ * for, so removing it is an administrator's decision.
+ *
+ * The audit entry survives the deletion — it records the publicRef and who
+ * removed it, so the deletion itself remains accountable.
+ */
+export async function deleteLeadAction(publicRef: string): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  if (user.role !== "ADMIN") {
+    return { ok: false, message: "Only an admin can delete a lead." };
+  }
+  const lead = await requireLead(publicRef);
+  const db = await getDb();
+
+  const personIds = Array.from(db.people.values()).filter((p) => p.leadId === lead.id).map((p) => p.id);
+  for (const id of personIds) db.people.delete(id);
+  for (const [id, c] of db.conversations) if (c.leadId === lead.id) db.conversations.delete(id);
+  for (const [id, t] of db.tasks) if (t.leadId === lead.id) db.tasks.delete(id);
+  for (const [id, f] of db.leadFields) if (f.leadId === lead.id) db.leadFields.delete(id);
+
+  db.attempts = db.attempts.filter((a) => a.leadId !== lead.id);
+  db.notes = db.notes.filter((n) => n.leadId !== lead.id);
+  db.events = db.events.filter((e) => e.leadId !== lead.id);
+  db.policyDecisions = db.policyDecisions.filter((d) => d.leadId !== lead.id);
+  db.consents = db.consents.filter((c) => c.leadId !== lead.id);
+
+  db.leads.delete(lead.id);
+
+  await audit(user.id, user.name, "DELETE_LEAD", "Lead", lead.id, "ALLOW", {
+    publicRef: lead.publicRef,
+    state: lead.state,
+    attemptsRemoved: personIds.length,
+  });
+  saveDb();
+  revalidatePath("/workspace/leads");
+  revalidatePath("/workspace");
+  return { ok: true, message: `Lead ${lead.publicRef} deleted.` };
 }

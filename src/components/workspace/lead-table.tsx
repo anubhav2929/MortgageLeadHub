@@ -4,13 +4,13 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState, useTransition } from "react";
 import { motion } from "framer-motion";
-import { AlertCircle, ArrowDown, ArrowUp, Flame, X } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, Flame, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Select } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
-import { assignOfficerAction } from "@/domain/actions";
+import { assignOfficerAction, deleteLeadAction } from "@/domain/actions";
 import { STATE_LABELS, STATE_TONE } from "@/core/stateMachine";
 import { formatRelative } from "@/lib/utils";
 import type { LeadListItem } from "@/domain/queries";
@@ -58,10 +58,37 @@ function SlaCell({ lead }: { lead: LeadListItem }) {
   );
 }
 
-function BulkActionBar({ selectedIds, officers, onDone }: { selectedIds: string[]; officers: Officer[]; onDone: () => void }) {
+function BulkActionBar({
+  selectedIds,
+  officers,
+  canDelete,
+  onDone,
+}: {
+  selectedIds: string[];
+  officers: Officer[];
+  canDelete: boolean;
+  onDone: () => void;
+}) {
   const [officerId, setOfficerId] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [isPending, startTransition] = useTransition();
   const { push } = useToast();
+
+  function removeSelected() {
+    startTransition(async () => {
+      const results = await Promise.all(selectedIds.map((publicRef) => deleteLeadAction(publicRef)));
+      const failed = results.filter((r) => !r.ok).length;
+      push({
+        title:
+          failed === 0
+            ? `Deleted ${results.length} lead${results.length === 1 ? "" : "s"}.`
+            : `${results.length - failed} deleted, ${failed} failed.`,
+        tone: failed === 0 ? "success" : "danger",
+      });
+      setConfirmDelete(false);
+      onDone();
+    });
+  }
 
   function assign() {
     if (!officerId) return;
@@ -90,6 +117,24 @@ function BulkActionBar({ selectedIds, officers, onDone }: { selectedIds: string[
       <Button size="sm" className="h-8" loading={isPending} disabled={!officerId} onClick={assign}>
         Assign
       </Button>
+      {canDelete &&
+        (confirmDelete ? (
+          <span className="flex items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--danger-tint)] px-2 py-1">
+            <span className="text-[13px] font-medium text-[var(--foreground)]">
+              Delete {selectedIds.length} permanently?
+            </span>
+            <Button variant="danger" size="sm" className="h-7" loading={isPending} onClick={removeSelected}>
+              Yes, delete
+            </Button>
+            <Button variant="ghost" size="sm" className="h-7" onClick={() => setConfirmDelete(false)}>
+              Cancel
+            </Button>
+          </span>
+        ) : (
+          <Button variant="outlineDanger" size="sm" className="h-8" onClick={() => setConfirmDelete(true)}>
+            <Trash2 className="h-3.5 w-3.5" /> Delete
+          </Button>
+        ))}
       <button onClick={onDone} className="focus-ring ml-auto flex items-center gap-1 text-[13px] font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
         <X className="h-3.5 w-3.5" /> Clear
       </button>
@@ -123,7 +168,12 @@ export function LeadTable({ leads, isAdmin, officers }: { leads: LeadListItem[];
   return (
     <div>
       {canBulkAssign && selected.size > 0 && (
-        <BulkActionBar selectedIds={Array.from(selected)} officers={officers} onDone={clearSelection} />
+        <BulkActionBar
+          selectedIds={Array.from(selected)}
+          officers={officers}
+          canDelete={Boolean(isAdmin)}
+          onDone={clearSelection}
+        />
       )}
       <div className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface)]">
         {/* Desktop / tablet: full grid table */}

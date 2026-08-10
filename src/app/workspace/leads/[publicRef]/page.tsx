@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { LayoutGrid, Clock3, FileText, MessageSquare, ShieldCheck, CheckSquare, StickyNote } from "lucide-react";
+import { LayoutGrid, Clock3, FileText, MessageSquare, ShieldCheck, CheckSquare, StickyNote, PhoneCall } from "lucide-react";
 import { TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LeadDetailTabs } from "@/components/workspace/lead-detail-tabs";
 import { LeadDetailHeader } from "@/components/workspace/lead-detail-header";
@@ -10,10 +10,13 @@ import { ConversationTab } from "@/components/workspace/tabs/conversation-tab";
 import { ConsentTab } from "@/components/workspace/tabs/consent-tab";
 import { TasksTab } from "@/components/workspace/tabs/tasks-tab";
 import { NotesTab } from "@/components/workspace/tabs/notes-tab";
+import { CallsTab } from "@/components/workspace/tabs/calls-tab";
 import { can } from "@/core/rbac";
 import { buildLeadThread } from "@/core/conversationThread";
 import { computeLeadCompleteness, getLeadByRef, listOfficers, listReferralPartners } from "@/domain/queries";
 import { getCurrentUser } from "@/domain/session";
+import { currentVoiceStrategy } from "@/domain/voiceOrchestrator";
+import { getConfigValue } from "@/lib/runtimeConfig";
 
 interface PageProps {
   params: Promise<{ publicRef: string }>;
@@ -42,6 +45,15 @@ export default async function LeadDetailPage({ params }: PageProps) {
     conversations: detail.conversations,
     notes: detail.notes,
   });
+  // Voice readiness is resolved per request, so entering a Vapi key in the
+  // admin panel flips this card from "Configuring" to "Ready" on the next
+  // page load — no redeploy, no restart.
+  const voiceStrategy = await currentVoiceStrategy();
+  const inboundNumber = (await getConfigValue("INBOUND_PHONE_NUMBER")) ?? null;
+  const calls = detail.attempts
+    .filter((a) => a.channel === "VOICE")
+    .sort((a, b) => new Date(b.startedAt ?? b.scheduledFor).getTime() - new Date(a.startedAt ?? a.scheduledFor).getTime());
+
   const canAssignOfficer = user.role === "ADMIN";
   const officers = canAssignOfficer ? (await listOfficers()).filter((o) => o.isActive) : undefined;
 
@@ -55,6 +67,25 @@ export default async function LeadDetailPage({ params }: PageProps) {
         canMarkWonLost={canMarkWonLost}
         canAcknowledge={canAcknowledge}
         assignedOfficerName={detail.officer?.name}
+        canEdit={can(subject, "EDIT_FIELDS", detail.lead)}
+        canDelete={user.role === "ADMIN"}
+        editable={{
+          firstName: detail.person?.firstName ?? "",
+          lastName: detail.person?.lastName ?? "",
+          phoneE164: detail.person?.phoneE164 ?? "",
+          email: detail.person?.email ?? "",
+          city: detail.lead.city ?? "",
+          stateCode: detail.lead.stateCode,
+          addressLine1: detail.lead.addressLine1,
+          intent: detail.lead.intent,
+          goal: detail.lead.goal,
+          timeline: detail.lead.timeline,
+          creditRange: detail.lead.creditRange,
+          occupancy: detail.lead.occupancy,
+          estimatedValue: detail.lead.estimatedValue,
+          currentBalance: detail.lead.currentBalance,
+          preferredContactWindow: detail.person?.preferredContactWindow ?? "ANY",
+        }}
       />
 
       <LeadDetailTabs>
@@ -76,6 +107,10 @@ export default async function LeadDetailPage({ params }: PageProps) {
             <span className="flex items-center gap-1.5">
               <FileText className="h-3.5 w-3.5" /> Package
             </span>
+          </TabsTrigger>
+          <TabsTrigger value="calls">
+            <PhoneCall className="mr-1.5 h-3.5 w-3.5" /> Calls
+            {calls.length > 0 && <span className="ml-1.5 text-[var(--muted-foreground)]">{calls.length}</span>}
           </TabsTrigger>
           <TabsTrigger value="conversation">
             <span className="flex items-center gap-1.5">
@@ -123,6 +158,17 @@ export default async function LeadDetailPage({ params }: PageProps) {
           </TabsContent>
           <TabsContent value="package">
             <PackageTab publicRef={publicRef} fields={detail.leadFields} />
+          </TabsContent>
+          <TabsContent value="calls">
+            <CallsTab
+              publicRef={detail.lead.publicRef}
+              borrowerName={fullName}
+              borrowerPhone={detail.person?.phoneE164 ?? ""}
+              inboundNumber={inboundNumber}
+              outboundReady={voiceStrategy.mechanism === "VAPI_AGENT"}
+              outboundNote={`${voiceStrategy.reason}${voiceStrategy.remedy ? ` ${voiceStrategy.remedy}` : ""}`}
+              calls={calls}
+            />
           </TabsContent>
           <TabsContent value="conversation">
             <ConversationTab publicRef={publicRef} conversations={detail.conversations} candidates={detail.fieldCandidates} thread={thread} />

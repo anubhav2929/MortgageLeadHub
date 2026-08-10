@@ -144,15 +144,33 @@ looping forever.
 
 ### Scheduling caveat — read before promising response times
 
-`vercel.json` runs the cadence every 15 minutes. **This requires a Vercel Pro
-plan; the Hobby plan caps cron at once per day.** On Hobby, the default
-cadence's 0-minute and 120-minute steps cannot fire on time, and the advertised
-"first contact within minutes" SLA is not achievable through cron.
+`vercel.json` currently runs the cadence **once daily at 08:00**, because
+**Vercel's Hobby plan rejects any cron that fires more than once per day** —
+a `*/15 * * * *` schedule fails at deploy time with:
 
-Even on Pro, a 0-minute step lands up to 15 minutes late. The instant-response
-path is the borrower-initiated one on the post-submit screen (Call me / Text me
-/ Email me), which fires synchronously. The cadence is the safety net for
-borrowers who close the tab, not the mechanism for the sub-minute promise.
+> Hobby accounts are limited to daily cron jobs.
+
+So on the current plan the default cadence's 0-minute and 120-minute steps
+cannot fire on time, and the "first contact within minutes" SLA is **not**
+achievable through Vercel cron. Do not promise it until one of the options
+below is in place.
+
+**Three ways to get frequent cadence:**
+
+| Option | Cost | Notes |
+| --- | --- | --- |
+| Vercel Pro | $20/mo | Change the schedule back to `*/15 * * * *` and redeploy |
+| External pinger | Free | Point cron-job.org (or similar) at `POST /api/cron/cadence` with header `Authorization: Bearer $CRON_SECRET`, every 15 min. The endpoint is plan-independent — only Vercel's *built-in* scheduler is capped |
+| Leave daily | Free | Fine while the borrower-initiated path is the primary contact route |
+
+The external pinger is the pragmatic choice: the cadence endpoint is just an
+authenticated HTTP route, and nothing about it depends on who calls it.
+
+Even at 15 minutes, a 0-minute step lands up to 15 minutes late. The
+instant-response path is the borrower-initiated one on the post-submit screen
+(Call me / Text me / Email me), which fires synchronously. The cadence is the
+safety net for borrowers who close the tab, not the mechanism for the
+sub-minute promise.
 
 If sub-minute automated first contact is a real requirement, the fix is to fire
 step 0 inline at intake rather than raising cron frequency further.

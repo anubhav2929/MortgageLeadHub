@@ -294,7 +294,8 @@ quotes a number, stop and report it — that's a compliance issue, not a bug.
 | Message stuck on "Sent", never "Delivered" | `DELIVERY_WEBHOOK_SECRET` not set, or the provider's status callback URL isn't pointed at this app |
 | Every email fails | Sending domain not verified in Resend, or From address still on the placeholder domain |
 | Everything defers with QUIET_HOURS_LOCAL | It's night in the borrower's timezone. Use the manual override for testing, then turn it off |
-| Cadence steps never fire | Vercel cron is every 15 min and **requires the Pro plan** — Hobby caps cron at once per day |
+| Deploy fails: "Hobby accounts are limited to daily cron jobs" | `vercel.json` had a sub-daily schedule. It now ships as daily (`0 8 * * *`) so Hobby deploys cleanly |
+| Cadence steps only run once a day | That's the Hobby cron cap. Either upgrade to Pro and set `*/15 * * * *`, or point a free external pinger (cron-job.org) at `POST /api/cron/cadence` with `Authorization: Bearer $CRON_SECRET` |
 | AI call never produces a transcript | Vapi Server URL wrong, or webhook secret mismatch |
 
 ## Known gaps — don't test for these, they aren't built

@@ -14,6 +14,8 @@
 // to ask.
 
 import { deliverOutreach, pushEvent } from "@/domain/actions";
+import { shouldAutomateVoice } from "@/core/callStrategy";
+import { currentVoiceStrategy } from "@/domain/voiceOrchestrator";
 import { transition, InvalidTransitionError } from "@/core/stateMachine";
 import { getDb, nowIso, saveDb, type Database } from "@/domain/store";
 import { evaluateForLead } from "@/domain/gateHelpers";
@@ -92,12 +94,21 @@ export interface CadenceTickSummary {
   delivered: number;
   blocked: number;
   exhausted: number;
+  /** Provider rejected the send this tick. Distinct from `blocked`, which is
+   *  our own PolicyGate declining to send. */
+  failed: number;
+  /** A voice step ran on another channel because no conversational agent is
+   *  configured and an unattended robocall is not an acceptable substitute. */
+  voiceDowngraded: number;
+  /** Cadence is paused on this lead pending human action — a permanently bad
+   *  contact address, or a provider misconfiguration affecting everyone. */
+  heldForFailure: number;
   errors: { leadId: string; error: string }[];
 }
 
 export async function runCadenceTick(): Promise<CadenceTickSummary> {
   const db = await getDb();
-  const summary: CadenceTickSummary = { processed: 0, delivered: 0, blocked: 0, exhausted: 0, errors: [] };
+  const summary: CadenceTickSummary = { processed: 0, delivered: 0, blocked: 0, exhausted: 0, failed: 0, heldForFailure: 0, voiceDowngraded: 0, errors: [] };
 
   const eligibleLeads = Array.from(db.leads.values()).filter((lead) => AUTOMATION_ELIGIBLE_STATES.includes(lead.state));
 
@@ -140,12 +151,59 @@ export async function runCadenceTick(): Promise<CadenceTickSummary> {
       const elapsedMinutes = (Date.now() - new Date(lead.createdAt).getTime()) / 60000;
       if (elapsedMinutes < nextStep.offsetMinutes) continue; // not due yet
 
+      // A send the provider refused doesn't emit OUTREACH_ATTEMPTED, so the
+      // step above is correctly still "next" — the cadence retries it rather
+      // than skipping a borrower who was never actually reached. That retry
+      // has to be bounded, though, or a permanently bad number is redialed
+      // every tick forever.
+      const lastFailure = [...db.attempts]
+        .reverse()
+        .find((a) => a.leadId === lead.id && a.outcome === "FAILED" && a.failureClass);
+
+      if (lastFailure) {
+        if (lastFailure.failureClass !== "TRANSIENT") {
+          // PERMANENT (bad number/address) or CONFIGURATION (our credentials).
+          // Neither is fixed by trying again, and both have already raised a
+          // task for a human. Hold the cadence rather than burning provider
+          // spend on a send that cannot succeed.
+          summary.heldForFailure += 1;
+          continue;
+        }
+        if (lastFailure.retryAfter && new Date(lastFailure.retryAfter).getTime() > Date.now()) {
+          continue; // still inside the backoff window
+        }
+        if (lastFailure.retryAfter === undefined) {
+          // decideRetry gave up after exhausting the transient retry budget.
+          summary.heldForFailure += 1;
+          continue;
+        }
+      }
+
       summary.processed += 1;
-      const routed = await resolveChannel(db, lead, nextStep.channel, nextStep.autoRoute);
+      let routed = await resolveChannel(db, lead, nextStep.channel, nextStep.autoRoute);
+
+      // A cadence VOICE step exists to have a conversation. If no
+      // conversational agent is configured, the only thing we could place is
+      // a one-way recorded announcement — which cannot qualify anyone, costs
+      // real money, and is exactly the repeated-robocall pattern TCPA
+      // complaints are built on. Route to SMS instead and say why.
+      if (routed.channel === "VOICE") {
+        const strategy = await currentVoiceStrategy();
+        if (!shouldAutomateVoice(strategy.mechanism)) {
+          const fallback = await resolveChannel(db, lead, "SMS", true);
+          console.log(
+            `[cadence] lead ${lead.publicRef}: voice step downgraded to ${fallback.channel} — ${strategy.reason}`
+          );
+          summary.voiceDowngraded += 1;
+          routed = fallback.channel === "VOICE" ? { channel: "SMS" } : fallback;
+        }
+      }
+
       if (routed.note) console.log(`[cadence-router] lead ${lead.publicRef}: ${routed.note}`);
       const result = await deliverOutreach(db, lead, routed.channel, "SYSTEM", "automated_cadence_step");
       if (result.blocked) summary.blocked += 1;
       else if (result.ok) summary.delivered += 1;
+      else summary.failed += 1;
     } catch (err) {
       summary.errors.push({ leadId: lead.id, error: err instanceof Error ? err.message : String(err) });
     }

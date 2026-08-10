@@ -1,11 +1,12 @@
 import { AlertTriangle } from "lucide-react";
-import { capabilities } from "@/lib/env";
+import { getCapabilities } from "@/lib/runtimeConfig";
 
 // SPEC.md F-15 — persistent banner required on every surface, but its claim
 // has to track reality: once real Twilio/Resend keys are configured, "no
 // real calls, texts, or emails are sent" is simply false.
-export function DemoBanner() {
-  const anyChannelLive = capabilities.hasTwilio || capabilities.hasResend || capabilities.hasLiveVoiceAgent;
+export async function DemoBanner() {
+  const caps = await getCapabilities();
+  const anyChannelLive = caps.hasSms || caps.hasVoice || caps.hasResend || caps.hasVoiceAgent;
 
   return (
     <div

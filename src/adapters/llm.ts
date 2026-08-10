@@ -6,7 +6,7 @@
 // same downstream promotion pipeline, real (if shallow) evidence — so the
 // whole extraction → promotion → package UI loop is demoable without a key.
 
-import { capabilities, env } from "@/lib/env";
+import { getConfigValue } from "@/lib/runtimeConfig";
 import type { ConversationTurn, GoalType, LoanIntent } from "@/domain/types";
 
 // ---------------------------------------------------------------------------
@@ -18,15 +18,26 @@ import type { ConversationTurn, GoalType, LoanIntent } from "@/domain/types";
 // ---------------------------------------------------------------------------
 const NVIDIA_DEFAULT_MODEL = "meta/llama-3.1-8b-instruct";
 
+// Credentials resolve per call (lib/runtimeConfig) rather than at module
+// load, so a key saved in Admin → Integrations takes effect immediately.
+async function anthropicKey(): Promise<string | undefined> {
+  return getConfigValue("ANTHROPIC_API_KEY");
+}
+async function nvidiaKey(): Promise<string | undefined> {
+  return getConfigValue("NVIDIA_API_KEY");
+}
+
 async function callNvidiaJSON<T>(system: string, user: string, maxTokens = 400): Promise<T> {
+  const key = await nvidiaKey();
+  const model = (await getConfigValue("NVIDIA_MODEL")) || NVIDIA_DEFAULT_MODEL;
   const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${env.NVIDIA_API_KEY}`,
+      Authorization: `Bearer ${key}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: env.NVIDIA_MODEL || NVIDIA_DEFAULT_MODEL,
+      model,
       messages: [
         { role: "system", content: `${system} Respond with ONLY a single valid JSON object — no markdown, no code fences, no commentary.` },
         { role: "user", content: user },
@@ -69,7 +80,7 @@ const FIELD_ENUMS: Record<string, string[] | "boolean"> = {
 const MODEL = "claude-sonnet-5";
 
 export async function extractFieldsFromTranscript(transcript: ConversationTurn[]): Promise<ExtractionResult> {
-  if (!capabilities.hasAnthropic) {
+  if (!(await anthropicKey())) {
     return { fields: simulateExtraction(transcript), simulated: true };
   }
 
@@ -84,7 +95,7 @@ export async function extractFieldsFromTranscript(transcript: ConversationTurn[]
 
 async function extractWithClaude(transcript: ConversationTurn[]): Promise<ExtractedField[]> {
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
-  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY! });
+  const client = new Anthropic({ apiKey: (await anthropicKey())! });
 
   const transcriptText = transcript.map((t) => `[turn ${t.turn}] ${t.role}: ${t.text}`).join("\n");
 
@@ -270,7 +281,7 @@ export async function validateIntakeIdentity(input: IdentityValidationInput): Pr
     simulated: true,
   };
 
-  if (!capabilities.hasAnthropic && !capabilities.hasNvidia) return heuristic;
+  if (!(await anthropicKey()) && !(await nvidiaKey())) return heuristic;
 
   const system =
     "You review a mortgage intake form's name fields for data quality. Normalize each name to standard title " +
@@ -280,9 +291,9 @@ export async function validateIntakeIdentity(input: IdentityValidationInput): Pr
   const user = `firstName: "${input.firstName}"\nlastName: "${input.lastName}"`;
 
   try {
-    if (capabilities.hasAnthropic) {
+    if (await anthropicKey()) {
       const { default: Anthropic } = await import("@anthropic-ai/sdk");
-      const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY! });
+      const client = new Anthropic({ apiKey: (await anthropicKey())! });
       const message = await client.messages.create({
         model: MODEL,
         max_tokens: 200,
@@ -359,14 +370,14 @@ const OUTREACH_SYSTEM_PROMPT =
   "end voice scripts with a question inviting the borrower to continue the conversation; end emails with a clear, low-pressure next step.";
 
 export async function generateOutreachContent(input: OutreachContentInput): Promise<OutreachContentResult> {
-  if (capabilities.hasAnthropic) {
+  if (await anthropicKey()) {
     try {
       return await generateWithClaude(input);
     } catch (err) {
       console.error("[Anthropic outreach content] falling back:", err);
     }
   }
-  if (capabilities.hasNvidia) {
+  if (await nvidiaKey()) {
     try {
       return await generateWithNvidia(input);
     } catch (err) {
@@ -396,7 +407,7 @@ async function generateWithNvidia(input: OutreachContentInput): Promise<Outreach
 
 async function generateWithClaude(input: OutreachContentInput): Promise<OutreachContentResult> {
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
-  const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY! });
+  const client = new Anthropic({ apiKey: (await anthropicKey())! });
 
   const intentLabel = input.intent.replace("_", " ").toLowerCase();
   const goalLabel = input.goal.replace("_", " ").toLowerCase();
@@ -476,10 +487,10 @@ const SIGNAL_REPLY_SYSTEM_PROMPT =
   "sound like a knowledgeable person adding value to the thread, not an ad; one soft, low-pressure mention that the company can help them compare options if they want, with no link or contact info (that goes in a profile, not the reply body); keep it under 80 words.";
 
 export async function generateSignalReply(input: SignalReplyInput): Promise<{ body: string; simulated: boolean }> {
-  if (capabilities.hasAnthropic) {
+  if (await anthropicKey()) {
     try {
       const { default: Anthropic } = await import("@anthropic-ai/sdk");
-      const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY! });
+      const client = new Anthropic({ apiKey: (await anthropicKey())! });
       const message = await client.messages.create({
         model: MODEL,
         max_tokens: 250,
@@ -506,7 +517,7 @@ export async function generateSignalReply(input: SignalReplyInput): Promise<{ bo
       console.error("[Anthropic signal reply] falling back:", err);
     }
   }
-  if (capabilities.hasNvidia) {
+  if (await nvidiaKey()) {
     try {
       const result = await callNvidiaJSON<{ body: string }>(
         SIGNAL_REPLY_SYSTEM_PROMPT,
@@ -546,12 +557,12 @@ export interface IntentClassification {
 const INTENT_VALUES: LoanIntent[] = ["REFINANCE", "HOME_EQUITY", "CASH_OUT", "UNKNOWN"];
 
 export async function classifySignalIntent(text: string): Promise<IntentClassification> {
-  if (!capabilities.hasAnthropic) {
+  if (!(await anthropicKey())) {
     return simulateIntentClassification(text);
   }
   try {
     const { default: Anthropic } = await import("@anthropic-ai/sdk");
-    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY! });
+    const client = new Anthropic({ apiKey: (await anthropicKey())! });
     const message = await client.messages.create({
       model: MODEL,
       max_tokens: 200,
@@ -599,4 +610,109 @@ function simulateIntentClassification(text: string): IntentClassification {
     }
   }
   return { intent: "UNKNOWN", confidence: 0, matchedKeywords: [], simulated: true };
+}
+
+// ---------------------------------------------------------------------------
+// Borrower-facing chat answers (post-submit status page).
+//
+// This is the single highest-risk AI surface in the product: it talks
+// directly to a consumer about a mortgage, unsupervised, in real time. The
+// guardrails are therefore hard rules in the system prompt AND a structural
+// escape hatch — the model must set `needsHuman` for anything it shouldn't
+// answer, and the caller always files an officer task regardless of what
+// comes back. The AI shortens the wait; it never replaces the officer.
+// ---------------------------------------------------------------------------
+
+export interface BorrowerAnswerInput {
+  question: string;
+  firstName: string;
+  intent: LoanIntent;
+  goal: GoalType;
+  stateCode: string;
+  officerFirstName?: string;
+  /** Prior conversation across every channel — core/conversationThread.ts. */
+  priorContext?: string;
+}
+
+export interface BorrowerAnswerResult {
+  reply: string;
+  needsHuman: boolean;
+  simulated: boolean;
+}
+
+const BORROWER_CHAT_SYSTEM_PROMPT =
+  "You answer questions from a borrower who just submitted a mortgage refinance or home-equity inquiry. " +
+  "You work for Equity Flow Group. Be warm, brief (under 70 words), and plain-spoken. " +
+  "HARD RULES, never break these: never quote a rate, payment amount, APR, fee, or approval odds; " +
+  'never say "you qualify", "you\'re approved", "you\'ll likely get", or anything predicting an outcome; ' +
+  "never give legal, tax, or financial advice; never ask for an SSN, date of birth, bank or card number; " +
+  "never claim to be a human — if asked, say you're an assistant and a licensed officer will follow up. " +
+  "Set needsHuman=true whenever the question asks about rates, pricing, eligibility, approval, timelines you " +
+  "cannot know, anything requiring their file, or if they sound upset or ask for a person. " +
+  "When needsHuman is true, still write a brief, kind holding reply that tells them a licensed loan officer " +
+  "will follow up — never attempt the substantive answer anyway.";
+
+export async function answerBorrowerQuestion(input: BorrowerAnswerInput): Promise<BorrowerAnswerResult> {
+  const officer = input.officerFirstName ?? "a licensed loan officer";
+  const userPrompt =
+    `Borrower: ${input.firstName} (${input.intent.replace("_", " ").toLowerCase()}, goal: ${input.goal
+      .replace("_", " ")
+      .toLowerCase()}, property in ${input.stateCode}). Assigned officer: ${officer}.` +
+    (input.priorContext ? `\n\nWhat's already been said across channels:\n${input.priorContext}` : "") +
+    `\n\nTheir question: "${input.question}"`;
+
+  if (await anthropicKey()) {
+    try {
+      const { default: Anthropic } = await import("@anthropic-ai/sdk");
+      const client = new Anthropic({ apiKey: (await anthropicKey())! });
+      const message = await client.messages.create({
+        model: MODEL,
+        max_tokens: 300,
+        system: BORROWER_CHAT_SYSTEM_PROMPT,
+        tools: [
+          {
+            name: "answer_borrower",
+            description: "Reply to the borrower and flag whether a human must take over.",
+            input_schema: {
+              type: "object",
+              properties: {
+                reply: { type: "string" },
+                needsHuman: { type: "boolean" },
+              },
+              required: ["reply", "needsHuman"],
+            },
+          },
+        ],
+        tool_choice: { type: "tool", name: "answer_borrower" },
+        messages: [{ role: "user", content: userPrompt }],
+      });
+      const toolUse = message.content.find((b) => b.type === "tool_use");
+      if (!toolUse || toolUse.type !== "tool_use") throw new Error("Model did not return the expected tool call");
+      const result = toolUse.input as { reply: string; needsHuman: boolean };
+      return { reply: result.reply, needsHuman: result.needsHuman, simulated: false };
+    } catch (err) {
+      console.error("[Anthropic borrower chat] falling back:", err);
+    }
+  }
+
+  if (await nvidiaKey()) {
+    try {
+      const result = await callNvidiaJSON<{ reply: string; needsHuman: boolean }>(
+        BORROWER_CHAT_SYSTEM_PROMPT,
+        `${userPrompt}\n\nReply as JSON shaped exactly like {"reply": "...", "needsHuman": true|false}.`,
+        300
+      );
+      return { reply: result.reply, needsHuman: Boolean(result.needsHuman), simulated: false };
+    } catch (err) {
+      console.error("[NVIDIA borrower chat] falling back:", err);
+    }
+  }
+
+  // No LLM configured: the honest answer is that a human will handle it,
+  // which is exactly what happens. Never fake an AI answer.
+  return {
+    reply: `Thanks ${input.firstName} — I've passed this straight to ${officer}, who'll follow up shortly.`,
+    needsHuman: true,
+    simulated: true,
+  };
 }

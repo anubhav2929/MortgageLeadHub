@@ -136,7 +136,7 @@ export function SignalActions({ signalId, canPromote }: { signalId: string; canP
           <div>
             <Textarea value={replyDraft} onChange={(e) => setReplyDraft(e.target.value)} rows={6} />
             <p className="mt-1.5 text-xs text-[var(--muted-foreground)]">
-              {replySimulated ? "Simulated draft — set ANTHROPIC_API_KEY for a live AI draft." : "Drafted by Claude — review before posting."}
+              {replySimulated ? "Simulated draft — add an Anthropic or NVIDIA key under Admin → Integrations for a live AI draft." : "Drafted by Claude — review before posting."}
             </p>
           </div>
         )}

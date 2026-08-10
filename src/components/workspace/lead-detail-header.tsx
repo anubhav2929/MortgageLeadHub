@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import { ArrowLeft, Phone, MessageSquare, Mail, ThumbsUp, ThumbsDown, ShieldQuestion, UserCog, Bot } from "lucide-react";
+import { ArrowLeft, Phone, MessageSquare, Mail, ThumbsUp, ThumbsDown, ShieldQuestion, UserCog } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
@@ -19,7 +19,6 @@ import {
   acknowledgeAssignmentAction,
   markWonLostAction,
   requestComplianceReviewAction,
-  startVoiceAgentCallAction,
   takeOverLeadAction,
 } from "@/domain/actions";
 import type { Lead } from "@/domain/types";
@@ -118,6 +117,10 @@ export function LeadDetailHeader({
           )}
           {canCallNow && !isTerminal && (
             <div className="flex items-center gap-1 rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] p-0.5">
+              {/* One call button. It places the conversational agent when Vapi
+                  is configured and a labelled announcement only as a fallback —
+                  see core/callStrategy.ts. Two peer buttons (Call / AI call)
+                  made a robocall the default and hid the actual product. */}
               <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setDialerOpen(true)}>
                 <Phone className="h-3.5 w-3.5" /> Call
               </Button>
@@ -127,14 +130,6 @@ export function LeadDetailHeader({
               <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => setEmailOpen(true)}>
                 <Mail className="h-3.5 w-3.5" /> Email
               </Button>
-              <ActionButton
-                action={() => startVoiceAgentCallAction(lead.publicRef)}
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2"
-              >
-                <Bot className="h-3.5 w-3.5" /> AI call
-              </ActionButton>
             </div>
           )}
           {canMarkWonLost && lead.state === "ACKNOWLEDGED" && (

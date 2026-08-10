@@ -10,7 +10,11 @@ import { useToast } from "@/components/ui/toast";
 import { startDialerCallAction, endDialerCallAction } from "@/domain/actions";
 import type { AttemptOutcome } from "@/domain/types";
 
-type CallPhase = "dialing" | "ringing" | "connected" | "wrapup" | "blocked";
+// "placed" rather than "connected": Twilio accepting the call tells us it was
+// handed to the carrier, nothing more. Whether the borrower picked up is
+// unknown until the officer logs it (or a status webhook lands), so the UI
+// must not render a connected state it cannot verify.
+type CallPhase = "dialing" | "ringing" | "placed" | "wrapup" | "blocked";
 
 const OUTCOMES: AttemptOutcome[] = ["ANSWERED", "NO_ANSWER", "VOICEMAIL", "BUSY"];
 
@@ -22,10 +26,16 @@ export function DialerModal({ publicRef, fullName, onClose }: { publicRef: strin
   const [script, setScript] = useState("");
   const [attemptId, setAttemptId] = useState<string | null>(null);
   const [blockedMessage, setBlockedMessage] = useState("");
+  const [blockedByPolicy, setBlockedByPolicy] = useState(true);
   const [elapsed, setElapsed] = useState(0);
   const [outcome, setOutcome] = useState<AttemptOutcome>("ANSWERED");
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [simulated, setSimulated] = useState(false);
+  const [mechanism, setMechanism] = useState<string | undefined>();
+  const [strategyReason, setStrategyReason] = useState<string | undefined>();
+  const [strategyRemedy, setStrategyRemedy] = useState<string | undefined>();
+  const [degraded, setDegraded] = useState(false);
   const startedAt = useRef<number | null>(null);
   const hasStartedCall = useRef(false);
   const { push } = useToast();
@@ -42,23 +52,35 @@ export function DialerModal({ publicRef, fullName, onClose }: { publicRef: strin
 
     startDialerCallAction(publicRef).then((result) => {
       if (!result.ok) {
-        setBlockedMessage(result.message);
+        // Two different reasons a call doesn't happen, and the officer needs
+        // to tell them apart: PolicyGate refusing (compliance — the lead is
+        // fine, the timing or consent isn't) versus the provider failing
+        // (our integration is broken). Labelling both "Blocked by
+        // PolicyGate" sends someone to check consent when the real problem
+        // is an API key.
+        setBlockedByPolicy(result.message.startsWith("Blocked by PolicyGate"));
+        setBlockedMessage(result.message.replace(/^Blocked by PolicyGate:\s*/, ""));
         setPhase("blocked");
         return;
       }
       setAttemptId(result.attemptId ?? null);
       setScript(result.script ?? "");
-      setPhase("ringing");
-      setTimeout(() => {
-        setPhase("connected");
-        startedAt.current = Date.now();
-      }, 1800);
+      setSimulated(Boolean(result.simulated));
+      setMechanism(result.mechanism);
+      setStrategyReason(result.strategyReason);
+      setStrategyRemedy(result.strategyRemedy);
+      setDegraded(Boolean(result.degraded));
+      // The provider has accepted the call by the time this resolves, so move
+      // straight to "placed" — the old 1.8s timer was a cosmetic delay that
+      // implied a ring/answer sequence we never observed.
+      startedAt.current = Date.now();
+      setPhase("placed");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (phase !== "connected") return;
+    if (phase !== "placed") return;
     const t = setInterval(() => {
       if (startedAt.current) setElapsed(Math.floor((Date.now() - startedAt.current) / 1000));
     }, 1000);
@@ -85,7 +107,7 @@ export function DialerModal({ publicRef, fullName, onClose }: { publicRef: strin
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={phase === "connected" ? undefined : onClose} />
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={phase === "placed" ? undefined : onClose} />
       <motion.div
         initial={{ opacity: 0, y: 16, scale: 0.96 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -96,7 +118,9 @@ export function DialerModal({ publicRef, fullName, onClose }: { publicRef: strin
             <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--danger-tint)]">
               <ShieldAlert className="h-6 w-6 text-[var(--danger)]" />
             </div>
-            <p className="text-[15px] font-semibold text-[var(--foreground)]">Blocked by PolicyGate</p>
+            <p className="text-[15px] font-semibold text-[var(--foreground)]">
+              {blockedByPolicy ? "Blocked by PolicyGate" : "Call could not be placed"}
+            </p>
             <p className="mt-1.5 text-[13px] text-[var(--muted-foreground)]">{blockedMessage}</p>
             <Button className="mt-5" variant="secondary" size="sm" onClick={onClose}>
               Close
@@ -104,9 +128,9 @@ export function DialerModal({ publicRef, fullName, onClose }: { publicRef: strin
           </div>
         ) : phase === "wrapup" ? (
           <div className="p-6">
-            <p className="mb-1 text-[15px] font-semibold text-[var(--foreground)]">Call ended</p>
+            <p className="mb-1 text-[15px] font-semibold text-[var(--foreground)]">Log the call</p>
             <p className="mb-4 text-[13px] text-[var(--muted-foreground)]">
-              Duration {mm}:{ss} — how did it go?
+              {mm}:{ss} since the call was placed — what was the outcome?
             </p>
             <Select value={outcome} onChange={(e) => setOutcome(e.target.value as AttemptOutcome)} className="mb-3">
               {OUTCOMES.map((o) => (
@@ -134,10 +158,10 @@ export function DialerModal({ publicRef, fullName, onClose }: { publicRef: strin
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0 }}
                 className={`flex h-20 w-20 items-center justify-center rounded-full ${
-                  phase === "connected" ? "bg-[var(--success-tint)]" : "bg-[var(--primary-tint)]"
+                  "bg-[var(--primary-tint)]"
                 }`}
               >
-                <Phone className={`h-8 w-8 ${phase === "connected" ? "text-[var(--success)]" : "text-[var(--primary)]"} ${phase !== "connected" ? "animate-pulse" : ""}`} />
+                <Phone className={`h-8 w-8 text-[var(--primary)] ${phase !== "placed" ? "animate-pulse" : ""}`} />
               </motion.span>
             </AnimatePresence>
 
@@ -145,9 +169,14 @@ export function DialerModal({ publicRef, fullName, onClose }: { publicRef: strin
             <p className="mt-1 text-[13px] text-[var(--muted-foreground)]">
               {phase === "dialing" && "Checking PolicyGate…"}
               {phase === "ringing" && "Placing automated call…"}
-              {phase === "connected" && (
+              {phase === "placed" && (
                 <>
-                  Automated message playing —{" "}
+                  {simulated
+                    ? "Simulated — no voice provider connected"
+                    : mechanism === "VAPI_AGENT"
+                      ? "AI agent is on the call"
+                      : "Recorded announcement playing"}{" "}
+                  ·{" "}
                   <span className="mkt-mono tabular-nums">
                     {mm}:{ss}
                   </span>
@@ -155,19 +184,39 @@ export function DialerModal({ publicRef, fullName, onClose }: { publicRef: strin
               )}
             </p>
 
-            {script && phase === "connected" && (
-              <div className="mt-5 w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--background)] p-3.5 text-left">
+            {phase === "placed" && (degraded || script) && (
+              <div
+                className={`mt-5 w-full rounded-[var(--radius-md)] border p-3.5 text-left ${
+                  degraded && !simulated
+                    ? "border-[var(--warning)] bg-[var(--warning-tint)]"
+                    : "border-[var(--border)] bg-[var(--background)]"
+                }`}
+              >
                 <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
-                  <Sparkles className="h-3 w-3" /> What they&apos;re hearing
+                  {degraded ? <ShieldAlert className="h-3 w-3" /> : <Sparkles className="h-3 w-3" />}
+                  {mechanism === "VAPI_AGENT"
+                    ? "Live conversation"
+                    : mechanism === "ANNOUNCEMENT"
+                      ? "One-way announcement"
+                      : "Nothing dialled"}
                 </p>
-                <p className="text-[13px] leading-relaxed text-[var(--foreground)]">{script}</p>
-                <p className="mt-2 text-xs text-[var(--muted-foreground)]">
-                  This is a one-way automated call — you&apos;re not on the line. Log the outcome once it ends.
-                </p>
+                {script && <p className="text-[13px] leading-relaxed text-[var(--foreground)]">{script}</p>}
+                {strategyReason && (
+                  <p className={`${script ? "mt-2 " : ""}text-xs text-[var(--muted-foreground)]`}>{strategyReason}</p>
+                )}
+                {strategyRemedy && (
+                  <p className="mt-1.5 text-xs font-medium text-[var(--foreground)]">{strategyRemedy}</p>
+                )}
+                {mechanism === "VAPI_AGENT" && !simulated && (
+                  <p className="mt-2 text-xs text-[var(--muted-foreground)]">
+                    The transcript lands on this lead automatically when the call ends — you don&apos;t need to log it
+                    unless you want to add notes.
+                  </p>
+                )}
               </div>
             )}
 
-            {phase === "connected" && (
+            {phase === "placed" && (
               <div className="mt-6 flex items-center justify-center">
                 <button
                   onClick={hangUp}

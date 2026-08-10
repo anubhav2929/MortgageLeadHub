@@ -1,12 +1,6 @@
 import Link from "next/link";
-import { capabilities, env } from "@/lib/env";
+import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import { STATE_NAMES } from "@/domain/stateTimezone";
-
-// Set your real NMLS ID before a real launch — this reads from an env var
-// specifically so it can't be silently forgotten inside a component nobody
-// re-opens after launch; the fallback is intentionally an obvious
-// placeholder rather than a real-looking fake number.
-const NMLS_ID = env.COMPANY_NMLS_ID || "SET_COMPANY_NMLS_ID";
 
 // Derived from the same STATE_NAMES the intake form uses, instead of a
 // hand-maintained list — the two had already drifted apart once (NV and SC
@@ -16,8 +10,13 @@ const LICENSED_STATES_LABEL = (() => {
   return codes.length > 1 ? `${codes.slice(0, -1).join(", ")}, and ${codes[codes.length - 1]}` : codes.join("");
 })();
 
-export function MktFooter() {
-  const anyChannelLive = capabilities.hasTwilio || capabilities.hasResend || capabilities.hasLiveVoiceAgent;
+export async function MktFooter() {
+  const caps = await getCapabilities();
+  // Resolved per render rather than at module load, so setting it in
+  // Admin → Integrations updates the footer without a redeploy. The fallback
+  // is deliberately an obvious placeholder, not a real-looking fake number.
+  const NMLS_ID = (await getConfigValue("COMPANY_NMLS_ID")) || "SET_COMPANY_NMLS_ID";
+  const anyChannelLive = caps.hasSms || caps.hasVoice || caps.hasResend || caps.hasVoiceAgent;
 
   return (
     <footer className="bg-[var(--mkt-bg-alt)]">

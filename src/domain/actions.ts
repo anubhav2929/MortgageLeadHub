@@ -1,12 +1,12 @@
 "use server";
 
 import { nanoid } from "nanoid";
+import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { sendSms } from "@/adapters/sms";
-import { placeCall } from "@/adapters/voice";
-import { placeVoiceAgentCall } from "@/adapters/voiceAgent";
+import type { AdapterResult } from "@/adapters/result";
 import { sendEmail } from "@/adapters/email";
-import { extractFieldsFromTranscript, generateOutreachContent, classifySignalIntent, generateSignalReply, validateIntakeIdentity } from "@/adapters/llm";
+import { extractFieldsFromTranscript, generateOutreachContent, classifySignalIntent, generateSignalReply, validateIntakeIdentity, answerBorrowerQuestion } from "@/adapters/llm";
 import { searchForSignals } from "@/adapters/leadDiscovery";
 import { getPropertyValuation } from "@/adapters/propertyData";
 import { promoteCandidate, type RawCandidate } from "@/core/extraction/promote";
@@ -16,12 +16,16 @@ import { can } from "@/core/rbac";
 import { transition } from "@/core/stateMachine";
 import { generateToken } from "@/core/auth";
 import { intakeInputSchema } from "@/core/intakeValidation";
+import { classifyReferral, normalizePhone } from "@/core/intakeNormalization";
 import { buildConversationBrief, buildLeadThread } from "@/core/conversationThread";
+import { type VoiceMechanism } from "@/core/callStrategy";
+import { placeOutboundCall } from "@/domain/voiceOrchestrator";
+import { countsAgainstAttemptCap, decideRetry, describeFailure, shouldSuppressChannel, type DeliveryFailure } from "@/core/deliveryStatus";
 import { computeOfficerLoadToday } from "@/domain/queries";
 import { buildGateInput, evaluateForLead } from "@/domain/gateHelpers";
 import { getCurrentUser } from "@/domain/session";
 import { getDb, newId, nowIso, saveDb, withLeadLock, type Database } from "@/domain/store";
-import { getAppUrl } from "@/lib/env";
+import { getAppUrl } from "@/lib/runtimeConfig";
 import { formatDateTime } from "@/lib/utils";
 import type {
   AttemptOutcome,
@@ -29,14 +33,9 @@ import type {
   Channel,
   ConsentRecord,
   ConversationSession,
-  ContactWindow,
-  CreditRange,
-  GoalType,
   Lead,
   LeadEvent,
   LoanIntent,
-  MissedPayments,
-  Occupancy,
   ReferralSpecialty,
   ReferralType,
   Role,
@@ -44,7 +43,6 @@ import type {
   SystemConfig,
   Task,
   TaskType,
-  Timeline,
 } from "@/domain/types";
 import { STATE_TIMEZONE } from "@/domain/stateTimezone";
 
@@ -99,6 +97,98 @@ function revalidateLead(publicRef: string) {
 export interface ActionResult {
   ok: boolean;
   message: string;
+}
+
+
+// ---------------------------------------------------------------------------
+// Send-failure handling — what the CRM does when a live provider rejects a
+// message. This is the difference between a demo and an operational system:
+// the demo records "sent" and moves on; a real CRM has to decide whether the
+// borrower was actually reached, whether to try again, and whether a human
+// needs to know.
+//
+// Three outcomes, driven by core/deliveryStatus.classifyFailure:
+//
+//   PERMANENT     — the number/address is bad or has opted out. Flag the
+//                   contact, suppress this channel for the lead so the cadence
+//                   routes around it, and raise a task for a human.
+//   CONFIGURATION — our credentials or carrier registration are wrong. Every
+//                   lead is about to hit this. Raise an admin-visible alert
+//                   once, not one task per lead.
+//   TRANSIENT     — retry with backoff; nobody needs to be told yet.
+//
+// In all three cases the attempt does NOT count against the lead's contact
+// caps, because no contact happened.
+// ---------------------------------------------------------------------------
+async function recordSendFailure(
+  db: Database,
+  lead: Lead,
+  person: { id: string; dataQualityFlags?: string[] } | undefined,
+  channel: Channel,
+  failure: DeliveryFailure,
+  actor?: { id: string; name: string },
+  /** True only for callers that incremented the attempt counters *before*
+   *  discovering the failure. Callers that increment afterwards must pass
+   *  false — otherwise this decrements a previous, genuinely successful
+   *  attempt out of the daily count. */
+  rollbackCounters = false
+): Promise<void> {
+  // Attempt caps limit how often a borrower is *contacted*; a message the
+  // carrier refused contacted nobody, so an optimistic bump is undone here.
+  if (rollbackCounters && !countsAgainstAttemptCap("FAILED")) {
+    lead.attemptsTotal = Math.max(0, lead.attemptsTotal - 1);
+    lead.attemptsToday = Math.max(0, lead.attemptsToday - 1);
+  }
+
+  await pushEvent({
+    leadId: lead.id,
+    type: "OUTREACH_FAILED",
+    actorType: actor ? "OFFICER" : "SYSTEM",
+    actorId: actor?.id,
+    actorName: actor?.name,
+    channel,
+    occurredAt: nowIso(),
+    payload: { failureClass: failure.class, providerCode: failure.providerCode, message: failure.message },
+  });
+
+  if (shouldSuppressChannel(failure)) {
+    // A permanently undeliverable address is a fact about the borrower's
+    // contact data, not a transient event. Record it so the channel router
+    // stops proposing this channel instead of rediscovering it every step.
+    if (person) {
+      const flag = channel === "EMAIL" ? "EMAIL_UNDELIVERABLE" : "PHONE_UNDELIVERABLE";
+      person.dataQualityFlags = Array.from(new Set([...(person.dataQualityFlags ?? []), flag]));
+    }
+    const taskId = newId("task");
+    db.tasks.set(taskId, {
+      id: taskId,
+      leadId: lead.id,
+      type: "REVIEW_CONTACT_DATA",
+      dueAt: nowIso(),
+      status: "OPEN",
+      assigneeId: lead.assignedOfficerId,
+      title: `${channel === "EMAIL" ? "Email" : "Phone"} undeliverable — verify contact details (${failure.message})`,
+    });
+  }
+
+  if (failure.affectsAllLeads) {
+    // One alert for the whole outage, not one per lead — a misconfigured
+    // carrier would otherwise generate a task for every lead in the cadence.
+    const alreadyOpen = Array.from(db.tasks.values()).some(
+      (t) => t.type === "INTEGRATION_ALERT" && t.status === "OPEN" && t.title.includes(failure.message)
+    );
+    if (!alreadyOpen) {
+      const alertId = newId("task");
+      db.tasks.set(alertId, {
+        id: alertId,
+        leadId: lead.id,
+        type: "INTEGRATION_ALERT",
+        dueAt: nowIso(),
+        status: "OPEN",
+        title: `${channel} provider failing — check Admin → Integrations (${failure.message})`,
+      });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -826,7 +916,22 @@ export async function updateSystemConfigAction(config: SystemConfig): Promise<Ac
   }
 
   const db = await getDb();
+  const previousOverrides = db.config.outreachOverrides ?? {};
   db.config = { ...config };
+
+  // Turning a pacing rule off is a compliance-relevant decision. Audit it
+  // separately from the rest of the settings save, naming which guardrail
+  // changed and who changed it — "we didn't know it was on" must never be an
+  // available answer.
+  const nextOverrides = config.outreachOverrides ?? {};
+  const overrideKeys = ["ignoreQuietHours", "ignoreAttemptCaps", "ignoreMinSpacing"] as const;
+  const changedOverrides = overrideKeys.filter((k) => Boolean(previousOverrides[k]) !== Boolean(nextOverrides[k]));
+  if (changedOverrides.length > 0) {
+    await audit(user.id, user.name, "CHANGE_OUTREACH_OVERRIDES", "System", "config", "ALLOW", {
+      changed: changedOverrides.map((k) => `${k}=${Boolean(nextOverrides[k])}`),
+    });
+  }
+
   await audit(user.id, user.name, "UPDATE_SYSTEM_CONFIG", "System", "config", "ALLOW");
   saveDb();
   revalidatePath("/workspace/admin");
@@ -1018,7 +1123,7 @@ export async function createUserAction(input: CreateUserInput): Promise<ActionRe
 
   const roleLabel = input.role.replace("_", " ").toLowerCase();
   const idempotencyKey = newId("idem");
-  const inviteUrl = `${getAppUrl()}/accept-invite?token=${inviteToken}`;
+  const inviteUrl = `${await getAppUrl()}/accept-invite?token=${inviteToken}`;
   const emailResult = await sendEmail({
     to: input.email.trim(),
     subject: "You've been added to Equity Flow Group",
@@ -1026,13 +1131,26 @@ export async function createUserAction(input: CreateUserInput): Promise<ActionRe
     idempotencyKey,
     from: `${db.config.senderName} <${db.config.senderEmail}>`,
   });
-  let smsResult: { simulated: boolean } | null = null;
+  let smsResult: AdapterResult | null = null;
   const phone = input.phone ? normalizePhone(input.phone) : null;
   if (phone) {
     smsResult = await sendSms({ to: phone, body: `Hi ${input.name.split(" ")[0]}, you've been added to Equity Flow Group as ${roleLabel}. Check your email to sign in.`, idempotencyKey: newId("idem") });
   }
 
-  const notified = [emailResult.simulated ? "email (simulated)" : "email", phone ? (smsResult?.simulated ? "text (simulated)" : "text") : null].filter(Boolean).join(" and ");
+  // The account exists either way, but if the invite email didn't go out the
+  // new user has no way to set a password — saying "they can now sign in"
+  // would send the admin away believing a broken onboarding was complete.
+  if (!emailResult.ok) {
+    return {
+      ok: false,
+      message: `${input.name}'s account was created, but the invite email failed to send (${emailResult.failure.message}). Use "Resend invite" once email is working.`,
+    };
+  }
+
+  const notified = [
+    emailResult.simulated ? "email (simulated)" : "email",
+    phone ? (smsResult?.ok ? (smsResult.simulated ? "text (simulated)" : "text") : "text FAILED") : null,
+  ].filter(Boolean).join(" and ");
   return { ok: true, message: `${input.name} can now sign in as ${roleLabel}. Welcome ${notified} sent.` };
 }
 
@@ -1083,7 +1201,7 @@ export async function resendInviteAction(userId: string): Promise<ActionResult> 
   });
   saveDb();
 
-  const inviteUrl = `${getAppUrl()}/accept-invite?token=${inviteToken}`;
+  const inviteUrl = `${await getAppUrl()}/accept-invite?token=${inviteToken}`;
   const roleLabel = target.role.replace("_", " ").toLowerCase();
   const emailResult = await sendEmail({
     to: target.email,
@@ -1094,6 +1212,9 @@ export async function resendInviteAction(userId: string): Promise<ActionResult> 
   });
 
   await audit(user.id, user.name, "RESEND_INVITE", "User", userId, "ALLOW");
+  if (!emailResult.ok) {
+    return { ok: false, message: `Could not resend the invite: ${emailResult.failure.message}` };
+  }
   return { ok: true, message: `Invite resent to ${target.email}${emailResult.simulated ? " (simulated)" : ""}.` };
 }
 
@@ -1327,8 +1448,10 @@ export async function sendEmailAction(publicRef: string, subject: string, body: 
     channel: "EMAIL",
     direction: "OUTBOUND",
     idempotencyKey,
-    providerMessageId: result.providerMessageId,
-    outcome: result.error ? "FAILED" : "SENT",
+    providerMessageId: result.ok ? result.providerMessageId : undefined,
+    outcome: result.ok ? "SENT" : "FAILED",
+    failureClass: result.ok ? undefined : result.failure.class,
+    failureMessage: result.ok ? undefined : result.failure.message,
     attemptNumber: lead.attemptsTotal,
     scheduledFor: nowIso(),
     startedAt: nowIso(),
@@ -1338,9 +1461,17 @@ export async function sendEmailAction(publicRef: string, subject: string, body: 
     loggedByName: user.name,
   });
 
+  if (!result.ok) {
+    // A failed send did not reach the borrower, so it must not count against
+    // the attempt caps that exist to limit how often they are contacted.
+    await recordSendFailure(db, lead, person, "EMAIL", result.failure, user, true);
+    revalidateLead(publicRef);
+    return { ok: false, message: describeFailure("EMAIL", result.failure) };
+  }
+
   await pushEvent({ leadId: lead.id, type: "OUTREACH_ATTEMPTED", actorType: "OFFICER", actorId: user.id, actorName: user.name, channel: "EMAIL", occurredAt: nowIso(), payload: { manual: true, simulated: result.simulated } });
   revalidateLead(publicRef);
-  return { ok: true, message: result.simulated ? "Email sent (simulated)." : "Email sent." };
+  return { ok: true, message: result.simulated ? "Email queued (simulated — no provider configured)." : "Email sent to provider. Delivery will confirm shortly." };
 }
 
 export async function sendSmsComposedAction(publicRef: string, body: string): Promise<ActionResult> {
@@ -1388,8 +1519,10 @@ export async function sendSmsComposedAction(publicRef: string, body: string): Pr
     channel: "SMS",
     direction: "OUTBOUND",
     idempotencyKey,
-    providerMessageId: result.providerMessageId,
-    outcome: result.error ? "FAILED" : "SENT",
+    providerMessageId: result.ok ? result.providerMessageId : undefined,
+    outcome: result.ok ? "SENT" : "FAILED",
+    failureClass: result.ok ? undefined : result.failure.class,
+    failureMessage: result.ok ? undefined : result.failure.message,
     attemptNumber: lead.attemptsTotal,
     scheduledFor: nowIso(),
     startedAt: nowIso(),
@@ -1398,9 +1531,15 @@ export async function sendSmsComposedAction(publicRef: string, body: string): Pr
     loggedByName: user.name,
   });
 
+  if (!result.ok) {
+    await recordSendFailure(db, lead, person, "SMS", result.failure, user, true);
+    revalidateLead(publicRef);
+    return { ok: false, message: describeFailure("SMS", result.failure) };
+  }
+
   await pushEvent({ leadId: lead.id, type: "OUTREACH_ATTEMPTED", actorType: "OFFICER", actorId: user.id, actorName: user.name, channel: "SMS", occurredAt: nowIso(), payload: { manual: true, simulated: result.simulated } });
   revalidateLead(publicRef);
-  return { ok: true, message: result.simulated ? "Text sent (simulated)." : "Text sent." };
+  return { ok: true, message: result.simulated ? "Text queued (simulated — no provider configured)." : "Text sent to carrier. Delivery will confirm shortly." };
 }
 
 // ---------------------------------------------------------------------------
@@ -1408,7 +1547,17 @@ export async function sendSmsComposedAction(publicRef: string, body: string): Pr
 // simulated ringing/connected call experience and lets the officer record
 // the real outcome once the call ends, rather than assuming SENT.
 // ---------------------------------------------------------------------------
-export async function startDialerCallAction(publicRef: string): Promise<ActionResult & { attemptId?: string; script?: string }> {
+export interface DialerStartResult extends ActionResult {
+  attemptId?: string;
+  script?: string;
+  simulated?: boolean;
+  mechanism?: VoiceMechanism;
+  strategyReason?: string;
+  strategyRemedy?: string;
+  degraded?: boolean;
+}
+
+export async function startDialerCallAction(publicRef: string): Promise<DialerStartResult> {
   const user = await getCurrentUser();
   const lead = await requireLead(publicRef);
   if (!can({ role: user.role, officerId: user.officerId }, "CALL_NOW", lead)) {
@@ -1438,39 +1587,48 @@ export async function startDialerCallAction(publicRef: string): Promise<ActionRe
   }
 
   const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
-  const officerFirstName = user.name.split(" ")[0];
-  const content = await generateOutreachContent({
-    channel: "VOICE",
-    firstName: person?.firstName ?? "there",
-    intent: lead.intent,
-    goal: lead.goal,
-    officerFirstName,
-    isFirstContact: !lead.firstContactAt,
-  });
 
-  const idempotencyKey = newId("idem");
-  const result = await placeCall({ to: person?.phoneE164 ?? "", message: content.body, idempotencyKey });
+  // One orchestrator decides the mechanism (Vapi conversation preferred,
+  // Twilio announcement as a labelled fallback) and carries the borrower's
+  // existing SMS/email thread into the call.
+  const outcome = await placeOutboundCall(db, lead, person, user);
 
-  const attemptId = newId("attempt");
-  db.attempts.push({
-    id: attemptId,
+  if (!outcome.ok && outcome.failure) {
+    await recordSendFailure(db, lead, person, "VOICE", outcome.failure, user);
+    saveDb();
+    revalidateLead(publicRef);
+    return { ok: false, message: describeFailure("VOICE", outcome.failure) };
+  }
+
+  lead.attemptsTotal += 1;
+  lead.attemptsToday += 1;
+  lead.lastAttemptAt = nowIso();
+  if (!lead.firstContactAt) lead.firstContactAt = nowIso();
+  lead.updatedAt = nowIso();
+
+  await pushEvent({
     leadId: lead.id,
+    type: "OUTREACH_ATTEMPTED",
+    actorType: "OFFICER",
+    actorId: user.id,
+    actorName: user.name,
     channel: "VOICE",
-    direction: "OUTBOUND",
-    idempotencyKey,
-    providerMessageId: result.providerMessageId,
-    outcome: "QUEUED",
-    attemptNumber: lead.attemptsTotal + 1,
-    scheduledFor: nowIso(),
-    startedAt: nowIso(),
-    body: content.body,
-    aiGenerated: !content.simulated,
-    loggedById: user.id,
-    loggedByName: user.name,
+    occurredAt: nowIso(),
+    payload: { manual: true, mechanism: outcome.strategy.mechanism, simulated: outcome.simulated },
   });
-  saveDb();
 
-  return { ok: true, message: "Calling…", attemptId, script: content.body };
+  saveDb();
+  return {
+    ok: true,
+    message: outcome.simulated ? "Simulated call — no voice provider connected." : "Dialing…",
+    attemptId: outcome.attemptId,
+    script: outcome.script,
+    simulated: outcome.simulated,
+    mechanism: outcome.strategy.mechanism,
+    strategyReason: outcome.strategy.reason,
+    strategyRemedy: outcome.strategy.remedy,
+    degraded: outcome.strategy.degraded,
+  };
 }
 
 export async function endDialerCallAction(publicRef: string, attemptId: string, outcome: AttemptOutcome, durationSec: number, notes: string): Promise<ActionResult> {
@@ -1568,44 +1726,17 @@ export async function startVoiceAgentCallAction(publicRef: string): Promise<Acti
   const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
   if (!person) return { ok: false, message: "No contact on file for this lead." };
 
-  const attemptId = newId("attempt");
-  const conversationId = newId("conv");
-  const result = await placeVoiceAgentCall({
-    leadId: lead.id,
-    conversationId,
-    firstName: person.firstName,
-    intent: lead.intent,
-    goal: lead.goal,
-    phoneE164: person.phoneE164,
-  });
+  // Same orchestrator as the Call button — there is only one way to place a
+  // call now. This action remains so the AI-call entry point keeps working,
+  // but it no longer represents a separate mechanism.
+  const outcome = await placeOutboundCall(db, lead, person, user);
 
-  db.attempts.push({
-    id: attemptId,
-    leadId: lead.id,
-    channel: "VOICE",
-    direction: "OUTBOUND",
-    idempotencyKey: newId("idem"),
-    providerMessageId: result.providerCallId,
-    outcome: "QUEUED",
-    attemptNumber: lead.attemptsTotal + 1,
-    scheduledFor: nowIso(),
-    startedAt: nowIso(),
-    loggedById: user.id,
-    loggedByName: user.name,
-  });
-
-  db.conversations.set(conversationId, {
-    id: conversationId,
-    leadId: lead.id,
-    contactAttemptId: attemptId,
-    promptVersionId: "prompt_qualify_v4",
-    channel: "VOICE",
-    status: "IN_PROGRESS",
-    startedAt: nowIso(),
-    escalated: false,
-    transcript: [],
-    redactionApplied: false,
-  });
+  if (!outcome.ok && outcome.failure) {
+    await recordSendFailure(db, lead, person, "VOICE", outcome.failure, user);
+    saveDb();
+    revalidateLead(publicRef);
+    return { ok: false, message: describeFailure("VOICE", outcome.failure) };
+  }
 
   lead.attemptsTotal += 1;
   lead.attemptsToday += 1;
@@ -1621,64 +1752,37 @@ export async function startVoiceAgentCallAction(publicRef: string): Promise<Acti
     actorName: user.name,
     channel: "VOICE",
     occurredAt: nowIso(),
-    payload: { voiceAgent: true, simulated: result.simulated },
+    payload: { manual: true, mechanism: outcome.strategy.mechanism, simulated: outcome.simulated },
   });
 
   saveDb();
   revalidateLead(publicRef);
 
-  return {
-    ok: true,
-    message: result.simulated
-      ? "AI qualification call started (simulated — set VAPI_API_KEY/VAPI_PHONE_NUMBER_ID/VAPI_WEBHOOK_SECRET to go live)."
-      : "AI qualification call started — the transcript will appear in the Conversation tab as the call progresses.",
-  };
+  if (outcome.strategy.degraded) {
+    return {
+      ok: true,
+      message: `${outcome.strategy.reason}${outcome.strategy.remedy ? ` ${outcome.strategy.remedy}` : ""}`,
+    };
+  }
+  return { ok: true, message: outcome.simulated ? "Simulated AI call — no voice provider connected." : "AI agent is calling now." };
 }
 
 // ---------------------------------------------------------------------------
-// F-01 public intake
+// Public intake (F-01) — the one unauthenticated write path.
 // ---------------------------------------------------------------------------
-export interface IntakeInput {
-  intent: LoanIntent;
-  firstName: string;
-  lastName: string;
-  phone: string;
-  email: string;
-  stateCode: string;
-  city?: string;
-  addressLine1?: string;
-  occupancy: Occupancy;
-  estimatedValue?: number;
-  currentBalance?: number;
-  goal: GoalType;
-  timeline: Timeline;
-  bestContactTime: ContactWindow;
-  creditRange: CreditRange;
-  missedPayments: MissedPayments;
-  hasExistingHomeEquityLoan?: boolean;
-  intakeDurationSeconds?: number;
-  consents: { voice: boolean; sms: boolean; email: boolean; recording: boolean };
-}
+
+/** The intake payload, derived from the validation schema so the runtime
+ *  check and the compile-time type can never disagree. */
+export type IntakeInput = z.infer<typeof intakeInputSchema>;
 
 export interface IntakeResult {
   ok: boolean;
   publicRef?: string;
   slaDueAt?: string;
   referralType?: ReferralType;
+  /** Per-field messages, keyed by field name, for re-display on the form. */
   fieldErrors?: Record<string, string>;
-}
-
-function classifyReferral(missedPayments: MissedPayments): ReferralType {
-  if (missedPayments === "THREE_PLUS") return "FORECLOSURE";
-  if (missedPayments === "ONE_TO_TWO") return "LOAN_MODIFICATION";
-  return "NONE";
-}
-
-function normalizePhone(raw: string): string | null {
-  const digits = raw.replace(/[^\d]/g, "");
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  return null;
+  message?: string;
 }
 
 export async function submitIntakeAction(input: IntakeInput, clientDraftId?: string): Promise<IntakeResult> {
@@ -1906,11 +2010,19 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
       if (officer?.phone) {
         const phone = normalizePhone(officer.phone);
         if (phone) {
-          await sendSms({
+          const alertResult = await sendSms({
             to: phone,
             body: `🔥 Hot lead (${score.total}/100): ${input.firstName} ${input.lastName} in ${input.city ?? ""}, ${input.stateCode} — ${input.intent.replace("_", " ").toLowerCase()}. Ref ${publicRef}. Call now.`,
             idempotencyKey: newId("idem"),
           });
+          // The whole point of a hot-lead alert is speed. If the text didn't
+          // go out, the officer is not on their way — so the in-app task has
+          // to say so rather than sitting there implying they were paged.
+          if (!alertResult.ok) {
+            const t = db.tasks.get(alertTaskId);
+            if (t) t.title = `HOT LEAD (${score.total}/100) — SMS ALERT FAILED, officer not paged. Call within minutes.`;
+            console.error(`[hotLeadAlert] could not page officer ${officer.id}: ${alertResult.failure.message}`);
+          }
         }
       }
     }
@@ -2105,11 +2217,46 @@ export async function submitBorrowerMessageAction(publicRef: string, message: st
   });
 
   await pushEvent({ leadId: lead.id, type: "NOTE_ADDED", actorType: "BORROWER", occurredAt: nowIso(), payload: { source: "post_submit_chat" } });
-  await autoAssignOfficer(db, lead, "borrower_message");
+  const officer = await autoAssignOfficer(db, lead, "borrower_message");
+
+  // Answer immediately when an LLM is configured. The officer task above is
+  // filed either way — the AI shortens the wait, it never closes the loop on
+  // its own, and anything it shouldn't answer comes back needsHuman=true with
+  // a holding reply rather than a guess.
+  const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
+  const answer = await answerBorrowerQuestion({
+    question: trimmed,
+    firstName: person?.firstName || "there",
+    intent: lead.intent,
+    goal: lead.goal,
+    stateCode: lead.stateCode,
+    officerFirstName: officer?.name.split(" ")[0],
+    priorContext:
+      buildConversationBrief(
+        buildLeadThread({
+          attempts: db.attempts.filter((a) => a.leadId === lead.id),
+          conversations: Array.from(db.conversations.values()).filter((c) => c.leadId === lead.id),
+          notes: db.notes.filter((n) => n.leadId === lead.id),
+        })
+      ) || undefined,
+  });
+
+  if (!answer.simulated) {
+    // Record the AI's reply so it lands in the unified thread and the officer
+    // sees exactly what the borrower was told before they pick this up.
+    db.notes.push({
+      id: newId("note"),
+      leadId: lead.id,
+      authorId: "ai-agent",
+      authorName: "AI assistant (status chat)",
+      body: answer.reply,
+      createdAt: nowIso(),
+    });
+  }
 
   saveDb();
   revalidateLead(publicRef);
-  return { ok: true, message: "Got your message — your loan officer will follow up." };
+  return { ok: true, message: answer.reply };
 }
 
 export interface StatusLookupResult {
@@ -2211,8 +2358,59 @@ async function deliverOutreachLocked(
     })
   );
 
+  // VOICE goes through the orchestrator so an automated call is the same
+  // conversational agent an officer would get from the Call button — not the
+  // one-way announcement this path used to place.
+  if (channel === "VOICE") {
+    const outcome = await placeOutboundCall(db, lead, person, undefined);
+
+    if (!outcome.ok && outcome.failure) {
+      await recordSendFailure(db, lead, person, "VOICE", outcome.failure, undefined);
+      lead.updatedAt = nowIso();
+      console.error(`[deliverOutreach] VOICE ${outcome.failure.class} failure for lead ${lead.id}: ${outcome.failure.message}`);
+      return {
+        ok: false,
+        blocked: false,
+        message: "We tried to reach you but hit a delivery problem — a licensed loan officer will follow up directly.",
+        simulated: false,
+        officerFirstName,
+      };
+    }
+
+    lead.attemptsTotal += 1;
+    lead.attemptsToday += 1;
+    lead.lastAttemptAt = nowIso();
+    if (!lead.firstContactAt) lead.firstContactAt = nowIso();
+    lead.lastContactAt = nowIso();
+    if (lead.state === "NEW") {
+      try {
+        lead.state = transition(lead.state, "OUTREACH_ATTEMPTED");
+      } catch {
+        // leave state as-is if not a valid transition from here
+      }
+    }
+    lead.updatedAt = nowIso();
+
+    await pushEvent({
+      leadId: lead.id,
+      type: "OUTREACH_ATTEMPTED",
+      actorType,
+      occurredAt: nowIso(),
+      channel: "VOICE",
+      payload: { simulated: outcome.simulated, reason, mechanism: outcome.strategy.mechanism },
+    });
+
+    return {
+      ok: true,
+      blocked: false,
+      message: outcome.simulated ? "Calling you now (simulated)." : "Calling you now.",
+      simulated: outcome.simulated,
+      officerFirstName,
+    };
+  }
+
   const content = await generateOutreachContent({
-    channel: channel === "VOICE" ? "VOICE" : "EMAIL",
+    channel: "EMAIL",
     firstName: person?.firstName ?? "there",
     intent: lead.intent,
     goal: lead.goal,
@@ -2222,44 +2420,83 @@ async function deliverOutreachLocked(
   });
 
   const idempotencyKey = newId("idem");
-  let providerMessageId = "";
-  let simulated = true;
   let subject: string | undefined;
   let body = content.body;
-  let providerError: string | undefined;
+  let result: AdapterResult;
 
-  if (channel === "VOICE") {
-    const result = await placeCall({ to: person?.phoneE164 ?? "", message: content.body, idempotencyKey });
-    providerMessageId = result.providerMessageId;
-    simulated = result.simulated;
-    providerError = result.error;
-  } else if (channel === "SMS") {
+  if (channel === "SMS") {
     const smsBody = content.body.length > 300 ? content.body.slice(0, 297) + "..." : content.body;
-    const result = await sendSms({ to: person?.phoneE164 ?? "", body: smsBody, idempotencyKey });
-    providerMessageId = result.providerMessageId;
-    simulated = result.simulated;
-    providerError = result.error;
+    result = await sendSms({ to: person?.phoneE164 ?? "", body: smsBody, idempotencyKey });
     body = smsBody;
   } else {
     subject = `${officerFirstName} from Equity Flow Group — following up on your inquiry`;
-    const statusUrl = `${getAppUrl()}/status/${lead.publicRef}`;
+    const statusUrl = `${await getAppUrl()}/status/${lead.publicRef}`;
     const emailBody = `${content.body}\n\nTrack your inquiry anytime: ${statusUrl}`;
-    const result = await sendEmail({ to: person?.email ?? "", subject, text: emailBody, idempotencyKey, from: `${db.config.senderName} <${db.config.senderEmail}>` });
-    providerMessageId = result.providerMessageId;
-    simulated = result.simulated;
-    providerError = result.error;
+    result = await sendEmail({ to: person?.email ?? "", subject, text: emailBody, idempotencyKey, from: `${db.config.senderName} <${db.config.senderEmail}>` });
     body = emailBody;
   }
 
   const attemptId = newId("attempt");
+  const simulated = result.ok ? result.simulated : false;
+
+  // ---- Failure path -------------------------------------------------------
+  // A send the provider refused never reached the borrower. It must not
+  // consume the attempt budget or advance the cadence, or a provider outage
+  // silently burns a lead's entire cadence and drops them into NURTURE having
+  // never actually been contacted once.
+  if (!result.ok) {
+    const priorFailures = db.attempts.filter(
+      (a) => a.leadId === lead.id && a.channel === channel && a.outcome === "FAILED"
+    ).length;
+    const retry = decideRetry(result.failure, priorFailures);
+
+    db.attempts.push({
+      id: attemptId,
+      leadId: lead.id,
+      channel,
+      direction: "OUTBOUND",
+      idempotencyKey,
+      outcome: "FAILED",
+      failureClass: result.failure.class,
+      failureMessage: result.failure.message,
+      retryAfter: retry.retry ? new Date(Date.now() + retry.delayMinutes * 60_000).toISOString() : undefined,
+      retryCount: priorFailures,
+      attemptNumber: lead.attemptsTotal + 1,
+      scheduledFor: nowIso(),
+      startedAt: nowIso(),
+      subject,
+      body,
+      aiGenerated: !content.simulated,
+    });
+
+    // Note the counters are deliberately NOT incremented before this call,
+    // so recordSendFailure has nothing to roll back on the cadence path.
+    await recordSendFailure(db, lead, person, channel, result.failure, undefined);
+    lead.updatedAt = nowIso();
+
+    console.error(`[deliverOutreach] ${channel} ${result.failure.class} failure for lead ${lead.id}: ${result.failure.message}`);
+    return {
+      ok: false,
+      blocked: false,
+      message: "We tried to reach you but hit a delivery problem — a licensed loan officer will follow up directly.",
+      simulated: false,
+      officerFirstName,
+    };
+  }
+
+  // ---- Success path -------------------------------------------------------
   db.attempts.push({
     id: attemptId,
     leadId: lead.id,
     channel,
     direction: "OUTBOUND",
     idempotencyKey,
-    providerMessageId,
-    outcome: providerError ? "FAILED" : channel === "VOICE" ? "QUEUED" : "SENT",
+    providerMessageId: result.providerMessageId,
+    // SENT means the provider accepted it, not that it arrived. A delivery
+    // webhook advances this to DELIVERED or UNDELIVERED once the carrier
+    // reports back — see app/api/webhooks/delivery/[provider]/route.ts.
+    // Only SMS and EMAIL reach here; VOICE returned via the orchestrator above.
+    outcome: "SENT",
     attemptNumber: lead.attemptsTotal + 1,
     scheduledFor: nowIso(),
     startedAt: nowIso(),
@@ -2282,12 +2519,7 @@ async function deliverOutreachLocked(
   }
   lead.updatedAt = nowIso();
 
-  await pushEvent({ leadId: lead.id, type: "OUTREACH_ATTEMPTED", actorType, occurredAt: nowIso(), channel, payload: { simulated, reason, providerError } });
-
-  if (providerError) {
-    console.error(`[deliverOutreach] ${channel} provider error for lead ${lead.id}:`, providerError);
-    return { ok: false, blocked: false, message: "We tried to reach you but hit a delivery problem — a licensed loan officer will follow up directly.", simulated, officerFirstName };
-  }
+  await pushEvent({ leadId: lead.id, type: "OUTREACH_ATTEMPTED", actorType, occurredAt: nowIso(), channel, payload: { simulated, reason } });
 
   const CHANNEL_MESSAGE: Record<Channel, string> = {
     VOICE: simulated ? "Calling you now (simulated)." : "Calling you now.",

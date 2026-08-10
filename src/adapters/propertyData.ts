@@ -19,7 +19,7 @@
 // result (see domain/queries.ts's getOrCachePropertyValuation) so a given
 // lead is only ever looked up once, not once per page view.
 
-import { env } from "@/lib/env";
+import { getConfigValue } from "@/lib/runtimeConfig";
 import type { PropertyType, PropertyValuationResult } from "@/domain/types";
 
 export interface PropertyValuationInput {
@@ -113,6 +113,20 @@ function buildAssumedFinancials(
     usableEquity,
     simulated,
     ...rentcastFields,
+    // Built last so it reflects what actually came back from the vendor.
+    // The balance/LTV/equity trio is MODELED on every path, live included —
+    // it is an assumed-LTV calculation, not data anyone reported to us.
+    provenance: {
+      estimatedValue: simulated ? "MODELED" : "MEASURED",
+      confidenceRange: simulated || rentcastFields?.confidenceLow === undefined ? "MODELED" : "MEASURED",
+      comparableCount: simulated ? "MODELED" : "MEASURED",
+      lastSale: !simulated && rentcastFields?.lastSaleDate ? "MEASURED" : "MODELED",
+      estimatedMortgageBalance: "MODELED",
+      estimatedLTV: "MODELED",
+      usableEquity: "MODELED",
+      propertyType: !simulated && rentcastFields?.propertyType ? "MEASURED" : "MODELED",
+      yearBuilt: !simulated && rentcastFields?.yearBuilt ? "MEASURED" : "MODELED",
+    },
   };
 }
 
@@ -143,7 +157,7 @@ async function fetchRentCastValuation(input: PropertyValuationInput): Promise<Pr
   const url = `https://api.rentcast.io/v1/avm/value?address=${encodeURIComponent(address)}`;
 
   const response = await fetch(url, {
-    headers: { Accept: "application/json", "X-Api-Key": env.PROPERTY_DATA_API_KEY! },
+    headers: { Accept: "application/json", "X-Api-Key": (await getConfigValue("PROPERTY_DATA_API_KEY"))! },
   });
   if (!response.ok) {
     throw new Error(`RentCast AVM request failed: ${response.status} ${await response.text()}`);
@@ -172,7 +186,7 @@ async function fetchRentCastValuation(input: PropertyValuationInput): Promise<Pr
 }
 
 export async function getPropertyValuation(input: PropertyValuationInput): Promise<PropertyValuationResult> {
-  if (!env.PROPERTY_DATA_API_KEY) {
+  if (!(await getConfigValue("PROPERTY_DATA_API_KEY"))) {
     const result = simulateValuation(input);
     console.log(`[SIMULATED AVM] ${input.city ?? "?"}, ${input.stateCode} → $${result.estimatedValue.toLocaleString()} (LTV ${result.estimatedLTV}%)`);
     return result;

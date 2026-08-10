@@ -4,7 +4,7 @@
 // record on its own. See domain/types.ts (DiscoveredSignal) and
 // domain/actions.ts (runLeadDiscoveryAction) for the rest of the pipeline.
 
-import { capabilities, env } from "@/lib/env";
+import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 
 export interface RawSignal {
   source: "REDDIT";
@@ -29,7 +29,7 @@ let cachedToken: { value: string; expiresAt: number } | null = null;
 async function getRedditToken(): Promise<string> {
   if (cachedToken && cachedToken.expiresAt > Date.now()) return cachedToken.value;
 
-  const basic = Buffer.from(`${env.REDDIT_CLIENT_ID}:${env.REDDIT_CLIENT_SECRET}`).toString("base64");
+  const basic = Buffer.from(`${await getConfigValue("REDDIT_CLIENT_ID")}:${await getConfigValue("REDDIT_CLIENT_SECRET")}`).toString("base64");
   const res = await fetch("https://www.reddit.com/api/v1/access_token", {
     method: "POST",
     headers: {
@@ -46,7 +46,7 @@ async function getRedditToken(): Promise<string> {
 }
 
 export async function searchForSignals(query = DEFAULT_QUERY): Promise<DiscoveryResult> {
-  if (!capabilities.hasLeadDiscovery) {
+  if (!(await getCapabilities()).hasLeadDiscovery) {
     return { signals: simulateSignals(), simulated: true };
   }
   try {

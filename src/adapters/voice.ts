@@ -1,7 +1,7 @@
 // Thin Twilio Voice wrapper. Places a real outbound call reading a static,
 // compliance-approved message via inline TwiML — no public webhook required,
 // which keeps this safe to flip on for a same-day demo. A full conversational
-// voice agent (SPEC.md F-05, Vapi/Retell) is a separate, larger lift; see
+// voice agent (SPEC.md F-05, Vapi) is a separate, larger lift; see
 // adapters/voiceAgent.ts.
 //
 // Deliberately Twilio-only, unlike adapters/sms.ts: Twilio's Calls API takes
@@ -9,13 +9,16 @@
 // equivalent needs either a `Url` pointing at a *hosted* XML document or a
 // pre-created "TeXML Bin" in their dashboard — there's no inline-content
 // field, so per-call dynamic text needs a small XML-serving endpoint of our
-// own first. Genuinely buildable (and Telnyx is still the better economics
-// here, same as SMS), just a distinct, slightly larger piece of work than
-// the SMS swap — worth doing as a fast follow-up rather than shipping
-// untested on a delivery deadline. The AI voice agent (Vapi, above) doesn't
-// have this problem: Vapi can use either carrier's number interchangeably.
+// own first. Genuinely buildable, just a distinct piece of work from the SMS
+// swap. The AI voice agent doesn't have this problem: Vapi can use either
+// carrier's number interchangeably.
+//
+// Credentials resolve per call, so a key saved in Admin → Integrations works
+// on the next call with no redeploy.
 
-import { capabilities, env } from "@/lib/env";
+import { getConfigValue } from "@/lib/runtimeConfig";
+import { classifyFailure } from "@/core/deliveryStatus";
+import { adapterFailure, adapterSuccess, type AdapterResult } from "./result";
 
 export interface PlaceCallInput {
   to: string;
@@ -23,43 +26,30 @@ export interface PlaceCallInput {
   idempotencyKey: string;
 }
 
-export interface AdapterSendResult {
-  providerMessageId: string;
-  simulated: boolean;
-  error?: string;
-}
-
 function escapeXml(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-let twilioClient: import("twilio").Twilio | null = null;
-async function getClient() {
-  if (!twilioClient) {
-    const { default: Twilio } = await import("twilio");
-    twilioClient = Twilio(env.TWILIO_ACCOUNT_SID!, env.TWILIO_AUTH_TOKEN!);
-  }
-  return twilioClient;
-}
+export async function placeCall(input: PlaceCallInput): Promise<AdapterResult> {
+  const sid = await getConfigValue("TWILIO_ACCOUNT_SID");
+  const token = await getConfigValue("TWILIO_AUTH_TOKEN");
+  const from = await getConfigValue("TWILIO_PHONE_NUMBER");
 
-export async function placeCall(input: PlaceCallInput): Promise<AdapterSendResult> {
-  if (!capabilities.hasTwilio) {
+  if (!sid || !token || !from) {
     console.log(`[SIMULATED CALL] to=${input.to} message="${input.message}"`);
-    return { providerMessageId: `sim_call_${input.idempotencyKey}`, simulated: true };
+    return adapterSuccess(`sim_call_${input.idempotencyKey}`, true);
   }
 
   try {
-    const client = await getClient();
+    const { default: Twilio } = await import("twilio");
+    const client = Twilio(sid, token);
     const twiml = `<Response><Say voice="Polly.Joanna">${escapeXml(input.message)}</Say></Response>`;
-    const call = await client.calls.create({
-      to: input.to,
-      from: env.TWILIO_PHONE_NUMBER!,
-      twiml,
-    });
-    return { providerMessageId: call.sid, simulated: false };
+    const call = await client.calls.create({ to: input.to, from, twiml });
+    return adapterSuccess(call.sid);
   } catch (err) {
-    const error = err instanceof Error ? err.message : "Unknown Twilio error";
-    console.error("[Twilio Voice] call failed:", error);
-    return { providerMessageId: `failed_${input.idempotencyKey}`, simulated: false, error };
+    const message = err instanceof Error ? err.message : "Unknown Twilio error";
+    const code = err && typeof err === "object" && "code" in err ? String((err as { code?: unknown }).code) : undefined;
+    console.error("[Twilio Voice] call failed:", message);
+    return adapterFailure(classifyFailure("twilio", code, message));
   }
 }

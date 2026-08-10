@@ -8,7 +8,7 @@ import { SignalActions } from "@/components/discovery/signal-actions";
 import { can } from "@/core/rbac";
 import { listSignals } from "@/domain/queries";
 import { getCurrentUser } from "@/domain/session";
-import { capabilities } from "@/lib/env";
+import { getCapabilities } from "@/lib/runtimeConfig";
 import { formatRelative } from "@/lib/utils";
 import type { DiscoveredSignal } from "@/domain/types";
 
@@ -27,6 +27,7 @@ const STATUS_TONE: Record<DiscoveredSignal["status"], "neutral" | "success" | "w
 };
 
 export default async function DiscoveryPage() {
+  const caps = await getCapabilities();
   const user = await getCurrentUser();
   const subject = { role: user.role, officerId: user.officerId };
 
@@ -54,8 +55,8 @@ export default async function DiscoveryPage() {
       />
 
       <div className="mb-5 flex items-center gap-2">
-        <Badge tone={capabilities.hasLeadDiscovery ? "success" : "neutral"}>
-          {capabilities.hasLeadDiscovery ? "Live — Reddit search" : "Simulated — set REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET"}
+        <Badge tone={caps.hasLeadDiscovery ? "success" : "neutral"}>
+          {caps.hasLeadDiscovery ? "Live — Reddit search" : "Simulated — set REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET"}
         </Badge>
         <Badge tone="neutral">{newSignals.length} awaiting review</Badge>
       </div>
@@ -86,7 +87,7 @@ export default async function DiscoveryPage() {
                       href={signal.sourceUrl}
                       target="_blank"
                       rel="noreferrer"
-                      title={capabilities.hasLeadDiscovery ? undefined : "Simulated post — link goes to the real subreddit, not this exact (fictional) thread."}
+                      title={caps.hasLeadDiscovery ? undefined : "Simulated post — link goes to the real subreddit, not this exact (fictional) thread."}
                       className="group inline-flex items-center gap-1.5 text-[14px] font-medium text-[var(--foreground)] hover:text-[var(--primary)]"
                     >
                       {signal.title}

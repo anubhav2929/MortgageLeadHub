@@ -1,125 +1,286 @@
-import Link from "next/link";
-import { CheckCircle2, CircleDashed, ExternalLink, AlertTriangle } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+"use client";
+
+import { useState, useTransition } from "react";
+import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, ExternalLink, Loader2, Lock, Plug, ShieldAlert, Sparkles } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { EmptyState } from "@/components/ui/empty-state";
-import { capabilities } from "@/lib/env";
+import { Button } from "@/components/ui/button";
+import { Input, Label } from "@/components/ui/input";
+import { useToast } from "@/components/ui/toast";
+import { INTEGRATIONS, type IntegrationCategory } from "@/core/integrationRegistry";
+import { saveIntegrationKeysAction, testIntegrationAction, type IntegrationStatus } from "@/domain/integrationActions";
 import { formatDateTime } from "@/lib/utils";
 import type { FailedAttemptItem } from "@/domain/queries";
 
-const ROWS = [
-  {
-    key: "hasTwilio" as const,
-    name: "Twilio — SMS & voice",
-    envVars: "TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER",
-    liveNote: "Call now / Text actions send real SMS and place real outbound calls.",
-    simNote: "Call now / Text actions are simulated and only write to the timeline.",
-  },
-  {
-    key: "hasAnthropic" as const,
-    name: "Anthropic — structured extraction",
-    envVars: "ANTHROPIC_API_KEY",
-    liveNote: "Conversation → Run AI extraction calls Claude with a schema-constrained tool.",
-    simNote: "Run AI extraction uses a deterministic keyword scan of the transcript instead.",
-  },
-  {
-    key: "hasResend" as const,
-    name: "Resend — email",
-    envVars: "RESEND_API_KEY, RESEND_FROM_EMAIL",
-    liveNote: "Email actions send a real message.",
-    simNote: "Email actions are simulated and only write to the timeline.",
-  },
-  {
-    key: "hasLiveVoiceAgent" as const,
-    name: "Voice AI agent (Vapi)",
-    envVars: "VAPI_API_KEY, VAPI_PHONE_NUMBER_ID, VAPI_WEBHOOK_SECRET",
-    liveNote: "The \"AI call\" action places a real outbound call; the transcript streams in via /api/webhooks/vapi.",
-    simNote: "Not configured, or only the API key is set — all three env vars are needed to go live (see adapters/voiceAgent.ts).",
-  },
-  {
-    key: "hasLeadDiscovery" as const,
-    name: "Lead discovery (Reddit search)",
-    envVars: "REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET",
-    liveNote: "Searches live public posts for refinance/equity intent. Signals still require manual review — see Lead Discovery.",
-    simNote: "Returns a fixed set of example posts so the review queue is demoable without a key.",
-  },
-  {
-    key: "hasPropertyData" as const,
-    name: "Property valuation / AVM (RentCast)",
-    envVars: "PROPERTY_DATA_API_KEY",
-    liveNote: "Live AVM lookups for leads that gave a street address (free tier: 50/month, cached per lead).",
-    simNote: "Not configured — property valuation uses a deterministic simulated estimate.",
-  },
-];
+const CATEGORY_ORDER: IntegrationCategory[] = ["Messaging", "AI", "Voice AI", "Data", "Platform"];
 
-export function IntegrationsPanel({ recentFailures }: { recentFailures: FailedAttemptItem[] }) {
+export function IntegrationsPanel({
+  statuses,
+  storageEnabled,
+  canEdit,
+  recentFailures,
+}: {
+  statuses: IntegrationStatus[];
+  storageEnabled: boolean;
+  canEdit: boolean;
+  recentFailures: FailedAttemptItem[];
+}) {
+  const [openId, setOpenId] = useState<string | null>(null);
+  const statusById = new Map(statuses.map((s) => [s.id, s]));
+
+  const liveCount = statuses.filter((s) => s.live && s.id !== "platform").length;
+  const totalCount = INTEGRATIONS.filter((i) => i.id !== "platform").length;
+
   return (
     <div className="space-y-4">
-      <p className="text-[13px] text-[var(--muted-foreground)]">
-        Drop real keys into <code className="rounded bg-[var(--background)] px-1 py-0.5 text-xs">.env.local</code> (see{" "}
-        <code className="rounded bg-[var(--background)] px-1 py-0.5 text-xs">.env.example</code>) and restart the
-        server — every channel below flips from simulated to live with no code changes.
-      </p>
-      <Card>
-        <CardContent className="divide-y divide-[var(--border)] p-0">
-          {ROWS.map((row) => {
-            const live = capabilities[row.key];
-            return (
-              <div key={row.key} className="flex items-start justify-between gap-4 px-5 py-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="text-[13px] font-medium text-[var(--foreground)]">{row.name}</p>
-                    <Badge tone={live ? "success" : "neutral"}>{live ? "Live" : "Simulated"}</Badge>
-                  </div>
-                  <p className="mt-1 text-xs text-[var(--muted-foreground)]">{live ? row.liveNote : row.simNote}</p>
-                  <p className="mt-1 font-mono text-[11px] text-[var(--muted-foreground)]">{row.envVars}</p>
+      {!storageEnabled && (
+        <div className="flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--warning-border)] bg-[var(--warning-tint)] px-4 py-3.5">
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
+          <div className="text-[13px] leading-relaxed text-[var(--foreground)]">
+            <p className="font-semibold">Set CREDENTIAL_SECRET before saving keys here.</p>
+            <p className="mt-1 text-[var(--muted-foreground)]">
+              Provider keys are encrypted before they&apos;re written to the database, and that needs one root secret
+              that <em>isn&apos;t</em> stored alongside them. Add an environment variable called{" "}
+              <code className="rounded bg-[var(--background)] px-1 py-0.5 font-mono text-[11.5px]">CREDENTIAL_SECRET</code>{" "}
+              set to any random string of 32+ characters, then redeploy. Generate one with{" "}
+              <code className="rounded bg-[var(--background)] px-1 py-0.5 font-mono text-[11.5px]">openssl rand -hex 32</code>.
+            </p>
+            <p className="mt-1.5 text-[var(--muted-foreground)]">
+              Until then you can still configure everything through environment variables directly — this panel will
+              show those as read-only.
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--background)] px-4 py-3.5">
+        <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-[var(--primary)]" />
+        <div className="text-[13px] leading-relaxed text-[var(--muted-foreground)]">
+          <span className="font-semibold text-[var(--foreground)]">
+            {liveCount} of {totalCount} integrations live.
+          </span>{" "}
+          Every provider simulates until its keys are here — nothing bills, and no real message goes out. Saving a key
+          takes effect on the very next send; there&apos;s no redeploy and no restart.
+        </div>
+      </div>
+
+      {CATEGORY_ORDER.map((category) => {
+        const defs = INTEGRATIONS.filter((i) => i.category === category);
+        if (defs.length === 0) return null;
+        return (
+          <div key={category}>
+            <p className="mb-2 mt-5 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+              {category}
+            </p>
+            <div className="flex flex-col gap-2.5">
+              {defs.map((def) => (
+                <IntegrationRow
+                  key={def.id}
+                  def={def}
+                  status={statusById.get(def.id)}
+                  open={openId === def.id}
+                  onToggle={() => setOpenId(openId === def.id ? null : def.id)}
+                  canEdit={canEdit && storageEnabled}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+
+      {recentFailures.length > 0 && (
+        <Card>
+          <CardContent className="p-5">
+            <p className="mb-2 text-[13px] font-semibold text-[var(--foreground)]">Recent provider failures</p>
+            <p className="mb-2.5 text-[12px] text-[var(--muted-foreground)]">
+              Sends that failed at the provider — usually a wrong key, an unverified trial number, or a suspended account.
+            </p>
+            <div className="flex flex-col gap-1.5">
+              {recentFailures.slice(0, 6).map((f, i) => (
+                <div key={`${f.leadPublicRef}-${i}`} className="flex items-center justify-between gap-3 text-[12.5px]">
+                  <span className="truncate text-[var(--foreground)]">
+                    {f.leadFullName} · {f.channel.toLowerCase()}
+                  </span>
+                  <span className="shrink-0 text-[var(--muted-foreground)]">{formatDateTime(f.scheduledFor)}</span>
                 </div>
-                {live ? (
-                  <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--success)]" />
-                ) : (
-                  <CircleDashed className="mt-0.5 h-4 w-4 shrink-0 text-[var(--muted-foreground)]" />
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function IntegrationRow({
+  def,
+  status,
+  open,
+  onToggle,
+  canEdit,
+}: {
+  def: (typeof INTEGRATIONS)[number];
+  status?: IntegrationStatus;
+  open: boolean;
+  onToggle: () => void;
+  canEdit: boolean;
+}) {
+  const { push } = useToast();
+  const [isSaving, startSave] = useTransition();
+  const [testing, setTesting] = useState(false);
+  const [values, setValues] = useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {};
+    for (const f of def.fields) init[f.key] = status?.fields.find((x) => x.key === f.key)?.display ?? "";
+    return init;
+  });
+
+  const live = status?.live ?? false;
+  const isPlatform = def.id === "platform";
+
+  function save() {
+    startSave(async () => {
+      const result = await saveIntegrationKeysAction(def.id, values);
+      push({ title: result.message, tone: result.ok ? "success" : "danger" });
+    });
+  }
+
+  async function runTest() {
+    setTesting(true);
+    const result = await testIntegrationAction(def.id);
+    setTesting(false);
+    push({ title: result.message, tone: result.ok ? "success" : "danger" });
+  }
+
+  return (
+    <Card>
+      <button
+        onClick={onToggle}
+        aria-expanded={open}
+        className="focus-ring flex w-full items-center justify-between gap-3 rounded-[var(--radius-lg)] px-5 py-4 text-left"
+      >
+        <span className="flex min-w-0 items-center gap-3">
+          {open ? (
+            <ChevronDown className="h-4 w-4 shrink-0 text-[var(--muted-foreground)]" />
+          ) : (
+            <ChevronRight className="h-4 w-4 shrink-0 text-[var(--muted-foreground)]" />
+          )}
+          <span className="min-w-0">
+            <span className="flex items-center gap-2">
+              <span className="text-[14px] font-semibold text-[var(--foreground)]">{def.name}</span>
+              {def.freeTier && <Badge tone="neutral">{def.freeTier}</Badge>}
+            </span>
+            <span className="mt-0.5 block truncate text-[12.5px] text-[var(--muted-foreground)]">{def.powers}</span>
+          </span>
+        </span>
+        <span className="shrink-0">
+          {isPlatform ? (
+            <Badge tone="neutral">Settings</Badge>
+          ) : live ? (
+            <Badge tone="success">
+              <CheckCircle2 className="mr-1 inline h-3 w-3" />
+              Live
+            </Badge>
+          ) : (
+            <Badge tone="neutral">
+              <CircleDashed className="mr-1 inline h-3 w-3" />
+              Simulated
+            </Badge>
+          )}
+        </span>
+      </button>
+
+      {open && (
+        <CardContent className="border-t border-[var(--border)] px-5 py-5">
+          <div className="grid gap-6 lg:grid-cols-[1.1fr_1fr]">
+            <div>
+              <p className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+                Credentials
+              </p>
+              <div className="flex flex-col gap-3.5">
+                {def.fields.map((f) => {
+                  const fieldStatus = status?.fields.find((x) => x.key === f.key);
+                  return (
+                    <div key={f.key}>
+                      <Label htmlFor={`int-${f.key}`}>
+                        {f.label}
+                        {f.optional && <span className="ml-1.5 text-[var(--muted-foreground)]">(optional)</span>}
+                      </Label>
+                      <Input
+                        id={`int-${f.key}`}
+                        value={values[f.key] ?? ""}
+                        onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}
+                        placeholder={f.placeholder}
+                        disabled={!canEdit || fieldStatus?.fromEnv}
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                      <p className="mt-1 text-[11.5px] text-[var(--muted-foreground)]">
+                        {fieldStatus?.fromEnv ? (
+                          <span className="flex items-center gap-1">
+                            <Lock className="h-3 w-3" /> Set by an environment variable — edit it there, or remove it to
+                            manage the key here.
+                          </span>
+                        ) : (
+                          f.help
+                        )}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <Button onClick={save} loading={isSaving} disabled={!canEdit}>
+                  Save
+                </Button>
+                {!isPlatform && (
+                  <Button variant="secondary" onClick={runTest} disabled={testing}>
+                    {testing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Plug className="mr-1.5 h-3.5 w-3.5" />}
+                    Test connection
+                  </Button>
+                )}
+                {def.docsUrl && (
+                  <a
+                    href={def.docsUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="focus-ring inline-flex items-center gap-1 rounded-[var(--radius-sm)] px-2 py-1 text-[12.5px] font-medium text-[var(--primary)] hover:underline"
+                  >
+                    Open dashboard <ExternalLink className="h-3 w-3" />
+                  </a>
                 )}
               </div>
-            );
-          })}
-        </CardContent>
-      </Card>
-      <a
-        href="https://console.anthropic.com"
-        target="_blank"
-        rel="noreferrer"
-        className="inline-flex items-center gap-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-      >
-        console.anthropic.com <ExternalLink className="h-3 w-3" />
-      </a>
 
-      <Card>
-        <CardHeader>
-          <div>
-            <CardTitle>Recent delivery failures</CardTitle>
-            <CardDescription>Attempts a provider actually rejected — a live integration with recurring failures here needs attention, not just a green &quot;Live&quot; badge above.</CardDescription>
+              {!canEdit && (
+                <p className="mt-2.5 text-[11.5px] text-[var(--muted-foreground)]">
+                  Read-only — Admin role and CREDENTIAL_SECRET are both required to change keys.
+                </p>
+              )}
+            </div>
+
+            <div className="rounded-[var(--radius-md)] bg-[var(--background)] p-4">
+              <p className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
+                How to set this up
+              </p>
+              <ol className="flex list-none flex-col gap-2.5">
+                {def.setupSteps.map((step, i) => (
+                  <li key={i} className="flex gap-2.5 text-[12.5px] leading-relaxed text-[var(--foreground)]">
+                    <span className="flex h-4.5 w-4.5 mt-0.5 h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-[var(--primary-tint)] text-[10px] font-bold text-[var(--primary)]">
+                      {i + 1}
+                    </span>
+                    <span>{step}</span>
+                  </li>
+                ))}
+              </ol>
+              {def.alternativeNote && (
+                <p className="mt-3 border-t border-[var(--border)] pt-3 text-[11.5px] leading-relaxed text-[var(--muted-foreground)]">
+                  {def.alternativeNote}
+                </p>
+              )}
+            </div>
           </div>
-        </CardHeader>
-        <CardContent className={recentFailures.length === 0 ? "" : "divide-y divide-[var(--border)] p-0"}>
-          {recentFailures.length === 0 ? (
-            <EmptyState icon={AlertTriangle} title="No recent failures" />
-          ) : (
-            recentFailures.map((f, i) => (
-              <Link
-                key={i}
-                href={`/workspace/leads/${f.leadPublicRef}`}
-                className="flex items-center justify-between gap-3 px-5 py-3 transition-colors hover:bg-[var(--background)]"
-              >
-                <span className="text-[13px] font-medium text-[var(--foreground)]">{f.leadFullName}</span>
-                <span className="flex items-center gap-1.5 text-xs text-[var(--danger)]">
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  {f.channel} · {formatDateTime(f.scheduledFor)}
-                </span>
-              </Link>
-            ))
-          )}
         </CardContent>
-      </Card>
-    </div>
+      )}
+    </Card>
   );
 }

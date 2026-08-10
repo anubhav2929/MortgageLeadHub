@@ -10,7 +10,9 @@ import { NextResponse } from "next/server";
 import { pushEvent, runExtractionForConversation } from "@/domain/actions";
 import { getDb, nowIso, saveDb } from "@/domain/store";
 import { safeCompare } from "@/core/auth";
-import { env } from "@/lib/env";
+import { isAnsweredOutcome, mapVapiEndedReason } from "@/core/deliveryStatus";
+import { transition, InvalidTransitionError } from "@/core/stateMachine";
+import { getConfigValue } from "@/lib/runtimeConfig";
 
 interface VapiServerMessage {
   type: string;
@@ -18,12 +20,16 @@ interface VapiServerMessage {
   role?: "assistant" | "user";
   transcriptType?: "partial" | "final";
   transcript?: string;
-  artifact?: { transcript?: string };
+  /** Why the call ended — the only signal distinguishing a real conversation
+   *  from a voicemail, a no-answer, or a pipeline error. */
+  endedReason?: string;
+  artifact?: { transcript?: string; recordingUrl?: string };
   call?: { metadata?: { leadId?: string; conversationId?: string } };
 }
 
 export async function POST(request: Request) {
-  if (!env.VAPI_WEBHOOK_SECRET || !safeCompare(request.headers.get("x-vapi-secret") ?? "", env.VAPI_WEBHOOK_SECRET)) {
+  const vapiSecret = await getConfigValue("VAPI_WEBHOOK_SECRET");
+  if (!vapiSecret || !safeCompare(request.headers.get("x-vapi-secret") ?? "", vapiSecret)) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
@@ -74,10 +80,50 @@ export async function POST(request: Request) {
         conversation.transcript.push({ turn: 1, role: "BORROWER", text: message.artifact.transcript, at: nowIso() });
       }
 
+      // Settle the ContactAttempt. Without this every AI call sits at QUEUED
+      // forever: the lead's history shows a call that never resolved, and
+      // nothing downstream can tell a conversation from a voicemail.
+      const outcome = mapVapiEndedReason(message.endedReason);
+      const attempt = db.attempts.find((a) => a.id === conversation.contactAttemptId);
+      if (attempt) {
+        attempt.outcome = outcome;
+        attempt.endedAt = nowIso();
+        if (message.artifact?.recordingUrl) attempt.recordingUrl = message.artifact.recordingUrl;
+        if (conversation.startedAt) {
+          attempt.durationSec = Math.max(
+            0,
+            Math.round((Date.now() - new Date(conversation.startedAt).getTime()) / 1000)
+          );
+        }
+      }
+
       const lead = db.leads.get(conversation.leadId);
       if (lead) {
-        await pushEvent({ leadId: lead.id, type: "CONVERSATION_COMPLETED", actorType: "SYSTEM", occurredAt: nowIso(), channel: "VOICE" });
-        if (conversation.transcript.length > 0) {
+        // Only a call the borrower actually engaged with advances the lead.
+        // Marking a voicemail as IN_CONVERSATION would put it in front of an
+        // officer as a live opportunity that never happened.
+        if (isAnsweredOutcome(outcome)) {
+          lead.lastContactAt = nowIso();
+          try {
+            lead.state = transition(lead.state, "CONTACT_ANSWERED");
+          } catch (err) {
+            if (!(err instanceof InvalidTransitionError)) throw err;
+          }
+          await pushEvent({ leadId: lead.id, type: "CONTACT_ANSWERED", actorType: "SYSTEM", occurredAt: nowIso(), channel: "VOICE" });
+        }
+        lead.updatedAt = nowIso();
+
+        await pushEvent({
+          leadId: lead.id,
+          type: "CONVERSATION_COMPLETED",
+          actorType: "SYSTEM",
+          occurredAt: nowIso(),
+          channel: "VOICE",
+          payload: { outcome, endedReason: message.endedReason },
+        });
+
+        // Extraction only makes sense when somebody actually said something.
+        if (isAnsweredOutcome(outcome) && conversation.transcript.length > 0) {
           await runExtractionForConversation(db, lead, conversation, { actorType: "SYSTEM" });
         }
       }

@@ -38,6 +38,7 @@ const MAP_KEYS: (keyof Database)[] = [
   "sessions",
   "authTokens",
   "intakeDrafts",
+  "credentials",
 ];
 
 function toSerializable(db: Database): Record<string, unknown> {

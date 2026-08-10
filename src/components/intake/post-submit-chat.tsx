@@ -101,16 +101,23 @@ export function PostSubmitChat({
   const [question, setQuestion] = useState("");
   const [questionSubmitting, setQuestionSubmitting] = useState(false);
   const [questionSent, setQuestionSent] = useState(false);
+  // The exchange so far, so the borrower sees their own question and the
+  // reply in place rather than a bare "sent" confirmation.
+  const [qaLog, setQaLog] = useState<{ from: Sender; text: string }[]>([]);
 
   function submitQuestion() {
     const trimmed = question.trim();
     if (!trimmed || questionSubmitting) return;
     setQuestionSubmitting(true);
+    setQaLog((prev) => [...prev, { from: "borrower", text: trimmed }]);
+    setQuestion("");
     submitBorrowerMessageAction(publicRef, trimmed).then((result) => {
       setQuestionSubmitting(false);
       if (result.ok) {
-        setQuestion("");
         setQuestionSent(true);
+        // The action returns the assistant's actual reply (or an honest
+        // "an officer will follow up" when no AI provider is configured).
+        setQaLog((prev) => [...prev, { from: "agent", text: result.message }]);
       }
     });
   }
@@ -346,6 +353,27 @@ export function PostSubmitChat({
       {/* Persistent free-text channel to the officer — always available, not
           gated behind the scripted quick-reply flow above */}
       <div className="border-t border-[var(--border)] px-5 py-4">
+        {qaLog.length > 0 && (
+          <div className="mb-3 flex flex-col gap-2">
+            {qaLog.map((m, i) => (
+              <div
+                key={i}
+                className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-[13.5px] leading-relaxed ${
+                  m.from === "agent"
+                    ? "self-start rounded-bl-sm bg-[var(--background)] text-[var(--foreground)]"
+                    : "self-end rounded-br-sm bg-[var(--primary)] text-white"
+                }`}
+              >
+                {m.text}
+              </div>
+            ))}
+            {questionSubmitting && (
+              <div className="flex items-center gap-1.5 self-start rounded-2xl rounded-bl-sm bg-[var(--background)] px-3.5 py-2.5 text-[13px] text-[var(--muted-foreground)]">
+                <Loader2 className="h-3 w-3 animate-spin" /> Thinking…
+              </div>
+            )}
+          </div>
+        )}
         <label htmlFor="borrower-question" className="mb-1.5 block text-xs font-medium text-[var(--muted-foreground)]">
           Ask a question or tell us something
         </label>
@@ -371,8 +399,8 @@ export function PostSubmitChat({
           </button>
         </div>
         {questionSent && (
-          <p className="mt-1.5 flex items-center gap-1.5 text-xs font-medium text-[var(--success)]">
-            <CheckCircle2 className="h-3.5 w-3.5" /> Sent — your loan officer will see this.
+          <p className="mt-1.5 flex items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
+            <CheckCircle2 className="h-3.5 w-3.5 text-[var(--success)]" /> Your loan officer can see this conversation too.
           </p>
         )}
       </div>

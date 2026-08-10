@@ -13,7 +13,7 @@
 import { NextResponse } from "next/server";
 import { ingestInboundEmail } from "@/domain/inboundEmail";
 import { verifySvixSignature } from "@/core/auth";
-import { capabilities, env } from "@/lib/env";
+import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 
 interface ResendReceivedEvent {
   type: string;
@@ -28,13 +28,13 @@ interface ResendReceivedEmail {
 }
 
 export async function POST(request: Request) {
-  if (!capabilities.hasInboundEmail) {
+  if (!(await getCapabilities()).hasInboundEmail) {
     return NextResponse.json({ ok: false, error: "Inbound email is not configured" }, { status: 401 });
   }
 
   const rawBody = await request.text();
   const verified = verifySvixSignature(
-    env.RESEND_INBOUND_WEBHOOK_SECRET!,
+    (await getConfigValue("RESEND_INBOUND_WEBHOOK_SECRET"))!,
     {
       id: request.headers.get("svix-id"),
       timestamp: request.headers.get("svix-timestamp"),
@@ -57,7 +57,7 @@ export async function POST(request: Request) {
   if (event.type !== "email.received" || !emailId) return NextResponse.json({ ok: true });
 
   const res = await fetch(`https://api.resend.com/emails/receiving/${emailId}`, {
-    headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` },
+    headers: { Authorization: `Bearer ${await getConfigValue("RESEND_API_KEY")}` },
   });
   if (!res.ok) {
     console.error(`[resend-inbound] failed to fetch email ${emailId}: ${res.status} ${await res.text()}`);

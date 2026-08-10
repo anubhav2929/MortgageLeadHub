@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useMemo, useState, useTransition } from "react";
-import { Save, AlertTriangle } from "lucide-react";
+import { Save, AlertTriangle, ShieldAlert } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
@@ -38,6 +38,28 @@ function validate(form: SystemConfig): string | null {
   }
   return null;
 }
+
+const OVERRIDE_OPTIONS: {
+  key: NonNullable<keyof NonNullable<SystemConfig["outreachOverrides"]>>;
+  label: string;
+  help: string;
+}[] = [
+  {
+    key: "ignoreQuietHours",
+    label: "Allow contact outside permitted local hours",
+    help: "Calls and texts can go out at any hour in the borrower's own timezone, including Sundays and the stricter FL/WA/OR windows.",
+  },
+  {
+    key: "ignoreAttemptCaps",
+    label: "Allow exceeding the daily attempt cap",
+    help: "A lead can be contacted more times per day than the cap above allows.",
+  },
+  {
+    key: "ignoreMinSpacing",
+    label: "Allow back-to-back attempts",
+    help: "Removes the minimum wait between two consecutive touches on the same channel.",
+  },
+];
 
 export function SettingsPanel({ config, canEdit }: { config: SystemConfig; canEdit: boolean }) {
   const [form, setForm] = useState(config);
@@ -89,8 +111,8 @@ export function SettingsPanel({ config, canEdit }: { config: SystemConfig; canEd
           <div>
             <CardTitle>Outreach sender identity</CardTitle>
             <CardDescription>
-              The From name and address shown to borrowers on every email the team sends. Live once RESEND_API_KEY
-              is set — until then, sends are simulated and logged with this identity.
+              The From name and address shown to borrowers on every email the team sends. Live as soon as a Resend
+              key is saved under Integrations — until then, sends are simulated and logged with this identity.
             </CardDescription>
           </div>
         </CardHeader>
@@ -181,6 +203,52 @@ export function SettingsPanel({ config, canEdit }: { config: SystemConfig; canEd
             />
             <p className="mt-1 text-xs text-[var(--muted-foreground)]">
               Score strictly above this routes to an instant officer hot-transfer alert instead of the standard nurture flow.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div>
+            <CardTitle className="flex items-center gap-1.5">
+              <ShieldAlert className="h-3.5 w-3.5 text-[var(--warning)]" /> Manual outreach overrides
+            </CardTitle>
+            <CardDescription>
+              Lets an admin or officer contact a lead outside the normal pacing rules — off by default. These apply
+              only to a person clicking Call, Text, or Email. Automated cadence steps never inherit them, because an
+              unattended dialer running at 3am is a different kind of risk than a human deciding to make one late call.
+            </CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {OVERRIDE_OPTIONS.map((opt) => (
+            <label
+              key={opt.key}
+              className="flex cursor-pointer items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3"
+            >
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 accent-[var(--warning)]"
+                disabled={!canEdit}
+                checked={Boolean(form.outreachOverrides?.[opt.key])}
+                onChange={(e) =>
+                  update("outreachOverrides", { ...form.outreachOverrides, [opt.key]: e.target.checked })
+                }
+              />
+              <span>
+                <span className="block text-[13px] font-medium text-[var(--foreground)]">{opt.label}</span>
+                <span className="block text-xs text-[var(--muted-foreground)]">{opt.help}</span>
+              </span>
+            </label>
+          ))}
+
+          <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--background)] p-3">
+            <p className="text-xs font-medium text-[var(--foreground)]">What these can never override</p>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--muted-foreground)]">
+              Opt-outs and STOP replies, the suppression and DNC list, missing or revoked consent, the global kill
+              switch, and closed or suppressed leads. Those are legal bars, not pacing preferences, and no setting in
+              this app can switch them off. Every override change is written to the audit log with your name.
             </p>
           </div>
         </CardContent>

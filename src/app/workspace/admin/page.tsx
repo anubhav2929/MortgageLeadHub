@@ -12,6 +12,7 @@ import { SuppressionPanel } from "@/components/admin/suppression-panel";
 import { KillSwitchPanel } from "@/components/admin/kill-switch-panel";
 import { AuditLogPanel } from "@/components/admin/audit-log-panel";
 import { IntegrationsPanel } from "@/components/admin/integrations-panel";
+import { getIntegrationStatusesAction } from "@/domain/integrationActions";
 import { ReferralPartnersPanel } from "@/components/admin/referral-partners-panel";
 import { IntakeDraftsPanel } from "@/components/admin/intake-drafts-panel";
 import { can } from "@/core/rbac";
@@ -61,6 +62,9 @@ export default async function AdminPage() {
     listRecentFailedAttempts(),
     listIntakeDrafts(),
   ]);
+
+  // Admin-only; the tab itself is gated below.
+  const integrationData = user.role === "ADMIN" ? await getIntegrationStatusesAction() : null;
 
   return (
     <div className="animate-fade-in">
@@ -169,7 +173,16 @@ export default async function AdminPage() {
             />
           </TabsContent>
           <TabsContent value="integrations">
-            <IntegrationsPanel recentFailures={recentFailures} />
+            {integrationData ? (
+              <IntegrationsPanel
+                statuses={integrationData.integrations}
+                storageEnabled={integrationData.storageEnabled}
+                canEdit={user.role === "ADMIN"}
+                recentFailures={recentFailures}
+              />
+            ) : (
+              <EmptyState icon={ShieldX} title="Admin only" description="Provider API keys can only be viewed and changed by an Admin." />
+            )}
           </TabsContent>
           <TabsContent value="audit">
             <AuditLogPanel logs={auditLogs} />

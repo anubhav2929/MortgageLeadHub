@@ -11,7 +11,7 @@ import { hashPassword, verifyPassword, generateToken } from "@/core/auth";
 import { audit } from "@/domain/actions";
 import { createSession, destroySession } from "@/domain/session";
 import { getDb, newId, saveDb } from "@/domain/store";
-import { getAppUrl } from "@/lib/env";
+import { getAppUrl } from "@/lib/runtimeConfig";
 
 export interface AuthResult {
   ok: boolean;
@@ -96,14 +96,21 @@ export async function requestPasswordResetAction(email: string): Promise<AuthRes
   });
   saveDb();
 
-  const resetUrl = `${getAppUrl()}/reset-password?token=${token}`;
-  await sendEmail({
+  const resetUrl = `${await getAppUrl()}/reset-password?token=${token}`;
+  const emailResult = await sendEmail({
     to: user.email,
     subject: "Reset your Equity Flow Group password",
     text: `Hi ${user.name.split(" ")[0]},\n\nReset your password:\n${resetUrl}\n\nThis link expires in 1 hour. If you didn't request this, you can ignore this email.\n\n— Equity Flow Group`,
     idempotencyKey: newId("idem"),
     from: `${db.config.senderName} <${db.config.senderEmail}>`,
   });
+  // The response stays generic whether or not the send worked — telling the
+  // caller "that email failed" would confirm the address exists, which is the
+  // user-enumeration leak this endpoint is written to avoid. The operator
+  // still needs to know, so the failure goes to the log and the audit trail.
+  if (!emailResult.ok) {
+    console.error(`[requestPasswordReset] reset email failed for user ${user.id}: ${emailResult.failure.message}`);
+  }
   await audit(user.id, user.name, "REQUEST_PASSWORD_RESET", "User", user.id, "ALLOW");
   return response;
 }

@@ -43,6 +43,36 @@ export interface GateInput {
     quietHoursStart?: number;
     quietHoursEnd?: number;
   };
+  /**
+   * Admin escalation for a manual, human-initiated touch.
+   *
+   * Scope is deliberately narrow. These relax *timing and volume* rules —
+   * pacing decisions the business owns. They can never relax the bars above
+   * them: kill switch, suppression, opt-out, missing or revoked consent, and
+   * terminal lead states are unconditional, and no setting in this app can
+   * turn them off.
+   *
+   * They are also honoured ONLY when isManualOfficerAction is true. An admin
+   * choosing to call someone at 9pm is a human decision with a named person
+   * accountable for it; an unattended cadence dialling at 3am is a lawsuit.
+   * Automation never gets this escape hatch.
+   */
+  overrides?: PolicyOverrides;
+}
+
+export interface PolicyOverrides {
+  /** Contact outside the borrower's local quiet hours, and on Sundays. */
+  ignoreQuietHours?: boolean;
+  /** Exceed the daily attempt cap. */
+  ignoreAttemptCaps?: boolean;
+  /** Ignore the minimum spacing between consecutive attempts. */
+  ignoreMinSpacing?: boolean;
+}
+
+/** True when any override is enabled — callers use this to force an audit
+ *  entry, so an out-of-hours contact is always attributable to a person. */
+export function hasActiveOverride(o: PolicyOverrides | undefined): boolean {
+  return Boolean(o && (o.ignoreQuietHours || o.ignoreAttemptCaps || o.ignoreMinSpacing));
 }
 
 export interface PolicyDecisionResult {
@@ -124,6 +154,9 @@ export function evaluatePolicyGate(input: GateInput): PolicyDecisionResult {
     isManualOfficerAction,
   } = input;
 
+  // Overrides apply to manual officer/admin actions only — never automation.
+  const overrides: PolicyOverrides = isManualOfficerAction ? input.overrides ?? {} : {};
+
   const dailyAttemptCap = input.config?.dailyAttemptCap ?? DAILY_ATTEMPT_CAP;
   const minSpacingHours = input.config?.minSpacingHours ?? MIN_SPACING_HOURS;
   const quietHours =
@@ -187,7 +220,7 @@ export function evaluatePolicyGate(input: GateInput): PolicyDecisionResult {
   const timezone = personTimezone === "UNKNOWN" ? "UTC" : personTimezone;
   const local = localHourAndDay(now, timezone);
 
-  if (channel !== "EMAIL" && local) {
+  if (channel !== "EMAIL" && local && !overrides.ignoreQuietHours) {
     const stateHours = input.propertyStateCode
       ? STRICTER_STATE_QUIET_HOURS[input.propertyStateCode] ?? quietHours
       : quietHours;
@@ -214,7 +247,7 @@ export function evaluatePolicyGate(input: GateInput): PolicyDecisionResult {
   }
 
   // 11. ATTEMPT_CAP_DAILY
-  if (attemptsToday >= dailyAttemptCap) {
+  if (attemptsToday >= dailyAttemptCap && !overrides.ignoreAttemptCaps) {
     const stateHours = input.propertyStateCode
       ? STRICTER_STATE_QUIET_HOURS[input.propertyStateCode] ?? quietHours
       : quietHours;
@@ -224,7 +257,7 @@ export function evaluatePolicyGate(input: GateInput): PolicyDecisionResult {
   }
 
   // 12. MIN_SPACING
-  if (lastAttemptAt) {
+  if (lastAttemptAt && !overrides.ignoreMinSpacing) {
     const hoursSince = (now.getTime() - lastAttemptAt.getTime()) / (1000 * 60 * 60);
     if (hoursSince < minSpacingHours) {
       const next = new Date(lastAttemptAt.getTime() + minSpacingHours * 60 * 60 * 1000);

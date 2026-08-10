@@ -64,6 +64,9 @@ export async function buildGateInput(lead: Lead, channel: Channel, isManualOffic
       quietHoursStart: db.config.quietHoursStart,
       quietHoursEnd: db.config.quietHoursEnd,
     },
+    // PolicyGate itself discards these unless isManualOfficerAction is true,
+    // so passing them unconditionally is safe — automation can't inherit them.
+    overrides: db.config.outreachOverrides,
   };
 }
 

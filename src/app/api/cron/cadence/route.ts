@@ -17,21 +17,22 @@ import { NextResponse } from "next/server";
 import { runCadenceTick } from "@/domain/cadenceEngine";
 import { purgeStaleIntakeDrafts } from "@/domain/queries";
 import { safeCompare } from "@/core/auth";
-import { env } from "@/lib/env";
+import { getConfigValue } from "@/lib/runtimeConfig";
 
 const isProduction = process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production";
 
 export const maxDuration = 60;
 
 export async function GET(request: Request) {
-  if (isProduction && !env.CRON_SECRET) {
+  const cronSecret = await getConfigValue("CRON_SECRET");
+  if (isProduction && !cronSecret) {
     console.error("[cadence-cron] CRON_SECRET is not set in production — refusing to run.");
     return NextResponse.json({ ok: false, error: "CRON_SECRET is not configured" }, { status: 401 });
   }
 
-  if (env.CRON_SECRET) {
+  if (cronSecret) {
     const auth = request.headers.get("authorization") ?? "";
-    if (!safeCompare(auth, `Bearer ${env.CRON_SECRET}`)) {
+    if (!safeCompare(auth, `Bearer ${cronSecret}`)) {
       return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
     }
   }

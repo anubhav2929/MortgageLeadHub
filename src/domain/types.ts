@@ -65,17 +65,28 @@ export type ReferralType = "NONE" | "LOAN_MODIFICATION" | "FORECLOSURE";
 
 export type ContactWindow = "MORNING" | "AFTERNOON" | "EVENING" | "ANY";
 
-export type TaskType =
-  | "FIRST_CONTACT"
-  | "FOLLOW_UP"
-  | "REVIEW_MISSING_FIELDS"
-  | "ACKNOWLEDGE_HANDOFF"
-  | "COMPLAINT"
-  | "NO_ELIGIBLE_OFFICER"
-  | "PRIORITY_CALLBACK_REQUESTED"
-  | "HOT_LEAD_ALERT"
-  | "BORROWER_MESSAGE"
-  | "INBOUND_EMAIL";
+/** The single source of truth for task types. TaskType is derived from this
+ *  array rather than declared separately, so a new type cannot be added to the
+ *  union while the UI's filter list silently keeps the old set — which is
+ *  exactly what happened when the delivery-failure types were introduced. */
+export const ALL_TASK_TYPES = [
+  "FIRST_CONTACT",
+  "FOLLOW_UP",
+  "REVIEW_MISSING_FIELDS",
+  "ACKNOWLEDGE_HANDOFF",
+  "COMPLAINT",
+  "NO_ELIGIBLE_OFFICER",
+  "PRIORITY_CALLBACK_REQUESTED",
+  "HOT_LEAD_ALERT",
+  "BORROWER_MESSAGE",
+  "INBOUND_EMAIL",
+  /** A contact address the provider says is permanently undeliverable. */
+  "REVIEW_CONTACT_DATA",
+  /** A provider credential/registration problem affecting every lead. */
+  "INTEGRATION_ALERT",
+] as const;
+
+export type TaskType = (typeof ALL_TASK_TYPES)[number];
 
 export type TaskStatus = "OPEN" | "COMPLETED" | "CANCELLED";
 
@@ -88,6 +99,11 @@ export type LeadEventType =
   | "OUTREACH_ATTEMPTED"
   | "OUTREACH_BLOCKED"
   | "OUTREACH_DEFERRED"
+  /** A send was attempted and the provider rejected it. Distinct from
+   *  OUTREACH_BLOCKED, which is our own PolicyGate refusing to send. */
+  | "OUTREACH_FAILED"
+  /** A provider delivery webhook advanced an attempt's outcome. */
+  | "DELIVERY_UPDATED"
   | "CONTACT_ANSWERED"
   | "CONVERSATION_COMPLETED"
   | "FIELDS_EXTRACTED"
@@ -205,6 +221,28 @@ export interface ContactAttempt {
   durationSec?: number;
   loggedById?: string;
   loggedByName?: string;
+  /** Why a send failed, when it did. PERMANENT means the destination is bad
+   *  and the channel should be suppressed for this lead; CONFIGURATION means
+   *  every lead is affected and an administrator must act. See
+   *  core/deliveryStatus.ts. */
+  failureClass?: "PERMANENT" | "TRANSIENT" | "CONFIGURATION";
+  failureMessage?: string;
+  /** Set when a transient failure is scheduled to be retried, so the cadence
+   *  engine can pick it up without re-deriving the backoff. */
+  retryAfter?: string;
+  retryCount?: number;
+  /** Last provider delivery status applied, for out-of-order webhook rejection. */
+  deliveryUpdatedAt?: string;
+}
+
+/** A provider credential entered through Admin → Integrations. `value` is
+ *  always an encrypted payload (core/secretBox.ts) — never plaintext, even
+ *  for non-secret fields, so the storage path has one rule instead of two. */
+export interface IntegrationCredential {
+  key: string;
+  value: string;
+  updatedAt: string;
+  updatedByName: string;
 }
 
 export interface SystemConfig {
@@ -217,6 +255,17 @@ export interface SystemConfig {
   senderEmail: string;
   scoringWeights: ScoringWeights;
   hotLeadThreshold: number;
+  /**
+   * Admin escalation for manual outreach. Relaxes pacing rules only — quiet
+   * hours, daily caps, spacing. It cannot relax consent, suppression,
+   * opt-out, the kill switch, or terminal lead states, and it is ignored
+   * entirely for automated cadence steps. See core/policyGate.ts.
+   */
+  outreachOverrides?: {
+    ignoreQuietHours?: boolean;
+    ignoreAttemptCaps?: boolean;
+    ignoreMinSpacing?: boolean;
+  };
 }
 
 // Max points per lead-quality-score component (Equity Flow Group business
@@ -474,7 +523,25 @@ export interface PropertyValuationResult {
   /** estimatedValue - estimatedMortgageBalance, floored at 0. */
   usableEquity: number;
   simulated: boolean;
+  /** Per-field origin. `simulated` alone is too coarse: even on a live
+   *  RentCast lookup the balance/LTV/equity trio is modeled, because no AVM
+   *  vendor publishes outstanding mortgage balances. Labelling the whole card
+   *  "Live estimate" therefore overstated three numbers a loan officer might
+   *  quote to a borrower. MEASURED = returned by the vendor;
+   *  MODELED = derived by us from an assumption. */
+  provenance: Record<PropertyValuationField, "MEASURED" | "MODELED">;
 }
+
+export type PropertyValuationField =
+  | "estimatedValue"
+  | "confidenceRange"
+  | "comparableCount"
+  | "lastSale"
+  | "estimatedMortgageBalance"
+  | "estimatedLTV"
+  | "usableEquity"
+  | "propertyType"
+  | "yearBuilt";
 
 export interface User {
   id: string;

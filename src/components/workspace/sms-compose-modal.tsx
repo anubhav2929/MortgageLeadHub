@@ -21,7 +21,7 @@ export function SmsComposeModal({ publicRef, onClose }: { publicRef: string; onC
     // See EmailComposeModal for why this isn't gated on a "cancelled" flag.
     generateDraftAction(publicRef, "SMS").then((draft) => {
       setBody(draft.body);
-      setAiNote(draft.simulated ? "Simulated draft — set ANTHROPIC_API_KEY for a live AI draft." : "Drafted by Claude — review before sending.");
+      setAiNote(draft.simulated ? "Simulated draft — add an Anthropic or NVIDIA key under Admin → Integrations for a live AI draft." : "Drafted by Claude — review before sending.");
       setDrafting(false);
     });
   }, [publicRef]);

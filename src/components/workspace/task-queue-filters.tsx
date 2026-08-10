@@ -3,20 +3,11 @@
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Select } from "@/components/ui/input";
 import { titleCase } from "@/lib/utils";
-import type { TaskType } from "@/domain/types";
+import { ALL_TASK_TYPES } from "@/domain/types";
 
-const TASK_TYPES: TaskType[] = [
-  "FIRST_CONTACT",
-  "FOLLOW_UP",
-  "REVIEW_MISSING_FIELDS",
-  "ACKNOWLEDGE_HANDOFF",
-  "COMPLAINT",
-  "NO_ELIGIBLE_OFFICER",
-  "PRIORITY_CALLBACK_REQUESTED",
-  "HOT_LEAD_ALERT",
-  "BORROWER_MESSAGE",
-  "INBOUND_EMAIL",
-];
+// Derived from the domain, never re-listed here — a hand-maintained copy
+// drifts the moment a task type is added.
+const TASK_TYPES = ALL_TASK_TYPES;
 
 export function TaskQueueFilters({
   isOfficer,

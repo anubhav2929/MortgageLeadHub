@@ -1,36 +1,76 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Equity Flow Group — Lead Platform
 
-## Getting Started
+A mortgage lead intake, qualification, and outreach platform. Borrowers submit an
+inquiry; the system scores it, decides whether and how it may legally be
+contacted, runs an AI-assisted multi-channel cadence, and hands qualified leads
+to a licensed loan officer.
 
-First, run the development server:
+The compliance surface is the point. Contacting a borrower on the wrong channel,
+at the wrong hour, in a state nobody on the team is licensed in, or after they
+have opted out are all regulatory events, not UX bugs — so those rules live in
+one pure, heavily tested module (`src/core/policyGate.ts`) that every outbound
+path must pass through.
+
+## Quick start
 
 ```bash
+npm install
+cp .env.example .env.local
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The app runs with zero configuration. Every third-party integration degrades to
+a simulated implementation when its credentials are absent, so the full product
+is explorable — including AI outreach, calls, and texts — without an account
+anywhere. See [Configuration](#configuration).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Open http://localhost:3000. Demo sign-in credentials are listed in
+[DEPLOY.md](DEPLOY.md).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Commands
 
-## Learn More
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Development server with hot reload |
+| `npm run build` | Production build |
+| `npm run typecheck` | TypeScript, no emit |
+| `npm run lint` | ESLint |
+| `npm test` | Unit tests (Vitest) |
+| `npm run test:watch` | Unit tests in watch mode |
+| `npm run test:coverage` | Unit tests with a coverage report and thresholds |
+| `npm run verify` | typecheck → lint → test → build. Run before pushing. |
 
-To learn more about Next.js, take a look at the following resources:
+## Configuration
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+No API key is required to run the application. Each integration resolves its
+credentials **at call time** — from the encrypted credential store in the
+database first, then from the environment — so keys entered in
+**Admin → Integrations** take effect immediately without a redeploy or a
+restart. An integration with no credentials logs its intent and returns a
+simulated result rather than throwing.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Two values are the exception and must be set in the environment, because they
+are needed to reach the credential store itself:
 
-## Deploy on Vercel
+| Variable | Why it can't live in the store |
+| --- | --- |
+| `DATABASE_URL` | The store is a table in this database |
+| `CREDENTIAL_SECRET` | Encrypts the store; keeping it beside the ciphertext would protect nothing |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Everything else — Telnyx, Twilio, Anthropic, NVIDIA, Resend, Vapi, RentCast —
+is configured in the admin panel, which also carries the step-by-step setup
+instructions for each provider. See
+[ADR-0002](docs/adr/0002-runtime-credential-resolution.md) for why.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — layers, dependency rules, and how a lead moves through the system
+- [CONTRIBUTING.md](CONTRIBUTING.md) — working agreements, testing strategy, review checklist
+- [docs/adr/](docs/adr/) — architecture decision records for the non-obvious choices
+- [DEPLOY.md](DEPLOY.md) — deployment, environment variables, provider setup
+- [SPEC.md](../SPEC.md) — functional requirements (F-01 … F-13)
+
+## Tech stack
+
+Next.js 16 (App Router, Server Actions) · React 19 · TypeScript (strict) ·
+Tailwind CSS 4 · PostgreSQL · Vitest · Zod.

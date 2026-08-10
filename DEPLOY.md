@@ -71,6 +71,7 @@ In the Vercel project's **Settings → Environment Variables**, set whichever of
 |---|---|
 | `DATABASE_URL` or `POSTGRES_URL` | **Required in production** (the app refuses to boot without a database URL — `src/instrumentation.ts`) — `POSTGRES_URL` is set automatically if you provisioned Vercel Postgres in Step 1 |
 | `SUPABASE_CA_CERT` | Required when using Supabase rather than Vercel Postgres/Neon. Download Supabase's root certificate from **Database → Settings → SSL Configuration**, then paste the full PEM into this variable. |
+| `CREDENTIAL_SECRET` | **Required to set API keys from inside the app.** Lets an Admin manage every provider key from Admin → Integrations instead of redeploying. Keys are AES-256-GCM encrypted at rest; this is the root key, so it can't be stored in the database with them. Generate with `openssl rand -hex 32`. |
 | `APP_URL` | Base URL used in invite/reset-password email links and the Vapi webhook callback. Leave blank on Vercel — falls back to the auto-populated `VERCEL_URL`. |
 | `TELNYX_API_KEY` / `TELNYX_PHONE_NUMBER` (+ optional `TELNYX_MESSAGING_PROFILE_ID`) | **Preferred SMS provider** — roughly half Twilio's per-segment cost, native 10DLC registration. Used instead of Twilio for SMS whenever set. Voice calls still use Twilio (see "Telnyx vs. Twilio" below). Get these at **portal.telnyx.com**. |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` | SMS fallback when Telnyx isn't set, plus all outbound voice calls — **free trial credit at twilio.com/try-twilio** |

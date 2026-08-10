@@ -5,6 +5,7 @@
 
 import { nanoid } from "nanoid";
 import type {
+  IntegrationCredential,
   AuditLog,
   AuthToken,
   CadencePlan,
@@ -52,6 +53,7 @@ export interface Database {
   auditLogs: AuditLog[];
   exportRecords: ExportRecord[];
   notes: Note[];
+  credentials: Map<string, IntegrationCredential>; // keyed by env-var name — see core/integrationRegistry.ts
   killSwitch: KillSwitchState;
   users: Map<string, User>;
   signals: Map<string, DiscoveredSignal>;
@@ -97,6 +99,7 @@ function createEmptyDb(): Database {
     auditLogs: [],
     exportRecords: [],
     notes: [],
+    credentials: new Map(),
     killSwitch: { isOn: false },
     users: new Map(),
     signals: new Map(),
@@ -116,6 +119,7 @@ function hydrateDefaults(db: Database): Database {
   if (!db.sessions) db.sessions = new Map();
   if (!db.authTokens) db.authTokens = new Map();
   if (!db.intakeDrafts) db.intakeDrafts = new Map();
+  if (!db.credentials) db.credentials = new Map();
   if (!db.config.senderName) db.config.senderName = DEFAULT_CONFIG.senderName;
   if (!db.config.senderEmail) db.config.senderEmail = DEFAULT_CONFIG.senderEmail;
   if (!db.config.scoringWeights) db.config.scoringWeights = { ...DEFAULT_CONFIG.scoringWeights };

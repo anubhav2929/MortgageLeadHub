@@ -9,9 +9,9 @@ Real email/password login — there is no more "view as" role switcher. Every se
 | Email | Role | Password |
 |---|---|---|
 | `newanubhav.4@gmail.com` | Admin | `MlhDemo#2026` |
-| `dana.whitfield@mortgageleadhub.com` | Compliance | `MlhDemo#2026` |
-| `marcus.chen@mortgageleadhub.com` | Officer | `MlhDemo#2026` |
-| `investor@mortgageleadhub.com` | Read-only | `MlhDemo#2026` |
+| `dana.whitfield@equityflowgroup.com` | Compliance | `MlhDemo#2026` |
+| `marcus.chen@equityflowgroup.com` | Officer | `MlhDemo#2026` |
+| `investor@equityflowgroup.com` | Read-only | `MlhDemo#2026` |
 
 **Change these before handing out a real deployment's link** — sign in as Admin → Users, or just have each person use "Forgot your password?" on `/login` to set their own. Real users you create via Admin → Users get emailed an invite link (`/accept-invite`) to set their own password instead of ever seeing this one — see `src/domain/actions.ts` (`createUserAction`) and `src/domain/authActions.ts`.
 
@@ -72,7 +72,8 @@ In the Vercel project's **Settings → Environment Variables**, set whichever of
 | `DATABASE_URL` or `POSTGRES_URL` | **Required in production** (the app refuses to boot without a database URL — `src/instrumentation.ts`) — `POSTGRES_URL` is set automatically if you provisioned Vercel Postgres in Step 1 |
 | `SUPABASE_CA_CERT` | Required when using Supabase rather than Vercel Postgres/Neon. Download Supabase's root certificate from **Database → Settings → SSL Configuration**, then paste the full PEM into this variable. |
 | `APP_URL` | Base URL used in invite/reset-password email links and the Vapi webhook callback. Leave blank on Vercel — falls back to the auto-populated `VERCEL_URL`. |
-| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` | Real SMS + outbound voice — **free trial credit at twilio.com/try-twilio** |
+| `TELNYX_API_KEY` / `TELNYX_PHONE_NUMBER` (+ optional `TELNYX_MESSAGING_PROFILE_ID`) | **Preferred SMS provider** — roughly half Twilio's per-segment cost, native 10DLC registration. Used instead of Twilio for SMS whenever set. Voice calls still use Twilio (see "Telnyx vs. Twilio" below). Get these at **portal.telnyx.com**. |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` | SMS fallback when Telnyx isn't set, plus all outbound voice calls — **free trial credit at twilio.com/try-twilio** |
 | `ANTHROPIC_API_KEY` | Real AI drafts (email/SMS/call scripts) and conversation extraction — paid, usage-based |
 | `NVIDIA_API_KEY` (+ optional `NVIDIA_MODEL`) | **Free-tier alternative to Anthropic** for AI-drafted messages only (call scripts, email/SMS drafts, Reddit signal replies) — get a key at **build.nvidia.com**. If `ANTHROPIC_API_KEY` is set, that's used instead; extraction/classification still need Anthropic specifically. Leave both blank and drafts are a fixed canned message instead of AI-generated — the send still works either way. |
 | `RESEND_API_KEY` / `RESEND_FROM_EMAIL` | Real outbound email — also required for real invite/password-reset emails to send |
@@ -90,6 +91,14 @@ See `.env.example` for the full list and where to get each key.
 `vercel.json` ships with `"0 8 * * *"` (once daily) because **Vercel's Hobby plan only permits daily cron jobs** — an hourly schedule fails to deploy at all on Hobby. That means each cadence step only gets *checked* once a day by default, not every hour: a step scheduled for "2 hours after intake" might not actually fire until the next day's tick catches up to it. Two ways to get tighter timing:
 - Upgrade the Vercel project to **Pro**, which allows per-minute cron schedules — then tighten `vercel.json`'s schedule (e.g. `"0 * * * *"` for hourly).
 - Or leave `vercel.json` alone and instead point an **external pinger** (cron-job.org, a GitHub Actions scheduled workflow, etc.) at `/api/cron/cadence` on whatever interval you want, sending `Authorization: Bearer <CRON_SECRET>` — this works on any Vercel plan.
+
+### Telnyx vs. Twilio
+
+Both are SOC 2 Type II / HIPAA / GDPR compliant, so this doesn't affect a security review of the app — that's about how the app itself handles data (real session auth, RBAC, audit log, kill switch — all already in place), not which carrier sends the text.
+
+- **Telnyx** is roughly half Twilio's per-segment SMS cost, registers 10DLC natively (no bolt-on service), and Vapi can import a Telnyx number exactly the same way it imports a Twilio one — so the AI voice agent isn't affected either way.
+- **Twilio** still powers plain outbound voice calls (the "Call now" TTS action) either way: Twilio's Calls API takes the spoken message inline in the same request; Telnyx's equivalent (TeXML) needs a hosted XML endpoint or a pre-built dashboard "Bin," which is a real but separate piece of work — see the comment in `src/adapters/voice.ts`.
+- Recommendation: set both. Telnyx picks up SMS automatically once configured (see `src/adapters/sms.ts`); Twilio stays as the SMS fallback and continues handling voice.
 
 ### Voice AI agent (Vapi) setup
 

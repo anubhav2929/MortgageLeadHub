@@ -26,7 +26,7 @@ export async function sendEmail(input: SendEmailInput): Promise<AdapterSendResul
     const { Resend } = await import("resend");
     const resend = new Resend(env.RESEND_API_KEY!);
     const { data, error } = await resend.emails.send({
-      from: input.from || env.RESEND_FROM_EMAIL || "leads@mortgageleadhub.demo",
+      from: input.from || env.RESEND_FROM_EMAIL || "leads@equityflowgroup.demo",
       to: input.to,
       subject: input.subject,
       text: input.text,

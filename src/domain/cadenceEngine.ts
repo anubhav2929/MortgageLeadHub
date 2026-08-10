@@ -15,8 +15,72 @@
 
 import { deliverOutreach, pushEvent } from "@/domain/actions";
 import { transition, InvalidTransitionError } from "@/core/stateMachine";
-import { getDb, nowIso, saveDb } from "@/domain/store";
-import type { Lead } from "@/domain/types";
+import { getDb, nowIso, saveDb, type Database } from "@/domain/store";
+import { evaluateForLead } from "@/domain/gateHelpers";
+import { buildLeadThread } from "@/core/conversationThread";
+import { selectBestChannel, describeRoute } from "@/core/channelRouter";
+import { computeLeadQualityScore } from "@/core/leadScoring";
+import { STATE_TIMEZONE } from "@/domain/stateTimezone";
+import type { Channel, Lead } from "@/domain/types";
+
+const ROUTABLE_CHANNELS: Channel[] = ["SMS", "VOICE", "EMAIL"];
+
+/** Borrower's local hour, for preferring async channels late in their day.
+ *  Falls back to server-local if the state has no mapped timezone. */
+function borrowerLocalHour(stateCode: string): number {
+  const tz = STATE_TIMEZONE[stateCode];
+  if (!tz) return new Date().getHours();
+  try {
+    return Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false }).format(new Date()));
+  } catch {
+    return new Date().getHours();
+  }
+}
+
+/** Picks the channel for a step flagged autoRoute, from what this borrower has
+ *  actually consented to and engaged with. Returns the step's authored channel
+ *  unchanged when routing is off or nothing is permitted. */
+async function resolveChannel(db: Database, lead: Lead, fallback: Channel, autoRoute?: boolean): Promise<{ channel: Channel; note?: string }> {
+  if (!autoRoute) return { channel: fallback };
+
+  const allowed: Channel[] = [];
+  for (const c of ROUTABLE_CHANNELS) {
+    const decision = await evaluateForLead(lead, c, false);
+    if (decision.decision === "ALLOW") allowed.push(c);
+  }
+  if (allowed.length === 0) return { channel: fallback };
+
+  const thread = buildLeadThread({
+    attempts: db.attempts.filter((a) => a.leadId === lead.id),
+    conversations: Array.from(db.conversations.values()).filter((c) => c.leadId === lead.id),
+    notes: db.notes.filter((n) => n.leadId === lead.id),
+  });
+
+  const score = computeLeadQualityScore(
+    {
+      stateCode: lead.stateCode,
+      intent: lead.intent,
+      goal: lead.goal,
+      timeline: lead.timeline,
+      missedPayments: lead.missedPayments,
+      estimatedValue: lead.estimatedValue,
+      mortgageBalance: lead.currentBalance,
+      intakeDurationSeconds: lead.intakeDurationSeconds,
+    },
+    db.config.scoringWeights,
+    db.config.hotLeadThreshold
+  );
+
+  const route = selectBestChannel({
+    allowedChannels: allowed,
+    thread,
+    localHour: borrowerLocalHour(lead.stateCode),
+    leadScore: score.total,
+    hotLeadThreshold: db.config.hotLeadThreshold,
+  });
+
+  return route.channel ? { channel: route.channel, note: describeRoute(route) } : { channel: fallback };
+}
 
 // Only leads still trying to make first live contact are automation's
 // business — once a human is in the loop (assigned/acknowledged) or the
@@ -77,7 +141,9 @@ export async function runCadenceTick(): Promise<CadenceTickSummary> {
       if (elapsedMinutes < nextStep.offsetMinutes) continue; // not due yet
 
       summary.processed += 1;
-      const result = await deliverOutreach(db, lead, nextStep.channel, "SYSTEM", "automated_cadence_step");
+      const routed = await resolveChannel(db, lead, nextStep.channel, nextStep.autoRoute);
+      if (routed.note) console.log(`[cadence-router] lead ${lead.publicRef}: ${routed.note}`);
+      const result = await deliverOutreach(db, lead, routed.channel, "SYSTEM", "automated_cadence_step");
       if (result.blocked) summary.blocked += 1;
       else if (result.ok) summary.delivered += 1;
     } catch (err) {

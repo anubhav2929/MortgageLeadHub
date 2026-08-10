@@ -73,7 +73,7 @@ export const DEFAULT_CONFIG: SystemConfig = {
   quietHoursStart: 8,
   quietHoursEnd: 21,
   senderName: "Equity Flow Group Team",
-  senderEmail: "leads@mortgageleadhub.demo",
+  senderEmail: "leads@equityflowgroup.demo",
   scoringWeights: { equity: 40, margin: 25, compliance: 20, behavior: 15 },
   hotLeadThreshold: 80,
 };

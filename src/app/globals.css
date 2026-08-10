@@ -10,10 +10,14 @@
   /* Darkened from #98a2b3 to meet WCAG AA 4.5:1 text contrast (was ~2.4:1 on --background). */
   --muted-foreground: #5c687c;
 
-  --primary: #5b5bf0;
-  --primary-hover: #4a4ae0;
+  /* One brand color across the whole product. The workspace used to run on a
+     generic indigo while the marketing site ran on the Equity Flow green —
+     two different brands in one app. These now match --mkt-primary exactly.
+     #0b7a51 clears WCAG AA on white (5.36:1) for text and icon use. */
+  --primary: #0b7a51;
+  --primary-hover: #085e3e;
   --primary-foreground: #ffffff;
-  --primary-tint: #eef0ff;
+  --primary-tint: #e7f5ec;
 
   --success: #067647;
   --success-tint: #ecfdf3;

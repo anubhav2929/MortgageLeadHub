@@ -119,7 +119,7 @@ export function seedDatabase(db: Database) {
       id: "off_1",
       userId: "user_officer_1",
       name: "Marcus Chen",
-      email: "marcus.chen@mortgageleadhub.com",
+      email: "marcus.chen@equityflowgroup.com",
       nmlsId: "NMLS-884213",
       licensedStates: ["TX", "CO", "AZ", "GA"],
       productTypes: ["REFINANCE", "CASH_OUT", "HOME_EQUITY"],
@@ -133,7 +133,7 @@ export function seedDatabase(db: Database) {
       id: "off_2",
       userId: "user_officer_2",
       name: "Priya Raman",
-      email: "priya.raman@mortgageleadhub.com",
+      email: "priya.raman@equityflowgroup.com",
       nmlsId: "NMLS-991042",
       licensedStates: ["CA", "OR", "WA", "NV"],
       productTypes: ["REFINANCE", "HOME_EQUITY"],
@@ -147,7 +147,7 @@ export function seedDatabase(db: Database) {
       id: "off_3",
       userId: "user_officer_3",
       name: "Dave Kowalski",
-      email: "dave.kowalski@mortgageleadhub.com",
+      email: "dave.kowalski@equityflowgroup.com",
       nmlsId: "NMLS-773310",
       licensedStates: ["NY", "PA", "OH", "NC", "FL"],
       productTypes: ["REFINANCE", "CASH_OUT", "HOME_EQUITY"],
@@ -167,9 +167,9 @@ export function seedDatabase(db: Database) {
   const DEMO_PASSWORD_HASH = hashPasswordSync("MlhDemo#2026");
   const users: User[] = [
     { id: "user_admin", name: "Anubhav (Admin)", email: "newanubhav.4@gmail.com", role: "ADMIN", isActive: true, passwordHash: DEMO_PASSWORD_HASH },
-    { id: "user_compliance", name: "Dana Whitfield", email: "dana.whitfield@mortgageleadhub.com", role: "COMPLIANCE", isActive: true, passwordHash: DEMO_PASSWORD_HASH },
-    { id: "user_officer_1", name: "Marcus Chen", email: "marcus.chen@mortgageleadhub.com", role: "OFFICER", officerId: "off_1", isActive: true, passwordHash: DEMO_PASSWORD_HASH },
-    { id: "user_readonly", name: "Investor View", email: "investor@mortgageleadhub.com", role: "READ_ONLY", isActive: true, passwordHash: DEMO_PASSWORD_HASH },
+    { id: "user_compliance", name: "Dana Whitfield", email: "dana.whitfield@equityflowgroup.com", role: "COMPLIANCE", isActive: true, passwordHash: DEMO_PASSWORD_HASH },
+    { id: "user_officer_1", name: "Marcus Chen", email: "marcus.chen@equityflowgroup.com", role: "OFFICER", officerId: "off_1", isActive: true, passwordHash: DEMO_PASSWORD_HASH },
+    { id: "user_readonly", name: "Investor View", email: "investor@equityflowgroup.com", role: "READ_ONLY", isActive: true, passwordHash: DEMO_PASSWORD_HASH },
   ];
   users.forEach((u) => db.users.set(u.id, u));
   console.log(
@@ -183,12 +183,12 @@ export function seedDatabase(db: Database) {
       name: "Default cadence",
       isDefault: true,
       steps: [
-        { offsetMinutes: 0, channel: "VOICE", maxAttempts: 1, stopOnOutcomes: ["ANSWERED"] },
-        { offsetMinutes: 120, channel: "SMS", maxAttempts: 1, stopOnOutcomes: [] },
-        { offsetMinutes: 1440, channel: "VOICE", maxAttempts: 1, stopOnOutcomes: ["ANSWERED"] },
-        { offsetMinutes: 4320, channel: "VOICE", maxAttempts: 1, stopOnOutcomes: ["ANSWERED"] },
-        { offsetMinutes: 4320, channel: "SMS", maxAttempts: 1, stopOnOutcomes: [] },
-        { offsetMinutes: 10080, channel: "EMAIL", maxAttempts: 1, stopOnOutcomes: [] },
+        { offsetMinutes: 0, channel: "VOICE", autoRoute: true, maxAttempts: 1, stopOnOutcomes: ["ANSWERED"] },
+        { offsetMinutes: 120, channel: "SMS", autoRoute: true, maxAttempts: 1, stopOnOutcomes: [] },
+        { offsetMinutes: 1440, channel: "VOICE", autoRoute: true, maxAttempts: 1, stopOnOutcomes: ["ANSWERED"] },
+        { offsetMinutes: 4320, channel: "VOICE", autoRoute: true, maxAttempts: 1, stopOnOutcomes: ["ANSWERED"] },
+        { offsetMinutes: 4320, channel: "SMS", autoRoute: true, maxAttempts: 1, stopOnOutcomes: [] },
+        { offsetMinutes: 10080, channel: "EMAIL", autoRoute: true, maxAttempts: 1, stopOnOutcomes: [] },
       ],
     },
     {
@@ -198,9 +198,9 @@ export function seedDatabase(db: Database) {
       intent: "REFINANCE",
       isDefault: false,
       steps: [
-        { offsetMinutes: 0, channel: "VOICE", maxAttempts: 1, stopOnOutcomes: ["ANSWERED"] },
-        { offsetMinutes: 60, channel: "SMS", maxAttempts: 1, stopOnOutcomes: [] },
-        { offsetMinutes: 1440, channel: "VOICE", maxAttempts: 1, stopOnOutcomes: ["ANSWERED"] },
+        { offsetMinutes: 0, channel: "VOICE", autoRoute: true, maxAttempts: 1, stopOnOutcomes: ["ANSWERED"] },
+        { offsetMinutes: 60, channel: "SMS", autoRoute: true, maxAttempts: 1, stopOnOutcomes: [] },
+        { offsetMinutes: 1440, channel: "VOICE", autoRoute: true, maxAttempts: 1, stopOnOutcomes: ["ANSWERED"] },
       ],
     },
   ];
@@ -284,7 +284,7 @@ export function seedDatabase(db: Database) {
         disclosureVersionId: c.disclosureVersionId,
         exactTextSnapshot: db.disclosures.get(c.disclosureVersionId)?.bodyText ?? "",
         capturedAt: createdAt,
-        sourceUrl: "https://apply.mortgageleadhub.com/intake",
+        sourceUrl: "https://apply.equityflowgroup.com/intake",
         ipAddress: "203.0.113.42",
         userAgent: "Mozilla/5.0 (compatible demo UA)",
         sessionId: id("sess"),

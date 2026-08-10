@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { Landmark, CheckCircle2, Clock, UserCheck, Phone, Mail } from "lucide-react";
+import { CheckCircle2, Clock, UserCheck, Phone, Mail } from "lucide-react";
+import { LogoMark } from "@/components/brand/logo";
 import { getLeadByRef } from "@/domain/queries";
 import { StatusMessageForm } from "@/components/status/status-message-form";
 import { formatDate, formatDateTime } from "@/lib/utils";
@@ -61,7 +62,7 @@ export default async function BorrowerStatusPage({ params }: PageProps) {
       <div className="mx-auto max-w-lg px-6 py-12">
         <div className="mb-8 flex items-center gap-2.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-[var(--radius-md)] bg-[var(--primary)] text-white">
-            <Landmark className="h-4 w-4" />
+            <LogoMark className="h-4 w-4" />
           </div>
           <div>
             <h1 className="text-[15px] font-semibold text-[var(--foreground)]">Equity Flow Group</h1>

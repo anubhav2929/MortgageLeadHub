@@ -11,6 +11,7 @@ import { ConsentTab } from "@/components/workspace/tabs/consent-tab";
 import { TasksTab } from "@/components/workspace/tabs/tasks-tab";
 import { NotesTab } from "@/components/workspace/tabs/notes-tab";
 import { can } from "@/core/rbac";
+import { buildLeadThread } from "@/core/conversationThread";
 import { computeLeadCompleteness, getLeadByRef, listOfficers, listReferralPartners } from "@/domain/queries";
 import { getCurrentUser } from "@/domain/session";
 
@@ -34,6 +35,13 @@ export default async function LeadDetailPage({ params }: PageProps) {
   const { score: completenessScore, missing } = await computeLeadCompleteness(detail.lead.id);
   const referralPartners = await listReferralPartners();
   const fullName = detail.person ? `${detail.person.firstName} ${detail.person.lastName}` : "Unknown borrower";
+  // One thread across every channel, derived from the records that already
+  // exist rather than a parallel store that could drift.
+  const thread = buildLeadThread({
+    attempts: detail.attempts,
+    conversations: detail.conversations,
+    notes: detail.notes,
+  });
   const canAssignOfficer = user.role === "ADMIN";
   const officers = canAssignOfficer ? (await listOfficers()).filter((o) => o.isActive) : undefined;
 
@@ -117,7 +125,7 @@ export default async function LeadDetailPage({ params }: PageProps) {
             <PackageTab publicRef={publicRef} fields={detail.leadFields} />
           </TabsContent>
           <TabsContent value="conversation">
-            <ConversationTab publicRef={publicRef} conversations={detail.conversations} candidates={detail.fieldCandidates} />
+            <ConversationTab publicRef={publicRef} conversations={detail.conversations} candidates={detail.fieldCandidates} thread={thread} />
           </TabsContent>
           <TabsContent value="consent">
             <ConsentTab consents={detail.consents} policyDecisions={detail.policyDecisions} />

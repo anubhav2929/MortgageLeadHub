@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Landmark } from "lucide-react";
+import { LogoMark } from "@/components/brand/logo";
 import { UnsubscribeForm } from "@/components/status/unsubscribe-form";
 
 export const metadata: Metadata = { robots: { index: false, follow: false } };
@@ -10,7 +10,7 @@ export default function UnsubscribePage() {
       <div className="mx-auto max-w-lg px-6 py-12">
         <div className="mb-8 flex items-center gap-2.5">
           <div className="flex h-9 w-9 items-center justify-center rounded-[var(--radius-md)] bg-[var(--primary)] text-white">
-            <Landmark className="h-4 w-4" />
+            <LogoMark className="h-4 w-4" />
           </div>
           <div>
             <h1 className="text-[15px] font-semibold text-[var(--foreground)]">Equity Flow Group</h1>

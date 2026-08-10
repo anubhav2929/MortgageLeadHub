@@ -3,6 +3,17 @@
 // which keeps this safe to flip on for a same-day demo. A full conversational
 // voice agent (SPEC.md F-05, Vapi/Retell) is a separate, larger lift; see
 // adapters/voiceAgent.ts.
+//
+// Deliberately Twilio-only, unlike adapters/sms.ts: Twilio's Calls API takes
+// TwiML inline in the same request that places the call. Telnyx's TeXML
+// equivalent needs either a `Url` pointing at a *hosted* XML document or a
+// pre-created "TeXML Bin" in their dashboard — there's no inline-content
+// field, so per-call dynamic text needs a small XML-serving endpoint of our
+// own first. Genuinely buildable (and Telnyx is still the better economics
+// here, same as SMS), just a distinct, slightly larger piece of work than
+// the SMS swap — worth doing as a fast follow-up rather than shipping
+// untested on a delivery deadline. The AI voice agent (Vapi, above) doesn't
+// have this problem: Vapi can use either carrier's number interchangeably.
 
 import { capabilities, env } from "@/lib/env";
 

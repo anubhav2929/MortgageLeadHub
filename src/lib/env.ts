@@ -21,6 +21,9 @@ const envSchema = z.object({
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_PHONE_NUMBER: z.string().optional(),
+  TELNYX_API_KEY: z.string().optional(),
+  TELNYX_PHONE_NUMBER: z.string().optional(),
+  TELNYX_MESSAGING_PROFILE_ID: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   NVIDIA_API_KEY: z.string().optional(),
   NVIDIA_MODEL: z.string().optional(),
@@ -46,6 +49,9 @@ const parsed = envSchema.safeParse({
   TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN,
   TWILIO_PHONE_NUMBER: process.env.TWILIO_PHONE_NUMBER,
+  TELNYX_API_KEY: process.env.TELNYX_API_KEY,
+  TELNYX_PHONE_NUMBER: process.env.TELNYX_PHONE_NUMBER,
+  TELNYX_MESSAGING_PROFILE_ID: process.env.TELNYX_MESSAGING_PROFILE_ID,
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
   NVIDIA_API_KEY: process.env.NVIDIA_API_KEY,
   NVIDIA_MODEL: process.env.NVIDIA_MODEL,
@@ -84,6 +90,10 @@ export function getAppUrl(): string {
 export const capabilities = {
   hasDatabase: Boolean(env.DATABASE_URL),
   hasTwilio: Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_PHONE_NUMBER),
+  hasTelnyx: Boolean(env.TELNYX_API_KEY && env.TELNYX_PHONE_NUMBER),
+  // Either carrier lights up SMS/voice; adapters/sms.ts and adapters/voice.ts
+  // prefer Telnyx when both are configured (cheaper, native 10DLC — see the
+  // vendor comparison in DEPLOY.md), falling back to Twilio, then simulated.
   hasAnthropic: Boolean(env.ANTHROPIC_API_KEY),
   hasNvidia: Boolean(env.NVIDIA_API_KEY),
   hasResend: Boolean(env.RESEND_API_KEY),
@@ -103,7 +113,13 @@ export function announceCapabilitiesOnce() {
   announced = true;
   const lines = [
     `Database: ${capabilities.hasDatabase ? "Postgres (DATABASE_URL)" : "local file — .data/db.json (set DATABASE_URL for persistence on Vercel)"}`,
-    `SMS/Voice (Twilio): ${capabilities.hasTwilio ? "LIVE" : "simulated — set TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_PHONE_NUMBER"}`,
+    `SMS/Voice: ${
+      capabilities.hasTelnyx
+        ? "LIVE (Telnyx)"
+        : capabilities.hasTwilio
+          ? "LIVE (Twilio)"
+          : "simulated — set TELNYX_API_KEY/TELNYX_PHONE_NUMBER or TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_PHONE_NUMBER"
+    }`,
     `Extraction (Anthropic): ${capabilities.hasAnthropic ? "LIVE" : "simulated — set ANTHROPIC_API_KEY"}`,
     `AI messaging (outreach drafts & signal replies): ${capabilities.hasAnthropic ? "LIVE (Anthropic)" : capabilities.hasNvidia ? "LIVE (NVIDIA NIM, free tier)" : "simulated — set ANTHROPIC_API_KEY or NVIDIA_API_KEY"}`,
     `Email (Resend): ${capabilities.hasResend ? "LIVE" : "simulated — set RESEND_API_KEY"}`,

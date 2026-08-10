@@ -338,6 +338,11 @@ export interface OutreachContentInput {
   goal: GoalType;
   officerFirstName: string;
   isFirstContact: boolean;
+  /** What's already been said to this borrower, across every channel — see
+   *  core/conversationThread.ts buildConversationBrief(). Without it the model
+   *  re-introduces itself on the fourth touch and contradicts things the
+   *  borrower already told us on a different channel. */
+  priorContext?: string;
 }
 
 export interface OutreachContentResult {
@@ -381,6 +386,9 @@ async function generateWithNvidia(input: OutreachContentInput): Promise<Outreach
     `Write a ${input.channel === "VOICE" ? "short phone call opening script for the officer to read aloud" : "follow-up email"} ` +
       `from loan officer ${input.officerFirstName} to a borrower named ${input.firstName} who submitted a ${intentLabel} inquiry ` +
       `with the goal of "${goalLabel}". This is their ${input.isFirstContact ? "first" : "a follow-up"} contact attempt. ` +
+      (input.priorContext
+        ? `\n\nWhat has already been said to this borrower, across every channel — do not repeat it, do not re-introduce yourself, and do not contradict it:\n${input.priorContext}\n\n`
+        : "") +
       `Reply as JSON shaped exactly like ${shape}.`
   );
   return { subject: result.subject, body: result.body, simulated: false };
@@ -416,7 +424,10 @@ async function generateWithClaude(input: OutreachContentInput): Promise<Outreach
         content:
           `Write a ${input.channel === "VOICE" ? "short phone call opening script for the officer to read aloud" : "follow-up email"} ` +
           `from loan officer ${input.officerFirstName} to a borrower named ${input.firstName} who submitted a ${intentLabel} inquiry ` +
-          `with the goal of "${goalLabel}". This is their ${input.isFirstContact ? "first" : "a follow-up"} contact attempt.`,
+          `with the goal of "${goalLabel}". This is their ${input.isFirstContact ? "first" : "a follow-up"} contact attempt.` +
+          (input.priorContext
+            ? `\n\nWhat has already been said to this borrower, across every channel — do not repeat it, do not re-introduce yourself, and do not contradict it:\n${input.priorContext}`
+            : ""),
       },
     ],
   });

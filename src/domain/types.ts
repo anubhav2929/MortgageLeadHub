@@ -271,7 +271,14 @@ export interface Task {
 
 export interface CadenceStep {
   offsetMinutes: number;
+  /** Fallback channel. When autoRoute is on, this is only used if the router
+   *  can't pick (nothing permitted, or no signal either way). */
   channel: Channel;
+  /** Let core/channelRouter.ts choose the channel at send time from what this
+   *  specific borrower has consented to, replied on, and the local hour —
+   *  rather than using the channel this plan was authored with. Opt-in per
+   *  step so existing plans keep behaving exactly as before. */
+  autoRoute?: boolean;
   templateId?: string;
   maxAttempts: number;
   stopOnOutcomes: AttemptOutcome[];

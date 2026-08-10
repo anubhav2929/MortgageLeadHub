@@ -35,7 +35,7 @@ async function getRedditToken(): Promise<string> {
     headers: {
       Authorization: `Basic ${basic}`,
       "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": "mortgageleadhub-discovery/1.0",
+      "User-Agent": "equityflowgroup-discovery/1.0",
     },
     body: "grant_type=client_credentials",
   });
@@ -54,7 +54,7 @@ export async function searchForSignals(query = DEFAULT_QUERY): Promise<Discovery
     const subredditPath = SUBREDDITS.join("+");
     const url = `https://oauth.reddit.com/r/${subredditPath}/search?q=${encodeURIComponent(query)}&restrict_sr=1&sort=new&limit=15`;
     const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}`, "User-Agent": "mortgageleadhub-discovery/1.0" },
+      headers: { Authorization: `Bearer ${token}`, "User-Agent": "equityflowgroup-discovery/1.0" },
     });
     if (!res.ok) throw new Error(`Reddit search failed: ${res.status}`);
     const data = (await res.json()) as {

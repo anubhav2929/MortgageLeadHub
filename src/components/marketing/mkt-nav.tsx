@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Landmark, Menu, X } from "lucide-react";
+import { Menu, X } from "lucide-react";
+import { LogoMark } from "@/components/brand/logo";
 
 const LINKS = [
   { href: "/#how-it-works", label: "How it works" },
@@ -18,7 +19,7 @@ export function MktNav() {
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
         <Link href="/" className="flex shrink-0 items-center gap-2.5" onClick={() => setOpen(false)}>
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--mkt-primary)] text-white">
-            <Landmark className="h-4 w-4" />
+            <LogoMark className="h-4 w-4" />
           </span>
           <span className="whitespace-nowrap text-[15px] font-semibold text-[var(--mkt-ink)]">Equity Flow Group</span>
         </Link>

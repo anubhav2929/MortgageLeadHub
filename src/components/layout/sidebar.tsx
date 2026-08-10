@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Users, Settings, ExternalLink, Landmark, Radar, CheckSquare, X } from "lucide-react";
+import { LayoutDashboard, Users, Settings, ExternalLink, Radar, CheckSquare, X } from "lucide-react";
+import { LogoMark } from "@/components/brand/logo";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { useMobileNav } from "@/components/layout/mobile-nav-context";
@@ -23,7 +24,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       <div className="flex items-center justify-between px-5 py-5">
         <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--primary)] text-white">
-            <Landmark className="h-4 w-4" />
+            <LogoMark className="h-4 w-4" />
           </div>
           <div>
             <p className="text-[13px] font-semibold leading-tight text-[var(--foreground)]">Equity Flow Group</p>

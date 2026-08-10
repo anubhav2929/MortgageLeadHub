@@ -155,7 +155,7 @@ export function UsersPanel({ users, currentUserId }: { users: User[]; currentUse
           </div>
           <div>
             <Label>Email</Label>
-            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="jordan@mortgageleadhub.com" />
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="jordan@equityflowgroup.com" />
           </div>
           <div>
             <Label>Phone (optional)</Label>

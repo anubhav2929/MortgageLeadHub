@@ -16,6 +16,7 @@ import { can } from "@/core/rbac";
 import { transition } from "@/core/stateMachine";
 import { generateToken } from "@/core/auth";
 import { intakeInputSchema } from "@/core/intakeValidation";
+import { buildConversationBrief, buildLeadThread } from "@/core/conversationThread";
 import { computeOfficerLoadToday } from "@/domain/queries";
 import { buildGateInput, evaluateForLead } from "@/domain/gateHelpers";
 import { getCurrentUser } from "@/domain/session";
@@ -1742,7 +1743,7 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
       disclosureVersionId: c.disclosureVersionId,
       exactTextSnapshot: db.disclosures.get(c.disclosureVersionId)?.bodyText ?? "",
       capturedAt: createdAt,
-      sourceUrl: "https://apply.mortgageleadhub.com/intake",
+      sourceUrl: "https://apply.equityflowgroup.com/intake",
       ipAddress: "203.0.113.10",
       userAgent: "demo-ui",
       sessionId: newId("sess"),
@@ -2199,6 +2200,17 @@ async function deliverOutreachLocked(
   const officer = await autoAssignOfficer(db, lead, reason);
   const officerFirstName = officer?.name.split(" ")[0] ?? "your loan officer";
 
+  // Everything already said to this borrower, on every channel — so the
+  // fourth touch doesn't re-introduce us or contradict what they told us on
+  // a different channel. See core/conversationThread.ts.
+  const priorContext = buildConversationBrief(
+    buildLeadThread({
+      attempts: db.attempts.filter((a) => a.leadId === lead.id),
+      conversations: Array.from(db.conversations.values()).filter((c) => c.leadId === lead.id),
+      notes: db.notes.filter((n) => n.leadId === lead.id),
+    })
+  );
+
   const content = await generateOutreachContent({
     channel: channel === "VOICE" ? "VOICE" : "EMAIL",
     firstName: person?.firstName ?? "there",
@@ -2206,6 +2218,7 @@ async function deliverOutreachLocked(
     goal: lead.goal,
     officerFirstName,
     isFirstContact: !lead.firstContactAt,
+    priorContext: priorContext || undefined,
   });
 
   const idempotencyKey = newId("idem");

@@ -4,23 +4,41 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ExtractionButton } from "@/components/workspace/extraction-button";
 import { formatDateTime } from "@/lib/utils";
+import { UnifiedThread } from "@/components/workspace/unified-thread";
+import type { ThreadMessage } from "@/core/conversationThread";
 import type { ConversationSession, FieldCandidate } from "@/domain/types";
 
 export function ConversationTab({
   publicRef,
   conversations,
   candidates,
+  thread,
 }: {
   publicRef: string;
   conversations: ConversationSession[];
   candidates: FieldCandidate[];
+  thread: ThreadMessage[];
 }) {
-  if (conversations.length === 0) {
-    return <EmptyState icon={Bot} title="No conversation yet" description="Transcript and extraction results will appear once the borrower is reached." />;
+  if (thread.length === 0 && conversations.length === 0) {
+    return <EmptyState icon={Bot} title="No conversation yet" description="Calls, texts, emails, and status-page messages will appear here once the borrower is reached." />;
   }
 
   return (
     <div className="space-y-4">
+      {/* Every channel in one chronological thread — see core/conversationThread.ts */}
+      <Card>
+        <CardHeader>
+          <div>
+            <CardTitle>Conversation</CardTitle>
+            <CardDescription>Every call, text, email, and status-page message with this borrower, in order.</CardDescription>
+          </div>
+          <ExtractionButton publicRef={publicRef} />
+        </CardHeader>
+        <CardContent>
+          <UnifiedThread messages={thread} />
+        </CardContent>
+      </Card>
+
       {conversations.map((conv) => (
         <Card key={conv.id}>
           <CardHeader>
@@ -35,7 +53,6 @@ export function ConversationTab({
             </div>
             <div className="flex items-center gap-2">
               {conv.escalated && <Badge tone="warning">Escalated</Badge>}
-              <ExtractionButton publicRef={publicRef} />
             </div>
           </CardHeader>
           <CardContent>

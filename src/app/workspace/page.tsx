@@ -25,17 +25,25 @@ export default async function DashboardPage() {
         description="Every metric here is computed from LeadEvent — never an ad-hoc counter that can drift from the record."
       />
 
-      <div className="mb-4">
-        <WorkQueueCard tasks={queueTasks} scopeLabel={isOfficer ? "across your leads" : "across all leads"} />
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Total leads" value={String(m.totalLeads)} icon={<UserCheck />} index={0} />
+      {/* Hero metrics first. The work queue used to sit above these and,
+          with eight near-identical task rows, it pushed every number below
+          the fold — so the first thing anyone saw was a wall of red text
+          with no sense of how the business was actually doing. */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          label="Total leads"
+          value={String(m.totalLeads)}
+          icon={<UserCheck />}
+          variant="hero"
+          index={0}
+        />
         <StatCard
           label="Median time to first contact"
           value={m.medianTimeToFirstContactMinutes !== null ? `${Math.round(m.medianTimeToFirstContactMinutes)}m` : "—"}
           icon={<Clock />}
           tone="success"
+          variant="hero"
+          hint="Lower is better — speed is the strongest predictor of contact."
           index={1}
         />
         <StatCard
@@ -43,21 +51,38 @@ export default async function DashboardPage() {
           value={String(m.slaBreaches)}
           icon={<TimerReset />}
           tone={m.slaBreaches > 0 ? "danger" : "success"}
+          variant="hero"
+          hint={m.slaBreaches > 0 ? "Leads that waited longer than the promise." : "Every lead contacted inside the window."}
           index={2}
         />
-        <StatCard label="Opt-out rate" value={`${m.optOutRate}%`} icon={<ShieldOff />} tone="warning" index={3} />
+        <StatCard
+          label="Opt-out rate"
+          value={`${m.optOutRate}%`}
+          icon={<ShieldOff />}
+          tone={m.optOutRate > 5 ? "danger" : "warning"}
+          variant="hero"
+          hint="A rising number usually means messaging, not targeting."
+          index={3}
+        />
       </div>
 
-      <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Conversation completion" value={`${m.conversationCompletionRate}%`} icon={<PhoneCall />} index={4} />
-        <StatCard label="Escalation rate" value={`${m.escalationRate}%`} icon={<MessageSquareWarning />} tone="warning" index={5} />
-        <StatCard label="Median completeness" value={`${Math.round(m.medianCompleteness)}/100`} icon={<Gauge />} index={6} />
-        <StatCard
-          label="Handoff ack latency"
-          value={m.handoffAckLatencyMinutes !== null ? `${Math.round(m.handoffAckLatencyMinutes)}m` : "—"}
-          icon={<Ban />}
-          index={7}
-        />
+      {/* Work queue beside the secondary metrics: the thing to act on and the
+          context for acting on it, side by side instead of stacked. */}
+      <div className="mt-4 grid gap-4 lg:grid-cols-5">
+        <div className="lg:col-span-3">
+          <WorkQueueCard tasks={queueTasks} scopeLabel={isOfficer ? "across your leads" : "across all leads"} />
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:col-span-2 lg:content-start">
+          <StatCard label="Conversation completion" value={`${m.conversationCompletionRate}%`} icon={<PhoneCall />} index={4} />
+          <StatCard label="Escalation rate" value={`${m.escalationRate}%`} icon={<MessageSquareWarning />} tone="warning" index={5} />
+          <StatCard label="Median completeness" value={`${Math.round(m.medianCompleteness)}/100`} icon={<Gauge />} index={6} />
+          <StatCard
+            label="Handoff ack latency"
+            value={m.handoffAckLatencyMinutes !== null ? `${Math.round(m.handoffAckLatencyMinutes)}m` : "—"}
+            icon={<Ban />}
+            index={7}
+          />
+        </div>
       </div>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-2">

@@ -53,7 +53,11 @@ async function sendViaTelnyx(input: SendSmsInput, apiKey: string, from: string):
         ...(profileId ? { messaging_profile_id: profileId } : {}),
         // Delivery is reported asynchronously; without this callback the
         // attempt would stay SENT forever regardless of what the carrier did.
-        ...(statusCallback ? { webhook_url: statusCallback } : {}),
+        // use_profile_webhooks defaults to true, which makes Telnyx prefer the
+        // messaging profile's own webhook URL — so an unrelated URL configured
+        // in the portal would silently swallow our delivery receipts. Turning
+        // it off is what guarantees the callback lands here.
+        ...(statusCallback ? { webhook_url: statusCallback, use_profile_webhooks: false } : {}),
       }),
     });
     if (!res.ok) throw new Error(`Telnyx API returned ${res.status}: ${await res.text()}`);

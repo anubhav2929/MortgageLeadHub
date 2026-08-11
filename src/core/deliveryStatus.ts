@@ -182,6 +182,12 @@ export function mapProviderStatus(
       if (s === "email.delivered") return "DELIVERED";
       if (s === "email.bounced") return "UNDELIVERED";
       if (s === "email.complained") return "UNDELIVERED";
+      // Resend refused to send at all (email.failed), or the address is on
+      // its suppression list (email.suppressed). Both were previously
+      // unmapped, so the attempt sat at SENT and nobody learned the borrower
+      // was never emailed.
+      if (s === "email.failed") return "FAILED";
+      if (s === "email.suppressed") return "UNDELIVERED";
       if (s === "email.delivery_delayed") return "QUEUED";
       return null;
 

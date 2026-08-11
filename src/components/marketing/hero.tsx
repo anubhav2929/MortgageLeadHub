@@ -7,8 +7,12 @@ const TRUST_POINTS = ["No impact to your credit score", "Licensed loan officers,
 function HeroCopyA() {
   return (
     <>
-      <h1 className="mkt-balance text-[42px] font-semibold leading-[1.1] tracking-tight text-[var(--mkt-ink)] sm:text-[54px]">
-        Refinance your rate, or turn your equity into cash.
+      <h1 className="mkt-balance text-[42px] font-semibold leading-[1.1] tracking-tight text-[var(--mkt-ink)] sm:text-[56px]">
+        Refinance your rate, or turn your{" "}
+        <span className="bg-gradient-to-br from-[var(--mkt-primary)] to-[#0f9d63] bg-clip-text text-transparent">
+          equity into cash
+        </span>
+        .
       </h1>
       <p className="mt-5 max-w-lg text-[17px] leading-relaxed text-[var(--mkt-body)]">
         Tell us about your home, and a licensed loan officer will walk you through real options for lowering
@@ -22,8 +26,12 @@ function HeroCopyA() {
 function HeroCopyB() {
   return (
     <>
-      <h1 className="mkt-balance text-[42px] font-semibold leading-[1.1] tracking-tight text-[var(--mkt-ink)] sm:text-[54px]">
-        See what your home&apos;s equity could do for you.
+      <h1 className="mkt-balance text-[42px] font-semibold leading-[1.1] tracking-tight text-[var(--mkt-ink)] sm:text-[56px]">
+        See what your home&apos;s{" "}
+        <span className="bg-gradient-to-br from-[var(--mkt-primary)] to-[#0f9d63] bg-clip-text text-transparent">
+          equity
+        </span>{" "}
+        could do for you.
       </h1>
       <p className="mt-5 max-w-lg text-[17px] leading-relaxed text-[var(--mkt-body)]">
         A two-minute form connects you with a licensed loan officer who&apos;ll lay out your real options — lower
@@ -36,14 +44,38 @@ function HeroCopyB() {
 export function Hero() {
   return (
     <section className="relative overflow-hidden bg-[var(--mkt-bg)]">
+      {/* Layered background. A single soft blur read as "unfinished white
+          page"; two offset blooms plus a faint grid give the section depth
+          without putting anything behind the text that hurts contrast. */}
       <div
-        className="pointer-events-none absolute -right-40 -top-40 h-[560px] w-[560px] rounded-full opacity-60 blur-3xl"
+        className="pointer-events-none absolute -right-32 -top-48 h-[620px] w-[620px] rounded-full opacity-70 blur-3xl"
         style={{ background: "radial-gradient(circle, var(--mkt-primary-tint), transparent 70%)" }}
       />
+      <div
+        className="pointer-events-none absolute -left-40 top-32 h-[420px] w-[420px] rounded-full opacity-50 blur-3xl"
+        style={{ background: "radial-gradient(circle, #e7f5ec, transparent 72%)" }}
+      />
+      <div
+        className="pointer-events-none absolute inset-0 opacity-[0.35]"
+        style={{
+          backgroundImage:
+            "linear-gradient(to right, var(--mkt-border) 1px, transparent 1px), linear-gradient(to bottom, var(--mkt-border) 1px, transparent 1px)",
+          backgroundSize: "56px 56px",
+          maskImage: "radial-gradient(ellipse 80% 55% at 50% 0%, #000 40%, transparent 100%)",
+          WebkitMaskImage: "radial-gradient(ellipse 80% 55% at 50% 0%, #000 40%, transparent 100%)",
+        }}
+        aria-hidden
+      />
+
       <div className="relative mx-auto grid max-w-6xl gap-14 px-6 pb-20 pt-14 sm:pb-24 sm:pt-20 md:grid-cols-[1.05fr_0.95fr] md:items-center">
         <div>
-          <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-[var(--mkt-border)] bg-white px-3 py-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-[var(--mkt-primary)]" />
+          <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-[var(--mkt-border)] bg-white/90 px-3 py-1.5 shadow-sm backdrop-blur-sm">
+            {/* The live dot signals "someone is actually there right now",
+                which is the promise the line next to it makes. */}
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--mkt-primary)] opacity-75" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[var(--mkt-primary)]" />
+            </span>
             <span className="text-[12px] font-medium text-[var(--mkt-body)]">A licensed officer follows up within minutes</span>
           </div>
 

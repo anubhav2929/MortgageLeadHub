@@ -16,7 +16,7 @@
 // Credentials resolve per call, so a key saved in Admin → Integrations works
 // on the next call with no redeploy.
 
-import { getConfigValue } from "@/lib/runtimeConfig";
+import { getAppUrl, getConfigValue } from "@/lib/runtimeConfig";
 import { classifyFailure } from "@/core/deliveryStatus";
 import { adapterFailure, adapterSuccess, type AdapterResult } from "./result";
 
@@ -44,7 +44,26 @@ export async function placeCall(input: PlaceCallInput): Promise<AdapterResult> {
     const { default: Twilio } = await import("twilio");
     const client = Twilio(sid, token);
     const twiml = `<Response><Say voice="Polly.Joanna">${escapeXml(input.message)}</Say></Response>`;
-    const call = await client.calls.create({ to: input.to, from, twiml });
+    // Without a status callback a Twilio call is recorded as QUEUED and never
+    // resolves — we'd never learn whether it was answered, went to voicemail,
+    // or hit a busy signal. statusCallbackEvent must be listed explicitly;
+    // Twilio only sends "completed" by default.
+    const secret = await getConfigValue("DELIVERY_WEBHOOK_SECRET");
+    const statusCallback = secret
+      ? `${await getAppUrl()}/api/webhooks/delivery/twilio?secret=${encodeURIComponent(secret)}`
+      : undefined;
+    const call = await client.calls.create({
+      to: input.to,
+      from,
+      twiml,
+      ...(statusCallback
+        ? {
+            statusCallback,
+            statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
+            statusCallbackMethod: "POST" as const,
+          }
+        : {}),
+    });
     return adapterSuccess(call.sid);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown Twilio error";

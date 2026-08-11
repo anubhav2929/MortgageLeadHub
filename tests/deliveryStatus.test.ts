@@ -139,6 +139,13 @@ describe("mapProviderStatus", () => {
     expect(mapProviderStatus("resend", "email.complained")).toBe("UNDELIVERED");
   });
 
+  it("maps Resend's refusal events, which were previously unmapped", () => {
+    // Both are real event types in Resend's docs. Leaving them unmapped meant
+    // the attempt stayed SENT and the failure was never surfaced.
+    expect(mapProviderStatus("resend", "email.failed")).toBe("FAILED");
+    expect(mapProviderStatus("resend", "email.suppressed")).toBe("UNDELIVERED");
+  });
+
   it("is case- and whitespace-insensitive", () => {
     expect(mapProviderStatus("twilio", "  DELIVERED ")).toBe("DELIVERED");
   });

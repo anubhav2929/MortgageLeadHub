@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { AlertTriangle, PhoneOff, ShieldX } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LiveCallBoard } from "@/components/workspace/live-call-board";
+import { CallFailureAlerts } from "@/components/workspace/call-failure-alerts";
 import { can } from "@/core/rbac";
 import { listCallActivity, listLiveCalls } from "@/domain/queries";
 import { getCurrentUser } from "@/domain/session";
@@ -54,7 +55,9 @@ export default async function CallCentrePage() {
   // Surfaced separately rather than left in the log: a run of failures is a
   // provider problem, and reading it as "some calls didn't connect" is how a
   // broken credential goes unnoticed for a day.
-  const failures = activity.filter((e) => e.attempt.outcome === "FAILED");
+  // Only unacknowledged failures raise the band. Dismissing one hides the
+  // alert; the row stays in the call log below with its message intact.
+  const failures = activity.filter((e) => e.attempt.outcome === "FAILED" && !e.attempt.acknowledgedAt);
 
   return (
     <div className="animate-fade-in">
@@ -93,39 +96,7 @@ export default async function CallCentrePage() {
       <h2 className="mb-2 text-[15px] font-semibold text-[var(--foreground)]">In progress</h2>
       <LiveCallBoard calls={live} />
 
-      {failures.length > 0 && (
-        <Card className="mt-6 border-[var(--danger)]">
-          <CardHeader>
-            <div>
-              <CardTitle className="flex items-center gap-1.5">
-                <PhoneOff className="h-3.5 w-3.5 text-[var(--danger)]" /> {failures.length} call
-                {failures.length === 1 ? "" : "s"} the provider refused
-              </CardTitle>
-              <CardDescription>
-                These never reached the borrower. A CONFIGURATION class affects every lead and needs an administrator.
-              </CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {failures.slice(0, 6).map((f) => (
-              <div key={f.attempt.id} className="rounded-[var(--radius-md)] border border-[var(--border)] p-2.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Link href={`/workspace/leads/${f.leadPublicRef}`} className="text-[13px] font-medium hover:text-[var(--primary)]">
-                    {f.borrowerName}
-                  </Link>
-                  {f.attempt.failureClass && <Badge tone="danger">{f.attempt.failureClass}</Badge>}
-                  <span className="text-xs text-[var(--muted-foreground)]">
-                    {formatDateTime(f.attempt.startedAt ?? f.attempt.scheduledFor)}
-                  </span>
-                </div>
-                {f.attempt.failureMessage && (
-                  <p className="mt-1 text-xs text-[var(--muted-foreground)]">{f.attempt.failureMessage}</p>
-                )}
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
+      <CallFailureAlerts failures={failures} />
 
       <h2 className="mb-2 mt-6 text-[15px] font-semibold text-[var(--foreground)]">Call log</h2>
       {activity.length === 0 ? (

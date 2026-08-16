@@ -3,6 +3,7 @@ import { computeLeadQualityScore, type LeadScoreResult } from "@/core/leadScorin
 import { getPropertyValuation } from "@/adapters/propertyData";
 import { getDb, saveDb, type Database } from "@/domain/store";
 import { evaluateGoLive, summariseGoLive } from "@/core/goLive";
+import { evaluateStaleCall, staleAttemptOutcome } from "@/core/staleCall";
 import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import type {
   AuditLog,
@@ -660,14 +661,61 @@ export async function listCallActivity(limit = 100): Promise<CallCentreEntry[]> 
  * the closing webhook entirely, the session would otherwise sit on the live
  * board forever and the board stops meaning anything.
  */
-export const LIVE_CALL_MAX_MINUTES = 60;
+/**
+ * Closes sessions the provider never reported on.
+ *
+ * Runs on read as well as on the cadence tick. That is deliberate: a
+ * deployment whose scheduler is misconfigured is exactly the one most likely
+ * to have dropped webhooks, and a board that heals itself the moment someone
+ * looks at it beats one that needs a working cron to stop lying.
+ *
+ * Returns the number settled.
+ */
+export async function reapStaleCalls(now = new Date()): Promise<number> {
+  const db = await getDb();
+  let settled = 0;
+
+  for (const convo of db.conversations.values()) {
+    if (convo.status !== "IN_PROGRESS") continue;
+
+    const verdict = evaluateStaleCall({
+      callStatus: convo.callStatus,
+      startedAt: convo.startedAt,
+      lastSignalAt: convo.lastSignalAt,
+      now,
+    });
+    if (!verdict.stale) continue;
+
+    convo.status = "COMPLETED";
+    convo.callStatus = "ENDED";
+    convo.endedAt = convo.endedAt ?? now.toISOString();
+    convo.endedReason = verdict.reason;
+    // Flagged so a call log can distinguish "the provider told us it ended"
+    // from "we gave up waiting" — they are not the same evidence.
+    convo.settledBySystem = true;
+
+    // Only settle an attempt that is still open. One that already resolved
+    // from its own webhook is left alone: the report arrived for the attempt
+    // and only the session event was missed.
+    const attempt = db.attempts.find((a) => a.id === convo.contactAttemptId);
+    if (attempt && (attempt.outcome === "QUEUED" || attempt.outcome === "SENT")) {
+      attempt.outcome = staleAttemptOutcome(Boolean(verdict.neverConnected));
+      attempt.endedAt = now.toISOString();
+      attempt.failureMessage = "No end-of-call report was received from the provider.";
+    }
+    settled += 1;
+  }
+
+  if (settled > 0) saveDb();
+  return settled;
+}
 
 export async function listLiveCalls(): Promise<CallCentreEntry[]> {
+  // Settle before listing, so the board never shows a call that has timed out.
+  await reapStaleCalls();
   const all = await listCallActivity(200);
-  const cutoff = Date.now() - LIVE_CALL_MAX_MINUTES * 60_000;
   return all
-    .filter((e) => e.conversation?.status === "IN_PROGRESS")
-    .filter((e) => new Date(e.conversation!.startedAt).getTime() > cutoff)
+    .filter((e) => e.conversation?.status === "IN_PROGRESS" && e.conversation.callStatus !== "ENDED")
     .sort((a, b) => new Date(a.conversation!.startedAt).getTime() - new Date(b.conversation!.startedAt).getTime());
 }
 

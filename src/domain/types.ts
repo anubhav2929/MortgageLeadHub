@@ -239,6 +239,11 @@ export interface ContactAttempt {
   retryCount?: number;
   /** Last provider delivery status applied, for out-of-order webhook rejection. */
   deliveryUpdatedAt?: string;
+  /** Set when someone dismissed this failure from the alerts band. The row
+   *  stays in the call log forever — acknowledging hides the alert, it does
+   *  not delete the record. */
+  acknowledgedAt?: string;
+  acknowledgedByName?: string;
 }
 
 /** A provider credential entered through Admin → Integrations. `value` is
@@ -399,6 +404,13 @@ export interface ConversationSession {
   callStatus?: "QUEUED" | "RINGING" | "CONNECTED" | "ENDED";
   /** Set when the provider tells us why the call ended. */
   endedReason?: string;
+  /** Last time any provider webhook touched this call. Staleness is measured
+   *  from webhook silence rather than from call age, so a genuinely long
+   *  conversation that is still emitting transcript events is never reaped. */
+  lastSignalAt?: string;
+  /** True when this session was closed by the reaper rather than by the
+   *  provider — the difference matters when reading a call log later. */
+  settledBySystem?: boolean;
 }
 
 export interface FieldCandidate {

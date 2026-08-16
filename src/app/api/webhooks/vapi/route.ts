@@ -64,6 +64,11 @@ export async function POST(request: Request) {
   const conversation = db.conversations.get(conversationId);
   if (!conversation) return NextResponse.json({ ok: true });
 
+  // Any event at all proves the call is still alive. Staleness is measured
+  // from this rather than from when the call started, so a genuinely long
+  // conversation that keeps emitting transcript events is never reaped.
+  conversation.lastSignalAt = nowIso();
+
   switch (message.type) {
     case "status-update": {
       // Mirror the carrier's own view onto callStatus so the board shows the
@@ -129,6 +134,7 @@ export async function POST(request: Request) {
       const outcome = verdict.outcome;
       conversation.callStatus = "ENDED";
       conversation.endedReason = message.endedReason;
+      conversation.settledBySystem = false;
       const attempt = db.attempts.find((a) => a.id === conversation.contactAttemptId);
       if (attempt) {
         attempt.outcome = outcome;

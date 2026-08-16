@@ -58,7 +58,16 @@ function elapsed(startedAt: string, now: number): string {
  * credential — anyone holding it can speak as the company to a borrower — so
  * it stays server-side and is never a prop.
  */
-function CallControls({ conversationId, transferTo }: { conversationId: string; transferTo?: string }) {
+function CallControls({
+  conversationId,
+  transferTo,
+  connected,
+}: {
+  conversationId: string;
+  transferTo?: string;
+  /** Speaking, muting and transferring need a connected call; ending does not. */
+  connected: boolean;
+}) {
   const [say, setSay] = useState("");
   const [isPending, startTransition] = useTransition();
   const { push } = useToast();
@@ -72,7 +81,12 @@ function CallControls({ conversationId, transferTo }: { conversationId: string; 
 
   return (
     <div className="mt-3 border-t border-[var(--border)] pt-3">
-      <div className="flex flex-wrap items-center gap-2">
+      {!connected && (
+        <p className="mb-2 text-xs text-[var(--muted-foreground)]">
+          Not connected yet — you can still end this call.
+        </p>
+      )}
+      <div className={`flex flex-wrap items-center gap-2 ${connected ? "" : "hidden"}`}>
         <Input
           value={say}
           onChange={(e) => setSay(e.target.value)}
@@ -94,10 +108,12 @@ function CallControls({ conversationId, transferTo }: { conversationId: string; 
       </div>
 
       <div className="mt-2 flex flex-wrap gap-2">
-        <Button size="sm" variant="ghost" disabled={isPending} onClick={() => run({ type: "MUTE_AGENT" })}>
-          <MicOff className="h-3.5 w-3.5" /> Mute agent
-        </Button>
-        {transferTo && (
+        {connected && (
+          <Button size="sm" variant="ghost" disabled={isPending} onClick={() => run({ type: "MUTE_AGENT" })}>
+            <MicOff className="h-3.5 w-3.5" /> Mute agent
+          </Button>
+        )}
+        {connected && transferTo && (
           <Button
             size="sm"
             variant="ghost"
@@ -117,9 +133,11 @@ function CallControls({ conversationId, transferTo }: { conversationId: string; 
           <PhoneOff className="h-3.5 w-3.5 text-[var(--danger)]" /> End call
         </Button>
       </div>
-      <p className="mt-1.5 text-xs text-[var(--muted-foreground)]">
-        Anything you send here is spoken to the borrower and recorded against your name.
-      </p>
+      {connected && (
+        <p className="mt-1.5 text-xs text-[var(--muted-foreground)]">
+          Anything you send here is spoken to the borrower and recorded against your name.
+        </p>
+      )}
     </div>
   );
 }
@@ -242,10 +260,17 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
                 )}
               </div>
 
-              {/* Only a connected AI call can be controlled. Showing these on
-                  a ringing call would offer actions that cannot work yet. */}
-              {convo.callStatus === "CONNECTED" && convo.hasControl && (
-                <CallControls conversationId={convo.id} transferTo={c.officerPhone} />
+              {/* Available on any call that has not ended — including one
+                  stuck on "Calling", which is precisely when an officer most
+                  needs a way to kill it. Speak/mute/transfer only make sense
+                  once connected, so those are hidden until then; End call is
+                  always offered. */}
+              {convo.callStatus !== "ENDED" && convo.hasControl && (
+                <CallControls
+                  conversationId={convo.id}
+                  transferTo={c.officerPhone}
+                  connected={convo.callStatus === "CONNECTED"}
+                />
               )}
             </CardContent>
           </Card>

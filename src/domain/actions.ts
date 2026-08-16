@@ -3083,3 +3083,35 @@ export async function controlLiveCallAction(
   };
   return { ok: true, message: confirmations[action.type] };
 }
+
+/**
+ * Dismisses a provider failure from the call-centre alert band.
+ *
+ * Acknowledging hides the alert; it never deletes the record. The attempt
+ * stays in the call log with its failure message intact, because a provider
+ * refusal is evidence about what did and did not reach a borrower — and that
+ * has to survive someone tidying their screen.
+ */
+export async function acknowledgeCallFailuresAction(attemptIds: string[]): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  if (!can({ role: user.role, officerId: user.officerId }, "CALL_NOW")) {
+    return { ok: false, message: "You do not have permission to dismiss these." };
+  }
+
+  const db = await getDb();
+  const ids = new Set(attemptIds);
+  let count = 0;
+  for (const attempt of db.attempts) {
+    if (!ids.has(attempt.id) || attempt.acknowledgedAt) continue;
+    attempt.acknowledgedAt = nowIso();
+    attempt.acknowledgedByName = user.name;
+    count += 1;
+  }
+
+  if (count === 0) return { ok: false, message: "Nothing to dismiss." };
+
+  await audit(user.id, user.name, "ACKNOWLEDGE_CALL_FAILURES", "ContactAttempt", "*", "ALLOW", { count });
+  saveDb();
+  revalidatePath("/workspace/calls");
+  return { ok: true, message: `Dismissed ${count} alert${count === 1 ? "" : "s"} — still in the call log.` };
+}

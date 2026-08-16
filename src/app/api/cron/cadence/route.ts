@@ -15,7 +15,7 @@
 
 import { NextResponse } from "next/server";
 import { runCadenceTick } from "@/domain/cadenceEngine";
-import { purgeStaleIntakeDrafts } from "@/domain/queries";
+import { purgeStaleIntakeDrafts, reapStaleCalls } from "@/domain/queries";
 import { safeCompare } from "@/core/auth";
 import { getConfigValue } from "@/lib/runtimeConfig";
 
@@ -43,8 +43,15 @@ export async function GET(request: Request) {
   // Piggybacks on the same scheduled trigger rather than a second cron job —
   // pre-consent draft PII (src/domain/types.ts IntakeDraft) shouldn't outlive
   // its retention window just because nobody wired up a dedicated job for it.
+  // Calls the provider never reported on. Also runs on read of the call
+  // board, but doing it here means a stuck session settles even if nobody
+  // opens the page — which matters because pre-flight refuses to call someone
+  // whose previous call is still marked live.
+  const settledCalls = await reapStaleCalls();
+  if (settledCalls > 0) console.log(`[call-reaper] settled ${settledCalls} call(s) with no end-of-call report`);
+
   const purgedDrafts = await purgeStaleIntakeDrafts();
   if (purgedDrafts > 0) console.log(`[intake-drafts] purged ${purgedDrafts} draft(s) past retention`);
 
-  return NextResponse.json({ ok: true, ...summary, purgedDrafts });
+  return NextResponse.json({ ok: true, ...summary, purgedDrafts, settledCalls });
 }

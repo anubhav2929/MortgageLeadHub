@@ -4,6 +4,7 @@ import { StatCard } from "@/components/ui/stat-card";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { BarRow } from "@/components/workspace/bar-row";
 import { WorkQueueCard } from "@/components/workspace/work-queue-card";
+import { BlockedAlertsCard } from "@/components/workspace/blocked-alerts-card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { getDashboardMetrics, listAllTasks } from "@/domain/queries";
 import { getCurrentUser } from "@/domain/session";
@@ -24,6 +25,10 @@ export default async function DashboardPage() {
         title="Dashboard"
         description="Every metric here is computed from LeadEvent — never an ad-hoc counter that can drift from the record."
       />
+
+      {/* Blocked-automation band sits above everything: these are the items
+          where the system has stopped and only a person can restart it. */}
+      <BlockedAlertsCard tasks={queueTasks} />
 
       {/* Hero metrics first. The work queue used to sit above these and,
           with eight near-identical task rows, it pushed every number below

@@ -30,7 +30,15 @@ export interface PlaceVoiceAgentCallInput {
 }
 
 export type PlaceVoiceAgentCallResult =
-  | { ok: true; providerCallId: string; simulated: boolean }
+  | {
+      ok: true;
+      providerCallId: string;
+      simulated: boolean;
+      /** WebSocket streaming live call audio, for supervisor listen-in. */
+      listenUrl?: string;
+      /** Accepts say / add-message / mute / transfer / end-call while live. */
+      controlUrl?: string;
+    }
   | { ok: false; failure: DeliveryFailure };
 
 // Same hard compliance rules as the outreach-content generator
@@ -115,8 +123,19 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
       const body = await response.text();
       throw new Error(`Vapi call creation failed: ${response.status} ${body}`);
     }
-    const data: { id: string } = await response.json();
-    return { ok: true, providerCallId: data.id, simulated: false };
+    // Vapi returns a `monitor` object alongside the call id: a WebSocket that
+    // streams live audio, and a control URL that can inject a message, mute
+    // the assistant, transfer, or end the call mid-conversation. Both are
+    // per-call and short-lived, so they have to be captured here — there is no
+    // way to reconstruct them later from the call id.
+    const data: { id: string; monitor?: { listenUrl?: string; controlUrl?: string } } = await response.json();
+    return {
+      ok: true,
+      providerCallId: data.id,
+      simulated: false,
+      listenUrl: data.monitor?.listenUrl,
+      controlUrl: data.monitor?.controlUrl,
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown Vapi error";
     console.error("[Vapi] call failed:", message);

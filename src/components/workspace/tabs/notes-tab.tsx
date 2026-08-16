@@ -10,9 +10,22 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { useToast } from "@/components/ui/toast";
 import { addNoteAction } from "@/domain/actions";
 import { formatDateTime, initials } from "@/lib/utils";
-import type { Note } from "@/domain/types";
+import { LeadDocuments } from "@/components/workspace/lead-documents";
+import type { LeadDocument, Note } from "@/domain/types";
 
-export function NotesTab({ publicRef, notes }: { publicRef: string; notes: Note[] }) {
+export function NotesTab({
+  publicRef,
+  notes,
+  documents,
+  canEdit,
+  eSignConfigured,
+}: {
+  publicRef: string;
+  notes: Note[];
+  documents: LeadDocument[];
+  canEdit: boolean;
+  eSignConfigured: boolean;
+}) {
   const [body, setBody] = useState("");
   const [isPending, startTransition] = useTransition();
   const { push } = useToast();
@@ -45,6 +58,13 @@ export function NotesTab({ publicRef, notes }: { publicRef: string; notes: Note[
           </div>
         </CardContent>
       </Card>
+
+      <LeadDocuments
+        publicRef={publicRef}
+        documents={documents}
+        canEdit={canEdit}
+        eSignConfigured={eSignConfigured}
+      />
 
       {notes.length === 0 ? (
         <EmptyState icon={StickyNote} title="No notes yet" />

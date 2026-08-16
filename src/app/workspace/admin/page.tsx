@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ShieldX, Users, UserPlus, GitBranch, FileText, ShieldOff, Power, ScrollText, Plug, SlidersHorizontal, HeartHandshake, ShieldQuestion, FileClock } from "lucide-react";
+import { ShieldX, Users, UserPlus, GitBranch, FileText, ShieldOff, Power, ScrollText, Plug, SlidersHorizontal, HeartHandshake, ShieldQuestion, FileClock, Rocket } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -12,11 +12,13 @@ import { SuppressionPanel } from "@/components/admin/suppression-panel";
 import { KillSwitchPanel } from "@/components/admin/kill-switch-panel";
 import { AuditLogPanel } from "@/components/admin/audit-log-panel";
 import { IntegrationsPanel } from "@/components/admin/integrations-panel";
+import { GoLivePanel } from "@/components/admin/go-live-panel";
 import { getIntegrationStatusesAction } from "@/domain/integrationActions";
 import { ReferralPartnersPanel } from "@/components/admin/referral-partners-panel";
 import { IntakeDraftsPanel } from "@/components/admin/intake-drafts-panel";
 import { can } from "@/core/rbac";
 import {
+  getGoLiveReadiness,
   getKillSwitch,
   getSystemConfig,
   listAuditLogs,
@@ -65,6 +67,7 @@ export default async function AdminPage() {
 
   // Admin-only; the tab itself is gated below.
   const integrationData = user.role === "ADMIN" ? await getIntegrationStatusesAction() : null;
+  const goLive = user.role === "ADMIN" ? await getGoLiveReadiness() : null;
 
   return (
     <div className="animate-fade-in">
@@ -128,6 +131,11 @@ export default async function AdminPage() {
               <Plug className="h-3.5 w-3.5" /> Integrations
             </span>
           </TabsTrigger>
+          <TabsTrigger value="golive">
+            <span className="flex items-center gap-1.5">
+              <Rocket className="h-3.5 w-3.5" /> Go live
+            </span>
+          </TabsTrigger>
           <TabsTrigger value="audit">
             <span className="flex items-center gap-1.5">
               <ScrollText className="h-3.5 w-3.5" /> Audit log
@@ -182,6 +190,13 @@ export default async function AdminPage() {
               />
             ) : (
               <EmptyState icon={ShieldX} title="Admin only" description="Provider API keys can only be viewed and changed by an Admin." />
+            )}
+          </TabsContent>
+          <TabsContent value="golive">
+            {goLive ? (
+              <GoLivePanel items={goLive.items} verdict={goLive.verdict} />
+            ) : (
+              <EmptyState icon={ShieldX} title="Admin only" description="Go-live readiness can only be viewed by an Admin." />
             )}
           </TabsContent>
           <TabsContent value="audit">

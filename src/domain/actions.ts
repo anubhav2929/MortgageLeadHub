@@ -6,8 +6,11 @@ import { revalidatePath } from "next/cache";
 import { sendSms } from "@/adapters/sms";
 import type { AdapterResult } from "@/adapters/result";
 import { sendEmail } from "@/adapters/email";
-import { extractFieldsFromTranscript, generateOutreachContent, classifySignalIntent, generateSignalReply, validateIntakeIdentity, answerBorrowerQuestion } from "@/adapters/llm";
+import { assessSignal, extractFieldsFromTranscript, generateOutreachContent, classifySignalIntent, generateSignalReply, validateIntakeIdentity, answerBorrowerQuestion } from "@/adapters/llm";
 import { searchForSignals } from "@/adapters/leadDiscovery";
+import { blendScore, dedupeKey } from "@/core/discoveryQuery";
+import { ALLOWED_DOCUMENT_TYPES, MAX_DOCUMENT_BYTES, dataUriBytes } from "@/core/documentPolicy";
+import { clampSms } from "@/core/smsFormat";
 import { getPropertyValuation } from "@/adapters/propertyData";
 import { promoteCandidate, type RawCandidate } from "@/core/extraction/promote";
 import { resolveCadence } from "@/core/cadence";
@@ -17,6 +20,7 @@ import { transition } from "@/core/stateMachine";
 import { generateToken } from "@/core/auth";
 import { intakeInputSchema } from "@/core/intakeValidation";
 import { classifyReferral, normalizePhone } from "@/core/intakeNormalization";
+import { recordCreditConsent, runGatedSoftPull } from "@/domain/creditActions";
 import { buildConversationBrief, buildLeadThread } from "@/core/conversationThread";
 import { type VoiceMechanism } from "@/core/callStrategy";
 import { placeOutboundCall } from "@/domain/voiceOrchestrator";
@@ -50,6 +54,7 @@ import type {
   SystemConfig,
   Task,
   TaskType,
+  LeadDocument,
 } from "@/domain/types";
 import { STATE_TIMEZONE } from "@/domain/stateTimezone";
 
@@ -559,8 +564,8 @@ export async function runExtractionAction(publicRef: string): Promise<ActionResu
   return {
     ok: true,
     message: simulated
-      ? `Extracted ${fieldCount} fields (simulated keyword scan — set ANTHROPIC_API_KEY for live extraction).`
-      : `Extracted ${fieldCount} fields via Claude, ${promotedCount} auto-confirmed.`,
+      ? `Extracted ${fieldCount} fields (simulated keyword scan — add an LLM key under Admin \u2192 Integrations for live extraction).`
+      : `Extracted ${fieldCount} fields, ${promotedCount} auto-confirmed.`,
   };
 }
 
@@ -716,6 +721,27 @@ export async function toggleKillSwitchAction(reason: string): Promise<ActionResu
 // permanently — the same gate that protects every other lead protects these
 // by construction, not by a special case.
 // ---------------------------------------------------------------------------
+/**
+ * Runs `fn` over `items` with at most `limit` in flight.
+ *
+ * Sequential LLM calls made a 50-signal discovery run take minutes, and
+ * unbounded Promise.all trips the provider's rate limit and fails the whole
+ * batch. Results stay index-aligned with the input so callers can zip them
+ * back together.
+ */
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await fn(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 export async function runLeadDiscoveryAction(query?: string): Promise<ActionResult> {
   const user = await getCurrentUser();
   if (!can({ role: user.role, officerId: user.officerId }, "MANAGE_SUPPRESSION")) {
@@ -723,27 +749,80 @@ export async function runLeadDiscoveryAction(query?: string): Promise<ActionResu
   }
 
   const db = await getDb();
-  const { signals: raw, simulated } = await searchForSignals(query);
+  const { signals: raw, error, stats } = await searchForSignals(query);
+
+  if (error && raw.length === 0) {
+    // Say what actually happened. Reporting "0 new signals" for an archive
+    // outage would look identical to a genuinely quiet day, and someone would
+    // spend an afternoon wondering why discovery stopped working.
+    return { ok: false, message: `Discovery source unavailable: ${error}` };
+  }
+
+  // Normalised URL comparison — the archive returns www/old host variants and
+  // trailing-slash differences for the same thread, which a raw string match
+  // would re-add on every run.
+  const existing = new Set(Array.from(db.signals.values()).map((s) => dedupeKey(s.sourceUrl)));
+
+  const fresh = raw.filter((r) => {
+    if (existing.has(dedupeKey(r.sourceUrl))) return false;
+    existing.add(dedupeKey(r.sourceUrl));
+    return true;
+  });
+
+  // AI assessment is the expensive step, so it runs only on candidates that
+  // already cleared the cheap deterministic filter — and in bounded parallel,
+  // because doing 50 sequentially made a discovery run take minutes.
+  const assessments = await mapWithConcurrency(fresh, 5, (r) =>
+    assessSignal({ title: r.title, body: r.snippet, subreddit: r.subreddit })
+  );
 
   let added = 0;
-  for (const r of raw) {
-    const alreadyExists = Array.from(db.signals.values()).some((s) => s.sourceUrl === r.sourceUrl);
-    if (alreadyExists) continue;
+  let rejectedByAi = 0;
+
+  for (let i = 0; i < fresh.length; i += 1) {
+    const r = fresh[i];
+    const assessment = assessments[i];
+
+    // The model's strongest contribution is removing work, not ranking it:
+    // industry posters, people answering someone else, and already-closed
+    // loans all survive every keyword filter and all waste a reviewer's time.
+    if (!assessment.simulated && !assessment.isProspect) {
+      rejectedByAi += 1;
+      continue;
+    }
 
     const classification = await classifySignalIntent(`${r.title}\n\n${r.snippet}`);
+    const blended = blendScore(r.intentScore, assessment);
     const id = newId("signal");
     db.signals.set(id, {
       id,
       source: r.source,
       sourceUrl: r.sourceUrl,
       subreddit: r.subreddit,
+      sourceLabel: r.sourceLabel,
       authorHandle: r.authorHandle,
       title: r.title,
       snippet: r.snippet,
       postedAt: r.postedAt,
-      detectedIntent: classification.intent,
-      confidence: classification.confidence,
-      matchedKeywords: classification.matchedKeywords,
+      // The model reads the post, so prefer its intent when it has one;
+      // the keyword classifier is the fallback, not the authority.
+      detectedIntent:
+        !assessment.simulated && assessment.intent !== "UNKNOWN" ? assessment.intent : classification.intent,
+      confidence: blended / 100,
+      baseScore: r.intentScore,
+      matchedKeywords: Array.from(new Set([...r.matchedKeywords, ...classification.matchedKeywords])),
+      ...(assessment.simulated
+        ? {}
+        : {
+            assessment: {
+              isProspect: assessment.isProspect,
+              urgency: assessment.urgency,
+              situation: assessment.situation,
+              suggestedAngle: assessment.suggestedAngle,
+              concerns: assessment.concerns,
+              qualityScore: assessment.qualityScore,
+            },
+          }),
       status: "NEW",
       discoveredAt: nowIso(),
     });
@@ -753,9 +832,14 @@ export async function runLeadDiscoveryAction(query?: string): Promise<ActionResu
   await audit(user.id, user.name, "RUN_LEAD_DISCOVERY", "DiscoveredSignal", "*", "ALLOW");
   saveDb();
   revalidatePath("/workspace/discovery");
+  const scanned = stats ? ` Scanned ${stats.fetched} posts across ${stats.sources ?? stats.queries} sources.` : "";
+  // Naming the AI rejections is the point: it turns an invisible filter into
+  // a reported number, so nobody has to wonder whether it is doing anything.
+  const filtered = rejectedByAi > 0 ? ` AI filtered out ${rejectedByAi} non-prospect${rejectedByAi === 1 ? "" : "s"}.` : "";
+  const partial = error ? " (some sources were unreachable — results may be incomplete)" : "";
   return {
     ok: true,
-    message: `Found ${added} new signal${added === 1 ? "" : "s"}${simulated ? " (simulated — set REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET for live search)" : ""}.`,
+    message: `Found ${added} new signal${added === 1 ? "" : "s"}.${scanned}${filtered}${partial}`,
   };
 }
 
@@ -897,6 +981,10 @@ export async function updateSystemConfigAction(config: SystemConfig): Promise<Ac
   if (config.hotLeadThreshold < 1 || config.hotLeadThreshold > 100) {
     return { ok: false, message: "Hot-lead threshold must be between 1 and 100." };
   }
+  const engagementWindow = config.engagementWindowMinutes;
+  if (engagementWindow !== undefined && (engagementWindow < 0 || engagementWindow > 120)) {
+    return { ok: false, message: "Live-chat hold must be between 0 and 120 minutes." };
+  }
 
   const db = await getDb();
   const previousOverrides = db.config.outreachOverrides ?? {};
@@ -918,6 +1006,10 @@ export async function updateSystemConfigAction(config: SystemConfig): Promise<Ac
   await audit(user.id, user.name, "UPDATE_SYSTEM_CONFIG", "System", "config", "ALLOW");
   saveDb();
   revalidatePath("/workspace/admin");
+  // The environment banner renders in the ROOT layout, so revalidating the
+  // admin path alone would save the toggle without the banner appearing to
+  // change — the setting would look broken on every page except this one.
+  revalidatePath("/", "layout");
   return { ok: true, message: "Settings saved. Every new PolicyGate check uses these values immediately." };
 }
 
@@ -1854,7 +1946,9 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
     intent: input.intent,
     goal: input.goal,
     timeline: input.timeline,
-    creditRange: input.creditRange,
+    // UNSURE until the soft pull returns a real band. The form no longer asks
+    // for a self-reported score, so anything else here would be invented.
+    creditRange: input.creditRange ?? "UNSURE",
     missedPayments: input.missedPayments,
     referralType,
     hasExistingHomeEquityLoan: input.hasExistingHomeEquityLoan,
@@ -2011,6 +2105,22 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
     }
   }
 
+  // ---- FCRA gate --------------------------------------------------------
+  // The borrower's authorisation is recorded whether or not they granted it,
+  // so "they declined" is as provable as "they agreed". The pull itself only
+  // runs when the gate in core/creditGate.ts says it may — this call site
+  // does not get to decide.
+  if (!suppressed) {
+    await recordCreditConsent(leadId, Boolean(input.creditConsent), "INTAKE_QUALIFIED");
+    if (input.creditConsent) {
+      const freshLead = db.leads.get(leadId);
+      if (freshLead) {
+        const pull = await runGatedSoftPull(freshLead, "INTAKE_QUALIFIED");
+        if (!pull.ok) console.log(`[intake] soft pull not run for ${publicRef}: ${pull.message}`);
+      }
+    }
+  }
+
   // A completed, consented submission supersedes whatever pre-consent draft
   // led here — leaving it around would just be a second, redundant copy of
   // the same PII sitting outside the consent-gated pipeline.
@@ -2115,8 +2225,19 @@ export async function autoAssignOfficer(db: Database, lead: Lead, reason: string
   return officer;
 }
 
+
+/** Stamp the borrower as active right now. Every post-submit chat interaction
+ *  calls this; the cadence reads it to hold automated outreach while someone
+ *  is visibly on the page. One writer, one reader — see
+ *  core/engagementWindow.ts for why this exists. */
+async function touchEngagement(lead: Lead): Promise<void> {
+  lead.lastEngagedAt = nowIso();
+  lead.updatedAt = nowIso();
+}
+
 export async function requestPriorityCallbackAction(publicRef: string): Promise<ActionResult> {
   const lead = await requireLead(publicRef);
+  await touchEngagement(lead);
   const db = await getDb();
   const taskId = newId("task");
   db.tasks.set(taskId, {
@@ -2137,6 +2258,7 @@ export async function requestPriorityCallbackAction(publicRef: string): Promise<
 
 export async function updateContactInfoAction(publicRef: string, phone: string, email: string): Promise<ActionResult> {
   const lead = await requireLead(publicRef);
+  await touchEngagement(lead);
   const db = await getDb();
   const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
   if (!person) return { ok: false, message: "We couldn't find your contact record — send us a message instead." };
@@ -2178,6 +2300,8 @@ export async function submitBorrowerMessageAction(publicRef: string, message: st
   if (trimmed.length > 2000) return { ok: false, message: "That message is too long — keep it under 2000 characters." };
 
   const lead = await requireLead(publicRef);
+
+  await touchEngagement(lead);
   const db = await getDb();
 
   db.notes.push({
@@ -2392,8 +2516,11 @@ async function deliverOutreachLocked(
     };
   }
 
+  // Generate FOR the channel being sent on. This previously always asked for
+  // an email and then sliced it to 297 characters for SMS, which produced
+  // texts that opened with a greeting line and stopped mid-sentence.
   const content = await generateOutreachContent({
-    channel: "EMAIL",
+    channel,
     firstName: person?.firstName ?? "there",
     intent: lead.intent,
     goal: lead.goal,
@@ -2408,7 +2535,11 @@ async function deliverOutreachLocked(
   let result: AdapterResult;
 
   if (channel === "SMS") {
-    const smsBody = content.body.length > 300 ? content.body.slice(0, 297) + "..." : content.body;
+    // Still bounded, because a model can overrun any instruction — but this
+    // is now a backstop on already-short copy rather than the mechanism that
+    // shortens it. Trimmed at a word boundary so the fallback never cuts a
+    // word in half.
+    const smsBody = clampSms(content.body);
     result = await sendSms({ to: person?.phoneE164 ?? "", body: smsBody, idempotencyKey });
     body = smsBody;
   } else {
@@ -2524,6 +2655,7 @@ export interface BorrowerChannelResult extends ActionResult {
 
 export async function initiateBorrowerChannelAction(publicRef: string, channel: Channel): Promise<BorrowerChannelResult> {
   const lead = await requireLead(publicRef);
+  await touchEngagement(lead);
   const db = await getDb();
   const result = await deliverOutreach(db, lead, channel, "BORROWER", `borrower_selected_${channel.toLowerCase()}`);
   saveDb();
@@ -2738,7 +2870,7 @@ export async function updateLeadDetailsAction(
     occurredAt: nowIso(),
     payload: { manual: true, fields: changes },
   });
-  await audit(user.id, user.name, "EDIT_LEAD", "Lead", lead.id, "ALLOW", { fields: changes });
+  await audit(user.id, user.name, "EDIT_FIELDS", "Lead", lead.id, "ALLOW", { fields: changes });
   saveDb();
   revalidateLead(publicRef);
   revalidatePath("/workspace/leads");
@@ -2787,4 +2919,73 @@ export async function deleteLeadAction(publicRef: string): Promise<ActionResult>
   revalidatePath("/workspace/leads");
   revalidatePath("/workspace");
   return { ok: true, message: `Lead ${lead.publicRef} deleted.` };
+}
+
+// ---------------------------------------------------------------------------
+// Lead documents — paystubs, disclosures, title paperwork.
+// ---------------------------------------------------------------------------
+
+export async function uploadLeadDocumentAction(
+  publicRef: string,
+  input: { filename: string; mimeType: string; sizeBytes: number; dataUri: string; category: LeadDocument["category"] }
+): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  if (!can({ role: user.role, officerId: user.officerId }, "EDIT_FIELDS")) {
+    return { ok: false, message: "You do not have permission to attach documents to this lead." };
+  }
+  const lead = await requireLead(publicRef);
+
+  if (!ALLOWED_DOCUMENT_TYPES.has(input.mimeType)) {
+    return { ok: false, message: `${input.mimeType || "That file type"} is not an accepted document format.` };
+  }
+  // Measured from the decoded payload rather than the browser-reported size,
+  // which is client-supplied and therefore not a control.
+  if (dataUriBytes(input.dataUri) > MAX_DOCUMENT_BYTES) {
+    return { ok: false, message: `Files must be under ${Math.round(MAX_DOCUMENT_BYTES / 1024 / 1024)} MB.` };
+  }
+  if (!input.dataUri.startsWith("data:")) {
+    return { ok: false, message: "Upload failed — the file could not be read." };
+  }
+
+  const db = await getDb();
+  db.leadDocuments.push({
+    id: newId("doc"),
+    leadId: lead.id,
+    filename: input.filename.slice(0, 180),
+    mimeType: input.mimeType,
+    sizeBytes: input.sizeBytes,
+    inlineContent: input.dataUri,
+    category: input.category,
+    uploadedById: user.id,
+    uploadedByName: user.name,
+    uploadedAt: nowIso(),
+  });
+
+  // Documents attached to a lead are part of its record for audit purposes —
+  // who attached what, and when, has to survive independently of the file.
+  await audit(user.id, user.name, "UPLOAD_LEAD_DOCUMENT", "Lead", lead.id, "ALLOW", {
+    filename: input.filename,
+    category: input.category,
+  });
+  saveDb();
+  revalidatePath(`/workspace/leads/${publicRef}`);
+  return { ok: true, message: `${input.filename} attached.` };
+}
+
+export async function deleteLeadDocumentAction(publicRef: string, documentId: string): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  if (!can({ role: user.role, officerId: user.officerId }, "EDIT_FIELDS")) {
+    return { ok: false, message: "You do not have permission to remove documents." };
+  }
+  const lead = await requireLead(publicRef);
+
+  const db = await getDb();
+  const index = db.leadDocuments.findIndex((d) => d.id === documentId && d.leadId === lead.id);
+  if (index === -1) return { ok: false, message: "Document not found." };
+
+  const [removed] = db.leadDocuments.splice(index, 1);
+  await audit(user.id, user.name, "DELETE_LEAD_DOCUMENT", "Lead", lead.id, "ALLOW", { filename: removed.filename });
+  saveDb();
+  revalidatePath(`/workspace/leads/${publicRef}`);
+  return { ok: true, message: `${removed.filename} removed.` };
 }

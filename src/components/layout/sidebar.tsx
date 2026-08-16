@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Users, Settings, ExternalLink, Radar, CheckSquare, X } from "lucide-react";
+import { LayoutDashboard, Users, Settings, ExternalLink, Radar, CheckSquare, PhoneCall, MessageSquare, X } from "lucide-react";
 import { LogoMark } from "@/components/brand/logo";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,8 @@ const NAV = [
   { href: "/workspace", label: "Dashboard", icon: LayoutDashboard, exact: true },
   { href: "/workspace/leads", label: "Leads", icon: Users, exact: false },
   { href: "/workspace/tasks", label: "Tasks", icon: CheckSquare, exact: false },
+  { href: "/workspace/calls", label: "Call Centre", icon: PhoneCall, exact: false },
+  { href: "/workspace/messages", label: "Messages", icon: MessageSquare, exact: false },
   { href: "/workspace/discovery", label: "Lead Discovery", icon: Radar, exact: false },
   { href: "/workspace/admin", label: "Admin", icon: Settings, exact: false },
 ];

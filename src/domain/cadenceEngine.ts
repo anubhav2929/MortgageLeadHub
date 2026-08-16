@@ -15,6 +15,7 @@
 
 import { deliverOutreach, pushEvent } from "@/domain/actions";
 import { shouldAutomateVoice } from "@/core/callStrategy";
+import { evaluateEngagementWindow } from "@/core/engagementWindow";
 import { currentVoiceStrategy } from "@/domain/voiceOrchestrator";
 import { transition, InvalidTransitionError } from "@/core/stateMachine";
 import { getDb, nowIso, saveDb, type Database } from "@/domain/store";
@@ -100,6 +101,8 @@ export interface CadenceTickSummary {
   /** A voice step ran on another channel because no conversational agent is
    *  configured and an unattended robocall is not an acceptable substitute. */
   voiceDowngraded: number;
+  /** Held because the borrower is actively engaged in the chat right now. */
+  heldForEngagement: number;
   /** Cadence is paused on this lead pending human action — a permanently bad
    *  contact address, or a provider misconfiguration affecting everyone. */
   heldForFailure: number;
@@ -108,7 +111,12 @@ export interface CadenceTickSummary {
 
 export async function runCadenceTick(): Promise<CadenceTickSummary> {
   const db = await getDb();
-  const summary: CadenceTickSummary = { processed: 0, delivered: 0, blocked: 0, exhausted: 0, failed: 0, heldForFailure: 0, voiceDowngraded: 0, errors: [] };
+  // Stamped at the START, not the end: a tick that throws partway through
+  // still proves the scheduler is calling us, which is what this timestamp
+  // is for. Recording it only on success would report a crashing engine as
+  // an unwired scheduler and send someone to fix the wrong thing.
+  db.lastCadenceRunAt = new Date().toISOString();
+  const summary: CadenceTickSummary = { processed: 0, delivered: 0, blocked: 0, exhausted: 0, failed: 0, heldForFailure: 0, voiceDowngraded: 0, heldForEngagement: 0, errors: [] };
 
   const eligibleLeads = Array.from(db.leads.values()).filter((lead) => AUTOMATION_ELIGIBLE_STATES.includes(lead.state));
 
@@ -177,6 +185,29 @@ export async function runCadenceTick(): Promise<CadenceTickSummary> {
           summary.heldForFailure += 1;
           continue;
         }
+      }
+
+      // The borrower is on the page right now. Texting or calling someone
+      // mid-conversation in our own chat spends money to make the experience
+      // worse — and it reveals the channels as separate systems, which is the
+      // opposite of what this product is for. Hold, don't drop: the step stays
+      // due and fires once the window lapses.
+      const engagement = evaluateEngagementWindow({
+        lastEngagedAt: lead.lastEngagedAt,
+        now: new Date(),
+        windowMinutes: db.config.engagementWindowMinutes,
+        isAutomated: true,
+      });
+      if (engagement.defer) {
+        summary.heldForEngagement += 1;
+        await pushEvent({
+          leadId: lead.id,
+          type: "OUTREACH_DEFERRED",
+          actorType: "SYSTEM",
+          occurredAt: nowIso(),
+          payload: { reason: engagement.reason, retryAt: engagement.retryAt?.toISOString() },
+        });
+        continue;
       }
 
       summary.processed += 1;

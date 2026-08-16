@@ -73,13 +73,14 @@ In the Vercel project's **Settings → Environment Variables**, set whichever of
 | `SUPABASE_CA_CERT` | Required when using Supabase rather than Vercel Postgres/Neon. Download Supabase's root certificate from **Database → Settings → SSL Configuration**, then paste the full PEM into this variable. |
 | `CREDENTIAL_SECRET` | **Required to set API keys from inside the app.** Lets an Admin manage every provider key from Admin → Integrations instead of redeploying. Keys are AES-256-GCM encrypted at rest; this is the root key, so it can't be stored in the database with them. Generate with `openssl rand -hex 32`. |
 | `APP_URL` | Base URL used in invite/reset-password email links and the Vapi webhook callback. Leave blank on Vercel — falls back to the auto-populated `VERCEL_URL`. |
-| `TELNYX_API_KEY` / `TELNYX_PHONE_NUMBER` (+ optional `TELNYX_MESSAGING_PROFILE_ID`) | **Preferred SMS provider** — roughly half Twilio's per-segment cost, native 10DLC registration. Used instead of Twilio for SMS whenever set. Voice calls still use Twilio (see "Telnyx vs. Twilio" below). Get these at **portal.telnyx.com**. |
+| `TELNYX_API_KEY` / `TELNYX_PHONE_NUMBER` (+ optional `TELNYX_MESSAGING_PROFILE_ID`) | **Preferred SMS provider** — roughly half Twilio's per-segment cost, native 10DLC registration. Used instead of Twilio for SMS whenever set. Get these at **portal.telnyx.com**. |
+| `TELNYX_ACCOUNT_SID` / `TELNYX_TEXML_APP_ID` | **Telnyx outbound CALLS only.** SMS works without them. Telnyx TeXML fetches the call script from a URL rather than accepting it inline (Twilio does the latter), so calls additionally require `DELIVERY_WEBHOOK_SECRET`, which authenticates that fetch. Create a TeXML Application under Portal → Voice → TeXML Applications and assign your number to it. Without all three, SMS goes live and voice stays simulated — Admin → Integrations names the exact missing field. |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_PHONE_NUMBER` | SMS fallback when Telnyx isn't set, plus all outbound voice calls — **free trial credit at twilio.com/try-twilio** |
 | `ANTHROPIC_API_KEY` | Real AI drafts (email/SMS/call scripts) and conversation extraction — paid, usage-based |
 | `NVIDIA_API_KEY` (+ optional `NVIDIA_MODEL`) | **Free-tier alternative to Anthropic** for AI-drafted messages only (call scripts, email/SMS drafts, Reddit signal replies) — get a key at **build.nvidia.com**. If `ANTHROPIC_API_KEY` is set, that's used instead; extraction/classification still need Anthropic specifically. Leave both blank and drafts are a fixed canned message instead of AI-generated — the send still works either way. |
 | `RESEND_API_KEY` / `RESEND_FROM_EMAIL` | Real outbound email — also required for real invite/password-reset emails to send |
 | `RESEND_INBOUND_WEBHOOK_SECRET` | Turns on inbound email — borrower replies get matched to their lead and turned into a task. Set up receiving + a webhook for `email.received` in the Resend dashboard pointed at `/api/webhooks/resend-inbound`, then set this to that webhook's signing secret. See `src/domain/inboundEmail.ts`. |
-| `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` | Real lead discovery search |
+| _(none)_ | Lead discovery needs no credentials — it reads a public archive (ADR 0006) |
 | `PROPERTY_DATA_API_KEY` | Real property valuation/AVM via RentCast — **free tier at rentcast.io** (50 requests/month, no card). Only fires for leads with a street address on file. |
 | `VAPI_API_KEY` / `VAPI_PHONE_NUMBER_ID` / `VAPI_WEBHOOK_SECRET` | Live AI voice-agent qualification calls — see "Voice AI agent" below. All three are required together. |
 | `CRON_SECRET` | **Required in production** — `/api/cron/cadence` now fails closed (401) without it, rather than running unprotected. Set this to any random string and Vercel Cron (already configured in `vercel.json`) sends it automatically. |
@@ -121,3 +122,39 @@ Both are SOC 2 Type II / HIPAA / GDPR compliant, so this doesn't affect a securi
 
 - **Single JSON blob, not a normalized schema.** The Postgres backend stores the whole CRM state as one row, the same shape as the in-memory store. Fastest path to a persistent, working deploy without rewriting the data layer — fine at the current scale. A normalized Prisma/Postgres schema (`SPEC.md` section 4) is the natural next step once the data model stabilizes.
 - **Cross-instance writes are last-write-wins, not merged.** Each warm serverless instance caches the whole database in memory and overwrites the full row on every save. If Vercel runs two instances concurrently (more likely under real concurrent traffic than at this app's current scale) and both handle writes for different leads around the same time, the second save can overwrite the first instance's changes. Within a single instance this isn't a concern — same-lead writes are already serialized (`withLeadLock`, `src/domain/store.ts`). Closing this fully means moving off the single-blob model to real per-row writes (the same normalized-schema work above), not a smaller patch.
+
+
+## Go-live: the two things that are not API keys
+
+Admin → **Go live** answers "is anything still pretending?" for every
+capability, naming the exact missing config key. Check it before a launch —
+a simulated send is logged and discarded, and looks identical to a real one
+in the UI.
+
+Two prerequisites are **not** keys, and a key-only checklist reports green
+while nothing goes out:
+
+**1. A scheduler must actually run.** Nothing is sent at intake time. The
+cadence engine only acts when something calls `/api/cron/cadence`, and the
+first step is offset 0 minutes against a 5-minute first-contact SLA.
+Vercel's Hobby tier permits **daily crons only** — a lead submitted at 09:00
+would wait ~23 hours for its first automatic call. Use Vercel Pro with
+`*/5 * * * *`, or the ready-made free workflow at
+`.github/workflows/cadence-scheduler.yml`. Run exactly one of them.
+
+**2. `CRON_SECRET` must be set.** The cadence endpoint fails **closed** in
+production without it — every request gets a 401, so no automatic outreach
+runs at all regardless of how often it is pinged.
+
+Minimum for fully automatic, real outreach:
+
+| | Why |
+| --- | --- |
+| `TELNYX_API_KEY` + `TELNYX_PHONE_NUMBER` | Real SMS |
+| `VAPI_API_KEY` + `VAPI_PHONE_NUMBER_ID` + `VAPI_WEBHOOK_SECRET` | Real AI calls. The cadence deliberately will **not** place one-way robocalls, so Twilio alone does not make automatic calling work. |
+| `CRON_SECRET` + a scheduler every ~5 min | Anything automatic at all |
+| `APP_URL` | Vapi and carrier callbacks cannot reach localhost |
+| `DELIVERY_WEBHOOK_SECRET` | Delivery receipts **and** inbound STOP — one secret covers both |
+
+Add `RESEND_API_KEY` for email and `NVIDIA_API_KEY` (free) for AI copy and
+lead scoring; without them messages still send, just generic.

@@ -36,6 +36,10 @@ function validate(form: SystemConfig): string | null {
   if (form.hotLeadThreshold < 1 || form.hotLeadThreshold > 100) {
     return "Hot-lead threshold must be between 1 and 100.";
   }
+  const w2 = form.engagementWindowMinutes;
+  if (w2 !== undefined && (Number.isNaN(w2) || w2 < 0 || w2 > 120)) {
+    return "Live-chat hold must be between 0 and 120 minutes.";
+  }
   return null;
 }
 
@@ -205,6 +209,67 @@ export function SettingsPanel({ config, canEdit }: { config: SystemConfig; canEd
               Score strictly above this routes to an instant officer hot-transfer alert instead of the standard nurture flow.
             </p>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div>
+            <CardTitle>Live-chat hold</CardTitle>
+            <CardDescription>
+              While a borrower is active in the post-submit chat, automated outreach holds off — texting someone who
+              is already reading our chat costs money and tells them the channels aren&apos;t the same system. The
+              step isn&apos;t dropped; it fires once the window lapses. Manual officer contact is never held.
+            </CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="max-w-xs">
+            <Label htmlFor="engagementWindow">Hold automated outreach for (minutes)</Label>
+            <Input
+              id="engagementWindow"
+              type="number"
+              min={0}
+              max={120}
+              disabled={!canEdit}
+              value={form.engagementWindowMinutes ?? 5}
+              onChange={(e) => update("engagementWindowMinutes", Number(e.target.value))}
+            />
+            <p className="mt-1.5 text-xs text-[var(--muted-foreground)]">
+              Set to 0 to disable the hold entirely.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div>
+            <CardTitle>Environment banner</CardTitle>
+            <CardDescription>
+              The dark strip at the top of every page. Its wording is derived from which integrations are actually
+              configured — it names the live channels and the simulated ones, so it can&apos;t claim &ldquo;nothing is
+              real&rdquo; once a carrier key is in place. Turn it off for a clean client demo or a production site.
+            </CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <label className="flex cursor-pointer items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 accent-[var(--primary)]"
+              disabled={!canEdit}
+              checked={form.showEnvironmentBanner !== false}
+              onChange={(e) => update("showEnvironmentBanner", e.target.checked)}
+            />
+            <span>
+              <span className="block text-[13px] font-medium text-[var(--foreground)]">Show the environment banner</span>
+              <span className="block text-xs text-[var(--muted-foreground)]">
+                Hiding it changes nothing about what the app does — it does not make simulated channels live, or live
+                channels safe. It only stops displaying the notice.
+              </span>
+            </span>
+          </label>
         </CardContent>
       </Card>
 

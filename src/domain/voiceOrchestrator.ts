@@ -163,6 +163,8 @@ export async function placeOutboundCall(
       escalated: false,
       transcript: [],
       redactionApplied: false,
+      listenUrl: result.listenUrl,
+      controlUrl: result.controlUrl,
     });
   }
 

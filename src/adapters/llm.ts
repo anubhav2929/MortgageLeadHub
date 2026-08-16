@@ -343,7 +343,7 @@ export async function validateIntakeIdentity(input: IdentityValidationInput): Pr
 // ---------------------------------------------------------------------------
 
 export interface OutreachContentInput {
-  channel: "VOICE" | "EMAIL";
+  channel: "VOICE" | "SMS" | "EMAIL";
   firstName: string;
   intent: LoanIntent;
   goal: GoalType;
@@ -367,7 +367,25 @@ const OUTREACH_SYSTEM_PROMPT =
   "Hard rules, never break these: never quote a rate, payment amount, or approval odds; " +
   'never say "you qualify", "you\'re approved", or "you\'ll likely get"; never claim to be a human if the format implies one (for voice scripts, the officer reading it IS human, so this doesn\'t apply); ' +
   "never give legal, tax, or financial advice; never ask for SSN, date of birth, or account numbers; keep it under 60 words; " +
-  "end voice scripts with a question inviting the borrower to continue the conversation; end emails with a clear, low-pressure next step.";
+  "end voice scripts with a question inviting the borrower to continue the conversation; end emails with a clear, low-pressure next step. " +
+  // SMS is not a short email. A text that opens "Dear Jordan," and closes with
+  // a signature block reads as bulk marketing, which is the fastest route to a
+  // spam report — and a spam-report rate above roughly 0.1% gets a 10DLC
+  // campaign throttled or shut down by the carriers, taking the channel with
+  // it. The length limit is also load-bearing: this copy is what the sender
+  // truncates if it overruns, and a text cut mid-sentence looks broken.
+  "For SMS: write ONE sentence or two at most, under 240 characters total, in the register of a person typing on a phone. " +
+  "No greeting line, no sign-off, no subject, no bullet points, no links unless asked for. Identify the business once, naturally.";
+
+/** What we are actually asking the model to produce. Naming the artefact
+ *  rather than the channel matters: "follow-up email" and "text message" pull
+ *  very different registers out of a model, and asking for an email then
+ *  slicing it to SMS length is what produced texts cut off mid-word. */
+const CHANNEL_ARTEFACT: Record<OutreachContentInput["channel"], string> = {
+  VOICE: "short phone call opening script for the officer to read aloud",
+  SMS: "single short text message",
+  EMAIL: "follow-up email",
+};
 
 export async function generateOutreachContent(input: OutreachContentInput): Promise<OutreachContentResult> {
   if (await anthropicKey()) {
@@ -391,10 +409,11 @@ async function generateWithNvidia(input: OutreachContentInput): Promise<Outreach
   const intentLabel = input.intent.replace("_", " ").toLowerCase();
   const goalLabel = input.goal.replace("_", " ").toLowerCase();
   const shape = input.channel === "EMAIL" ? `{"subject": "...", "body": "..."}` : `{"body": "..."}`;
+  const artefact = CHANNEL_ARTEFACT[input.channel];
 
   const result = await callNvidiaJSON<{ subject?: string; body: string }>(
     OUTREACH_SYSTEM_PROMPT,
-    `Write a ${input.channel === "VOICE" ? "short phone call opening script for the officer to read aloud" : "follow-up email"} ` +
+    `Write a ${artefact} ` +
       `from loan officer ${input.officerFirstName} to a borrower named ${input.firstName} who submitted a ${intentLabel} inquiry ` +
       `with the goal of "${goalLabel}". This is their ${input.isFirstContact ? "first" : "a follow-up"} contact attempt. ` +
       (input.priorContext
@@ -433,7 +452,7 @@ async function generateWithClaude(input: OutreachContentInput): Promise<Outreach
       {
         role: "user",
         content:
-          `Write a ${input.channel === "VOICE" ? "short phone call opening script for the officer to read aloud" : "follow-up email"} ` +
+          `Write a ${CHANNEL_ARTEFACT[input.channel]} ` +
           `from loan officer ${input.officerFirstName} to a borrower named ${input.firstName} who submitted a ${intentLabel} inquiry ` +
           `with the goal of "${goalLabel}". This is their ${input.isFirstContact ? "first" : "a follow-up"} contact attempt.` +
           (input.priorContext
@@ -457,6 +476,14 @@ function simulateOutreachContent(input: OutreachContentInput): OutreachContentRe
       body:
         `Hi ${input.firstName},\n\nThanks for reaching out about your ${intentLabel} inquiry. I'd love to walk you through ` +
         `your options whenever works for you — no pressure, just a conversation.\n\nReply here or call me back at your convenience.\n\n${input.officerFirstName}`,
+      simulated: true,
+    };
+  }
+  if (input.channel === "SMS") {
+    return {
+      body:
+        `Hi ${input.firstName}, it's ${input.officerFirstName} at Equity Flow Group about your ${intentLabel} inquiry — ` +
+        `happy to talk through your options whenever suits. Reply STOP to opt out.`,
       simulated: true,
     };
   }
@@ -557,7 +584,12 @@ export interface IntentClassification {
 const INTENT_VALUES: LoanIntent[] = ["REFINANCE", "HOME_EQUITY", "CASH_OUT", "UNKNOWN"];
 
 export async function classifySignalIntent(text: string): Promise<IntentClassification> {
+  // Anthropic first (tool-calling gives a schema guarantee), then NVIDIA NIM,
+  // then keyword simulation. The NVIDIA rung used to be missing entirely: a
+  // deployment with only NVIDIA_API_KEY set fell straight through to the
+  // regex simulator while the admin panel reported the LLM as configured.
   if (!(await anthropicKey())) {
+    if (await nvidiaKey()) return classifyIntentWithNvidia(text);
     return simulateIntentClassification(text);
   }
   try {
@@ -593,6 +625,181 @@ export async function classifySignalIntent(text: string): Promise<IntentClassifi
     return { ...result, simulated: false };
   } catch (err) {
     console.error("[Anthropic intent classification] falling back to simulated classification:", err);
+    return simulateIntentClassification(text);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Signal assessment — the judgement half of lead discovery.
+//
+// core/discoveryQuery.ts handles what is *measurable*: keywords, recency,
+// subreddit, length. It is deterministic and reproducible, and it stays the
+// scoring backbone for exactly that reason.
+//
+// What it cannot do is read a post. Three failure modes survive every keyword
+// filter, and all three are expensive because they consume a reviewer's
+// attention:
+//
+//   - Someone *answering* a mortgage question rather than asking one. The
+//     vocabulary is identical; the intent is inverted.
+//   - Someone describing a mortgage they already closed.
+//   - An industry participant phrased carefully enough to miss the
+//     promotional-marker list.
+//
+// A model reading the text catches all three. So the LLM is not used to
+// re-derive the score — it is used to answer "is this a borrower who wants
+// something we sell, and what is their actual situation".
+// ---------------------------------------------------------------------------
+
+export type SignalUrgency = "IMMEDIATE" | "WEEKS" | "RESEARCHING" | "UNKNOWN";
+
+export interface SignalAssessment {
+  /** False for industry participants, people answering others, and closed
+   *  deals. The single most useful field: it removes work rather than adding
+   *  a number to it. */
+  isProspect: boolean;
+  intent: LoanIntent;
+  urgency: SignalUrgency;
+  /** One line, in the officer's language, describing the person's actual
+   *  circumstance — not a summary of the post. */
+  situation: string;
+  /** How to open a reply, given what they asked. */
+  suggestedAngle: string;
+  /** Reasons this may be a poor fit — stated so a reviewer can disagree. */
+  concerns: string[];
+  /** 0-100 model judgement, blended with the deterministic score by the caller. */
+  qualityScore: number;
+  simulated: boolean;
+}
+
+const URGENCY_VALUES: SignalUrgency[] = ["IMMEDIATE", "WEEKS", "RESEARCHING", "UNKNOWN"];
+
+const ASSESSMENT_SYSTEM =
+  "You assess public forum posts for a US mortgage lender's lead-discovery review queue. " +
+  "The reader is a licensed loan officer deciding whether to write a helpful public reply. " +
+  "Judge the AUTHOR, not the topic. Set isProspect false if the author is a loan officer, realtor, " +
+  "broker or other industry participant; if they are answering or advising someone else rather than " +
+  "seeking help; if their loan has already closed; or if they are outside the United States. " +
+  "Be strict: a false positive wastes an officer's time and risks an unwelcome approach. " +
+  "situation must describe the person's circumstance in one plain sentence. " +
+  "suggestedAngle must be a concrete opening for a helpful public reply, never a sales pitch. " +
+  "concerns lists genuine reasons this may be a poor fit. " +
+  'Reply as {"isProspect": bool, "intent": one of ' +
+  `${INTENT_VALUES.join("|")}, "urgency": one of ${URGENCY_VALUES.join("|")}, ` +
+  '"situation": string, "suggestedAngle": string, "concerns": [string], "qualityScore": 0-100}.';
+
+/**
+ * Runs on NVIDIA NIM (free tier) by preference — this is high-volume,
+ * low-stakes classification over public text, which is exactly the workload
+ * worth spending a free quota on rather than per-token Anthropic credit.
+ */
+export async function assessSignal(input: {
+  title: string;
+  body: string;
+  subreddit: string;
+}): Promise<SignalAssessment> {
+  const text = `Subreddit: r/${input.subreddit}\nTitle: ${input.title}\n\nPost:\n${input.body.slice(0, 3000)}`;
+
+  if (await nvidiaKey()) {
+    try {
+      return normaliseAssessment(await callNvidiaJSON<Record<string, unknown>>(ASSESSMENT_SYSTEM, text, 500));
+    } catch (err) {
+      console.error("[NVIDIA signal assessment] failed:", err);
+    }
+  }
+
+  if (await anthropicKey()) {
+    try {
+      const { default: Anthropic } = await import("@anthropic-ai/sdk");
+      const client = new Anthropic({ apiKey: (await anthropicKey())! });
+      const message = await client.messages.create({
+        model: MODEL,
+        max_tokens: 500,
+        system: ASSESSMENT_SYSTEM,
+        messages: [{ role: "user", content: text }],
+      });
+      const block = message.content.find((b) => b.type === "text");
+      if (block && block.type === "text") {
+        const cleaned = block.text.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+        return normaliseAssessment(JSON.parse(cleaned) as Record<string, unknown>);
+      }
+    } catch (err) {
+      console.error("[Anthropic signal assessment] failed:", err);
+    }
+  }
+
+  return {
+    isProspect: true,
+    intent: "UNKNOWN",
+    urgency: "UNKNOWN",
+    situation: "",
+    suggestedAngle: "",
+    concerns: [],
+    qualityScore: 0,
+    simulated: true,
+  };
+}
+
+/**
+ * Validates model output field by field.
+ *
+ * `isProspect` defaults to TRUE when the model omits it or returns something
+ * unparseable. That may look backwards for a filter whose job is exclusion,
+ * but the alternative is worse: a malformed response would silently discard a
+ * genuine lead, and nobody would ever see the post to notice. A junk response
+ * should degrade to "a human decides", which is the pre-AI behaviour.
+ */
+function normaliseAssessment(raw: Record<string, unknown>): SignalAssessment {
+  const str = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+  const score = typeof raw.qualityScore === "number" && Number.isFinite(raw.qualityScore)
+    ? Math.max(0, Math.min(100, Math.round(raw.qualityScore)))
+    : 0;
+
+  return {
+    isProspect: raw.isProspect === false ? false : true,
+    intent: INTENT_VALUES.includes(raw.intent as LoanIntent) ? (raw.intent as LoanIntent) : "UNKNOWN",
+    urgency: URGENCY_VALUES.includes(raw.urgency as SignalUrgency) ? (raw.urgency as SignalUrgency) : "UNKNOWN",
+    situation: str(raw.situation, 300),
+    suggestedAngle: str(raw.suggestedAngle, 400),
+    concerns: Array.isArray(raw.concerns)
+      ? raw.concerns.filter((c): c is string => typeof c === "string").map((c) => c.slice(0, 200)).slice(0, 5)
+      : [],
+    qualityScore: score,
+    simulated: false,
+  };
+}
+
+async function classifyIntentWithNvidia(text: string): Promise<IntentClassification> {
+  try {
+    const result = await callNvidiaJSON<{
+      intent?: string;
+      confidence?: number;
+      matchedKeywords?: unknown;
+    }>(
+      "You classify whether a public forum post expresses genuine intent to refinance a mortgage, do a cash-out " +
+        "refinance, or take a home equity loan. Return UNKNOWN if the post is unrelated or too vague. " +
+        `Reply as {"intent": one of ${INTENT_VALUES.join("|")}, "confidence": 0-1, "matchedKeywords": [strings]}.`,
+      text,
+      250
+    );
+
+    // NIM has no tool-calling schema guarantee, so validate rather than trust.
+    // An out-of-enum intent silently becomes a real LoanIntent otherwise, and
+    // a hallucinated "PURCHASE" would propagate into routing.
+    const intent = INTENT_VALUES.includes(result.intent as LoanIntent)
+      ? (result.intent as LoanIntent)
+      : "UNKNOWN";
+    const confidence =
+      typeof result.confidence === "number" && Number.isFinite(result.confidence)
+        ? Math.max(0, Math.min(1, result.confidence))
+        : 0;
+    const matchedKeywords = Array.isArray(result.matchedKeywords)
+      ? result.matchedKeywords.filter((k): k is string => typeof k === "string").slice(0, 12)
+      : [];
+
+    return { intent, confidence, matchedKeywords, simulated: false };
+  } catch (err) {
+    console.error("[NVIDIA intent classification] falling back to simulated classification:", err);
     return simulateIntentClassification(text);
   }
 }

@@ -38,6 +38,7 @@ const MAP_KEYS: (keyof Database)[] = [
   "referralPartners",
   "sessions",
   "authTokens",
+  "voiceAnnouncements",
   "intakeDrafts",
   "credentials",
 ];
@@ -50,11 +51,32 @@ function toSerializable(db: Database): Record<string, unknown> {
   return serializable;
 }
 
+// Array-valued collections. Listed explicitly for the same reason MAP_KEYS is:
+// a snapshot written before a collection existed has no key for it, and
+// `db.newThing.push(...)` on undefined throws at runtime — long after the
+// deploy that introduced it. Defaulting them here makes adding a collection
+// backward-compatible with every snapshot already in the database.
+const ARRAY_KEYS: (keyof Database)[] = [
+  "attempts",
+  "notes",
+  "events",
+  "policyDecisions",
+  "consents",
+  "auditLogs",
+  "creditConsents",
+  "creditPulls",
+  "leadDocuments",
+];
+
 function fromSerializable(parsed: Record<string, unknown>): Database {
   const db = { ...parsed } as unknown as Database;
   for (const key of MAP_KEYS) {
     const entries = (parsed as Record<string, [string, unknown][]>)[key as string] ?? [];
     (db as unknown as Record<string, Map<string, unknown>>)[key as string] = new Map(entries);
+  }
+  for (const key of ARRAY_KEYS) {
+    const target = db as unknown as Record<string, unknown[]>;
+    if (!Array.isArray(target[key as string])) target[key as string] = [];
   }
   return db;
 }

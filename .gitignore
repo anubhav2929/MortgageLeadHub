@@ -44,3 +44,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# editor / assistant tooling — local developer config, not product source
+/.claude/
+*.code-workspace
+
+# internal working notes and client collateral. Kept on disk for whoever needs
+# them, deliberately out of the source tree: point-in-time meeting notes and
+# commercial documents are not maintained artifacts and go stale silently.
+/docs/internal/

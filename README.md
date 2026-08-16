@@ -68,7 +68,7 @@ instructions for each provider. See
 - [CONTRIBUTING.md](CONTRIBUTING.md) — working agreements, testing strategy, review checklist
 - [docs/adr/](docs/adr/) — architecture decision records for the non-obvious choices
 - [DEPLOY.md](DEPLOY.md) — deployment, environment variables, provider setup
-- [SPEC.md](../SPEC.md) — functional requirements (F-01 … F-13)
+- [SPEC.md](docs/SPEC.md) — functional requirements (F-01 … F-13)
 
 ## Tech stack
 

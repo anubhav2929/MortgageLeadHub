@@ -1,10 +1,13 @@
 import { computeCompleteness, type CompletenessInputs } from "@/core/completeness";
 import { computeLeadQualityScore, type LeadScoreResult } from "@/core/leadScoring";
 import { getPropertyValuation } from "@/adapters/propertyData";
-import { getDb, saveDb } from "@/domain/store";
+import { getDb, saveDb, type Database } from "@/domain/store";
+import { evaluateGoLive, summariseGoLive } from "@/core/goLive";
+import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import type {
   AuditLog,
   CadencePlan,
+  Channel,
   ConsentRecord,
   ContactAttempt,
   ConversationSession,
@@ -21,6 +24,7 @@ import type {
   PolicyDecision,
   PropertyValuationResult,
   Suppression,
+  CreditPullResult,
   Task,
 } from "@/domain/types";
 
@@ -154,6 +158,9 @@ export interface LeadDetail {
   leadFields: LeadField[];
   cadencePlan?: CadencePlan;
   suppression?: Suppression;
+  /** Most recent soft credit pull, if one has run. Absent means nobody has
+   *  checked — which is materially different from a borrower saying "unsure". */
+  creditPull?: CreditPullResult;
   qualityScore: LeadScoreResult;
   propertyValuation: PropertyValuationResult;
   /** Computed from today's attempt records — not lead.attemptsToday, which
@@ -214,6 +221,13 @@ export async function getLeadByRef(publicRef: string): Promise<LeadDetail | null
     db.config.hotLeadThreshold
   );
 
+  // Most recent soft pull, so the UI can distinguish a verified credit band
+  // from one nobody has checked. Without it, "Unsure" reads identically
+  // whether the borrower said so or we simply never asked.
+  const creditPull = db.creditPulls
+    .filter((p) => p.leadId === lead.id)
+    .sort((a, b) => new Date(b.pulledAt).getTime() - new Date(a.pulledAt).getTime())[0];
+
   const attempts = db.attempts.filter((a) => a.leadId === lead.id).sort((a, b) => new Date(b.scheduledFor).getTime() - new Date(a.scheduledFor).getTime());
   const today = new Date().toDateString();
   const attemptsToday = attempts.filter((a) => new Date(a.scheduledFor).toDateString() === today).length;
@@ -225,6 +239,7 @@ export async function getLeadByRef(publicRef: string): Promise<LeadDetail | null
     officer,
     suppression,
     qualityScore,
+    creditPull,
     propertyValuation: valuation,
     attemptsToday,
     nextAttemptEta: computeNextAttemptEta(lead, db.cadencePlans.get(lead.cadencePlanVersionId), leadEvents),
@@ -527,4 +542,248 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
     handoffAckLatencyMinutes: median(ackLatencies),
     optOutRate,
   };
+}
+
+/**
+ * Go-live readiness. Answers the one question an operator has before a
+ * launch: "if I paste my keys in, will anything still be pretending?"
+ *
+ * Deliberately reads live capabilities and the cadence heartbeat together —
+ * the non-key prerequisites (a scheduler actually running, a reachable public
+ * URL) are the ones that a pure API-key checklist reports as green while
+ * nothing automatic ever fires.
+ */
+export async function getGoLiveReadiness() {
+  const [caps, db] = await Promise.all([getCapabilities(), getDb()]);
+  const has = async (k: string) => Boolean(await getConfigValue(k));
+
+  const items = evaluateGoLive({
+    caps,
+    hasCronSecret: await has("CRON_SECRET"),
+    hasDeliveryWebhookSecret: await has("DELIVERY_WEBHOOK_SECRET"),
+    hasInboundSmsSecret: await has("DELIVERY_WEBHOOK_SECRET"),
+    hasAppUrl: await has("APP_URL"),
+    hasCreditCheck: (await has("ISOFTPULL_API_KEY")) && (await has("ISOFTPULL_API_SECRET")),
+    lastCadenceRunAt: db.lastCadenceRunAt,
+    now: new Date(),
+  });
+
+  return { items, verdict: summariseGoLive(items) };
+}
+
+/** Documents attached to a lead, newest first. */
+export async function listLeadDocuments(leadId: string) {
+  const db = await getDb();
+  return db.leadDocuments
+    .filter((d) => d.leadId === leadId)
+    .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+}
+
+// ---------------------------------------------------------------------------
+// Call centre — voice activity across every lead, not one lead at a time.
+// ---------------------------------------------------------------------------
+
+export interface CallCentreEntry {
+  attempt: ContactAttempt;
+  conversation?: ConversationSession;
+  leadPublicRef: string;
+  borrowerName: string;
+  stateCode: string;
+  officerName?: string;
+}
+
+/**
+ * Voice activity across all leads, newest first.
+ *
+ * Joined here rather than in the page because the page needs three different
+ * slices of the same data (live, recent, failed) and re-deriving the join per
+ * slice would walk every attempt three times.
+ */
+export async function listCallActivity(limit = 100): Promise<CallCentreEntry[]> {
+  const db = await getDb();
+  const conversationsByAttempt = new Map<string, ConversationSession>();
+  for (const c of db.conversations.values()) {
+    if (c.contactAttemptId) conversationsByAttempt.set(c.contactAttemptId, c);
+  }
+
+  const officers = db.officers;
+
+  return db.attempts
+    .filter((a) => a.channel === "VOICE")
+    .sort((a, b) => new Date(b.startedAt ?? b.scheduledFor).getTime() - new Date(a.startedAt ?? a.scheduledFor).getTime())
+    .slice(0, limit)
+    .map((attempt) => {
+      const lead = db.leads.get(attempt.leadId);
+      const person = Array.from(db.people.values()).find((p) => p.leadId === attempt.leadId && p.role === "PRIMARY");
+      return {
+        attempt,
+        conversation: conversationsByAttempt.get(attempt.id),
+        leadPublicRef: lead?.publicRef ?? "",
+        borrowerName: person ? `${person.firstName} ${person.lastName}` : "Unknown borrower",
+        stateCode: lead?.stateCode ?? "",
+        officerName: lead?.assignedOfficerId ? officers.get(lead.assignedOfficerId)?.name : undefined,
+      };
+    })
+    .filter((e) => e.leadPublicRef !== "");
+}
+
+/**
+ * Calls happening right now.
+ *
+ * A session is only IN_PROGRESS between the provider's "in-progress" status
+ * webhook and its end-of-call report, so this is genuinely live rather than
+ * "recently started". Stale sessions are excluded on age: if a provider drops
+ * the closing webhook entirely, the session would otherwise sit on the live
+ * board forever and the board stops meaning anything.
+ */
+export const LIVE_CALL_MAX_MINUTES = 60;
+
+export async function listLiveCalls(): Promise<CallCentreEntry[]> {
+  const all = await listCallActivity(200);
+  const cutoff = Date.now() - LIVE_CALL_MAX_MINUTES * 60_000;
+  return all
+    .filter((e) => e.conversation?.status === "IN_PROGRESS")
+    .filter((e) => new Date(e.conversation!.startedAt).getTime() > cutoff)
+    .sort((a, b) => new Date(a.conversation!.startedAt).getTime() - new Date(b.conversation!.startedAt).getTime());
+}
+
+// ---------------------------------------------------------------------------
+// Message centre — SMS activity across every lead.
+// ---------------------------------------------------------------------------
+
+export interface MessageThreadSummary {
+  leadPublicRef: string;
+  leadId: string;
+  borrowerName: string;
+  stateCode: string;
+  phoneE164: string;
+  officerName?: string;
+  lastOutboundAt?: string;
+  lastOutboundBody?: string;
+  lastInboundAt?: string;
+  lastInboundBody?: string;
+  /** Borrower replied more recently than we sent — someone should answer. */
+  awaitingUs: boolean;
+  /** We sent and heard nothing back. */
+  awaitingBorrower: boolean;
+  sentCount: number;
+  /** Most recent send the provider refused. */
+  lastFailure?: { message: string; failureClass?: string; at: string };
+  /** True when this number is suppressed — no further texts may be sent. */
+  suppressed: boolean;
+  /** Next automated cadence touch, if one is scheduled. */
+  nextStepAt?: string;
+  nextStepChannel?: Channel;
+}
+
+/**
+ * When the cadence will next touch this lead, and on which channel.
+ *
+ * Derived exactly the way domain/cadenceEngine.ts derives it — step index from
+ * the count of OUTREACH_ATTEMPTED events tagged as cadence steps, due time
+ * from lead.createdAt plus that step's offset. There is no stored
+ * "next action" field, and inventing one here would give the centre a second
+ * opinion that drifts from what the engine actually does.
+ */
+function nextCadenceTouch(
+  db: Database,
+  lead: Lead
+): { nextStepAt?: string; nextStepChannel?: Channel } {
+  const plan = db.cadencePlans.get(lead.cadencePlanVersionId);
+  if (!plan || plan.steps.length === 0) return {};
+
+  const fired = db.events.filter(
+    (e) => e.leadId === lead.id && e.type === "OUTREACH_ATTEMPTED" && e.payload?.reason === "automated_cadence_step"
+  ).length;
+
+  const steps = [...plan.steps].sort((a, b) => a.offsetMinutes - b.offsetMinutes);
+  const next = steps[fired];
+  if (!next) return {}; // cadence exhausted
+
+  return {
+    nextStepAt: new Date(new Date(lead.createdAt).getTime() + next.offsetMinutes * 60_000).toISOString(),
+    nextStepChannel: next.channel,
+  };
+}
+
+/**
+ * One row per lead with SMS history, newest activity first.
+ *
+ * Built as a summary rather than returning whole threads: the centre is a
+ * triage surface, and loading every message of every conversation to render a
+ * list of last-lines would grow linearly with the life of the account.
+ */
+export async function listMessageThreads(limit = 60): Promise<MessageThreadSummary[]> {
+  const db = await getDb();
+  const suppressedNumbers = new Set(Array.from(db.suppressions.values()).map((s) => s.phoneE164));
+
+  const byLead = new Map<string, ContactAttempt[]>();
+  for (const a of db.attempts) {
+    if (a.channel !== "SMS") continue;
+    const list = byLead.get(a.leadId) ?? [];
+    list.push(a);
+    byLead.set(a.leadId, list);
+  }
+
+  const summaries: MessageThreadSummary[] = [];
+
+  for (const [leadId, attempts] of byLead) {
+    const lead = db.leads.get(leadId);
+    if (!lead) continue;
+    const person = Array.from(db.people.values()).find((p) => p.leadId === leadId && p.role === "PRIMARY");
+
+    const sorted = [...attempts].sort(
+      (a, b) => new Date(a.startedAt ?? a.scheduledFor).getTime() - new Date(b.startedAt ?? b.scheduledFor).getTime()
+    );
+    const lastOutbound = [...sorted].reverse().find((a) => a.direction === "OUTBOUND" && a.outcome !== "FAILED");
+
+    // Borrower replies are stored as borrower-authored notes, not attempts —
+    // same source the unified conversation thread reads from, so the centre
+    // cannot disagree with the lead page about who spoke last.
+    const inbound = db.notes
+      .filter((n) => n.leadId === leadId && n.authorId === "borrower")
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    const lastInbound = inbound[inbound.length - 1];
+
+    const failure = [...sorted].reverse().find((a) => a.outcome === "FAILED" && a.failureMessage);
+
+    const lastOutAt = lastOutbound ? (lastOutbound.startedAt ?? lastOutbound.scheduledFor) : undefined;
+    const lastInAt = lastInbound?.createdAt;
+
+    summaries.push({
+      leadPublicRef: lead.publicRef,
+      leadId,
+      borrowerName: person ? `${person.firstName} ${person.lastName}` : "Unknown borrower",
+      stateCode: lead.stateCode,
+      phoneE164: person?.phoneE164 ?? "",
+      officerName: lead.assignedOfficerId ? db.officers.get(lead.assignedOfficerId)?.name : undefined,
+      lastOutboundAt: lastOutAt,
+      lastOutboundBody: lastOutbound?.body,
+      lastInboundAt: lastInAt,
+      lastInboundBody: lastInbound?.body,
+      awaitingUs: Boolean(lastInAt && (!lastOutAt || new Date(lastInAt) > new Date(lastOutAt))),
+      awaitingBorrower: Boolean(lastOutAt && (!lastInAt || new Date(lastOutAt) > new Date(lastInAt))),
+      sentCount: sorted.filter((a) => a.direction === "OUTBOUND" && a.outcome !== "FAILED").length,
+      lastFailure: failure
+        ? {
+            message: failure.failureMessage!,
+            failureClass: failure.failureClass,
+            at: failure.startedAt ?? failure.scheduledFor,
+          }
+        : undefined,
+      suppressed: Boolean(person && suppressedNumbers.has(person.phoneE164)),
+      ...nextCadenceTouch(db, lead),
+    });
+  }
+
+  return summaries
+    .sort((a, b) => {
+      // A borrower waiting on us outranks everything: it is the only state in
+      // the list where a person is actively expecting a reply.
+      if (a.awaitingUs !== b.awaitingUs) return a.awaitingUs ? -1 : 1;
+      const at = Math.max(Date.parse(a.lastInboundAt ?? "0") || 0, Date.parse(a.lastOutboundAt ?? "0") || 0);
+      const bt = Math.max(Date.parse(b.lastInboundAt ?? "0") || 0, Date.parse(b.lastOutboundAt ?? "0") || 0);
+      return bt - at;
+    })
+    .slice(0, limit);
 }

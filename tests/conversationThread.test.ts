@@ -204,3 +204,148 @@ describe("buildConversationBrief", () => {
     expect(brief.length).toBeLessThan(500);
   });
 });
+
+describe("the thread opens with the intake submission", () => {
+  const intake = {
+    submittedAt: "2026-08-01T10:00:00Z",
+    intent: "CASH_OUT",
+    goal: "CONSOLIDATE_DEBT",
+    timeline: "ZERO_TO_THREE_MONTHS",
+    stateCode: "TX",
+    occupancy: "PRIMARY",
+    estimatedValue: 540000,
+    currentBalance: 310000,
+    missedPayments: "NONE",
+  };
+
+  it("places the submission before everything else", () => {
+    // Without this the tab opened on our outbound call, so the post-submit
+    // chat read as a conversation with no beginning.
+    const thread = buildLeadThread({
+      attempts: [],
+      conversations: [],
+      notes: [
+        {
+          id: "n1",
+          leadId: "l1",
+          authorId: "borrower",
+          authorName: "Borrower (portal)",
+          body: "Actually my last name is spelled Whitfield.",
+          createdAt: "2026-08-01T10:04:00Z",
+        } as never,
+      ],
+      intake,
+    });
+    expect(thread[0].id).toBe("intake-submission");
+    expect(thread[0].role).toBe("BORROWER");
+    expect(thread[0].direction).toBe("INBOUND");
+    expect(thread).toHaveLength(2);
+  });
+
+  it("reads as something a person said, not a record dump", () => {
+    const [first] = buildLeadThread({ attempts: [], conversations: [], notes: [], intake });
+    expect(first.text).toMatch(/cash-out refinance/i);
+    expect(first.text).toMatch(/TX/);
+    // Enum underscores must not leak into borrower-facing prose.
+    expect(first.text).not.toMatch(/_/);
+  });
+
+  it("states 'no missed payments' explicitly rather than omitting it", () => {
+    // Absence of the sentence is ambiguous — it could mean nobody asked.
+    const [first] = buildLeadThread({ attempts: [], conversations: [], notes: [], intake });
+    expect(first.text).toMatch(/haven't missed any/i);
+  });
+
+  it("computes equity when both figures are present", () => {
+    const [first] = buildLeadThread({ attempts: [], conversations: [], notes: [], intake });
+    expect(first.text).toMatch(/\$230,000 of equity/);
+  });
+
+  it("omits the intake message entirely when no summary is supplied", () => {
+    // The channel router and AI brief pass no intake and must be unaffected.
+    expect(buildLeadThread({ attempts: [], conversations: [], notes: [] })).toHaveLength(0);
+  });
+});
+
+describe("enum values become readable prose", () => {
+  const base = {
+    submittedAt: "2026-08-01T10:00:00Z",
+    intent: "REFINANCE",
+    goal: "LOWER_PAYMENT",
+    timeline: "1_3_MONTHS",
+    stateCode: "TX",
+  };
+
+  it("renders a numeric range with a dash, not a gap", () => {
+    // "my timeline is 1 3 months" reads as a typo in borrower-facing text.
+    const [m] = buildLeadThread({ attempts: [], conversations: [], notes: [], intake: base });
+    expect(m.text).toMatch(/1–3 months/);
+    expect(m.text).not.toMatch(/1 3 months/);
+  });
+
+  it("spells out enums that have an established phrasing", () => {
+    const [m] = buildLeadThread({
+      attempts: [],
+      conversations: [],
+      notes: [],
+      intake: { ...base, timeline: "ASAP", goal: "DEBT_CONSOLIDATION", intent: "CASH_OUT" },
+    });
+    expect(m.text).toMatch(/as soon as possible/);
+    expect(m.text).toMatch(/consolidate debt/);
+    expect(m.text).toMatch(/cash-out refinance/);
+  });
+});
+
+describe("the AI brief never loses why the borrower called", () => {
+  const intake = {
+    submittedAt: "2026-08-01T10:00:00Z",
+    intent: "CASH_OUT",
+    goal: "DEBT_CONSOLIDATION",
+    timeline: "ASAP",
+    stateCode: "TX",
+    estimatedValue: 540000,
+    currentBalance: 310000,
+  };
+  const chatter = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `n${i}`,
+      leadId: "l1",
+      authorId: "borrower",
+      authorName: "Borrower (portal)",
+      body: `Chat message ${i + 1}`,
+      createdAt: new Date(Date.parse("2026-08-01T10:05:00Z") + i * 60_000).toISOString(),
+    })) as never[];
+
+  it("keeps the intake even when the thread is longer than the brief", () => {
+    // A tail-slice drops the oldest message, and the intake IS the oldest —
+    // so a chatty borrower would get called by an agent that knew this
+    // morning's small talk but not that they want a cash-out refinance.
+    const brief = buildConversationBrief(
+      buildLeadThread({ attempts: [], conversations: [], notes: chatter(30), intake })
+    );
+    expect(brief).toMatch(/cash-out refinance/);
+    expect(brief).toMatch(/\$230,000 of equity/);
+  });
+
+  it("still prefers recent messages for everything else", () => {
+    const brief = buildConversationBrief(
+      buildLeadThread({ attempts: [], conversations: [], notes: chatter(30), intake })
+    );
+    expect(brief).toMatch(/Chat message 30/);
+    expect(brief).not.toMatch(/Chat message 1\b/);
+  });
+
+  it("respects the message budget rather than growing by one", () => {
+    const brief = buildConversationBrief(
+      buildLeadThread({ attempts: [], conversations: [], notes: chatter(30), intake }),
+      12
+    );
+    expect(brief.split("\n")).toHaveLength(12);
+  });
+
+  it("is unchanged for threads with no intake summary", () => {
+    const brief = buildConversationBrief(buildLeadThread({ attempts: [], conversations: [], notes: chatter(30) }), 5);
+    expect(brief.split("\n")).toHaveLength(5);
+    expect(brief).toMatch(/Chat message 30/);
+  });
+});

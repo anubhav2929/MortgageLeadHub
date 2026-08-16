@@ -57,6 +57,8 @@ export async function hasAll(keys: string[]): Promise<boolean> {
 export interface RuntimeCapabilities {
   hasTelnyx: boolean;
   hasTwilio: boolean;
+  /** Telnyx configured deeply enough to place calls, not just send SMS. */
+  hasTelnyxVoice: boolean;
   hasSms: boolean;
   hasVoice: boolean;
   hasAnthropic: boolean;
@@ -82,13 +84,20 @@ export async function getCapabilities(): Promise<RuntimeCapabilities> {
   const hasNvidia = await hasAll(["NVIDIA_API_KEY"]);
   const hasResend = await hasAll(["RESEND_API_KEY"]);
 
+  // Telnyx voice needs strictly more than Telnyx SMS: TeXML fetches the call
+  // script over HTTP rather than accepting it inline, which requires a TeXML
+  // Application, the account id, and the webhook secret that authenticates the
+  // fetch. Treating "Telnyx configured" as "Telnyx can call" was the original
+  // bug — SMS worked, voice silently stayed simulated, and nothing said why.
+  const hasTelnyxVoice =
+    hasTelnyx && (await hasAll(["TELNYX_ACCOUNT_SID", "TELNYX_TEXML_APP_ID", "DELIVERY_WEBHOOK_SECRET"]));
+
   return {
     hasTelnyx,
     hasTwilio,
-    // SMS can go out over either carrier; voice is Twilio-only today
-    // (adapters/voice.ts explains why Telnyx voice needs a hosted XML step).
+    hasTelnyxVoice,
     hasSms: hasTelnyx || hasTwilio,
-    hasVoice: hasTwilio,
+    hasVoice: hasTwilio || hasTelnyxVoice,
     hasAnthropic,
     hasNvidia,
     hasAnyLlm: hasAnthropic || hasNvidia,
@@ -97,7 +106,8 @@ export async function getCapabilities(): Promise<RuntimeCapabilities> {
     hasVoiceAgent: await hasAll(["VAPI_API_KEY", "VAPI_PHONE_NUMBER_ID", "VAPI_WEBHOOK_SECRET"]),
     hasPartialVoiceAgent:
       (await hasAll(["VAPI_API_KEY"])) && !(await hasAll(["VAPI_PHONE_NUMBER_ID", "VAPI_WEBHOOK_SECRET"])),
-    hasLeadDiscovery: await hasAll(["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"]),
+    // Always live — the Arctic Shift archive needs no auth. See env.ts.
+    hasLeadDiscovery: true,
     hasPropertyData: await hasAll(["PROPERTY_DATA_API_KEY"]),
   };
 }

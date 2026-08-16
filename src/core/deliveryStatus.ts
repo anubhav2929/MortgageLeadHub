@@ -34,6 +34,11 @@ import type { AttemptOutcome, Channel } from "@/domain/types";
  */
 export type FailureClass = "PERMANENT" | "TRANSIENT" | "CONFIGURATION";
 
+/** Every provider whose failures this module can classify. Adding one here
+ *  rather than widening the string keeps the per-vendor code tables honest —
+ *  a Telnyx error code must never be read as a Twilio one. */
+export type DeliveryProviderId = "twilio" | "telnyx" | "resend" | "vapi" | "isoftpull";
+
 export interface DeliveryFailure {
   class: FailureClass;
   /** Provider's own code, kept verbatim for support escalation. */
@@ -91,7 +96,7 @@ const TELNYX_CONFIGURATION = new Set([
  * a worse error than one wasted retry.
  */
 export function classifyFailure(
-  provider: "twilio" | "telnyx" | "resend" | "vapi",
+  provider: DeliveryProviderId,
   providerCode: string | undefined,
   message: string
 ): DeliveryFailure {
@@ -147,7 +152,7 @@ export function classifyFailure(
  * "initiated"), so a caller can distinguish "no change" from "unknown status".
  */
 export function mapProviderStatus(
-  provider: "twilio" | "telnyx" | "resend" | "vapi",
+  provider: DeliveryProviderId,
   status: string
 ): AttemptOutcome | null {
   const s = status.trim().toLowerCase();

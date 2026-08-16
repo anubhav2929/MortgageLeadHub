@@ -16,7 +16,12 @@ const MAX_SHOWN = 5;
  *  attempt due") and eight identical headlines carry no information — the
  *  name is what tells one row from another. */
 export function WorkQueueCard({ tasks, scopeLabel }: { tasks: TaskWithLead[]; scopeLabel: string }) {
-  const openTasks = tasks.filter((t) => t.status === "OPEN");
+  // Blocked-automation items are surfaced separately by BlockedAlertsCard —
+  // they need an administrator, not an officer working a queue, and listing
+  // them in both places just dilutes each.
+  const openTasks = tasks.filter(
+    (t) => t.status === "OPEN" && t.type !== "NO_ELIGIBLE_OFFICER" && t.type !== "INTEGRATION_ALERT"
+  );
   const open = openTasks.slice(0, MAX_SHOWN);
   const overdueCount = openTasks.filter((t) => t.overdue).length;
 

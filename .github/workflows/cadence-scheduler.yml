@@ -1,0 +1,72 @@
+# Runs the outreach cadence every 5 minutes.
+#
+# Why this file exists instead of a Vercel Cron entry: Vercel's Hobby tier
+# permits DAILY crons only. The cadence's first step is offset 0 minutes and
+# the first-contact SLA is 5 minutes, so a daily tick means a lead submitted
+# at 09:00 waits ~23 hours for its first automatic call. Every API key can be
+# configured correctly and nothing will go out.
+#
+# GitHub Actions scheduled workflows are free on public repos and included in
+# the free minutes allowance on private ones, so this closes the gap without
+# a Vercel upgrade. If you do move to Vercel Pro, change vercel.json to
+# "*/5 * * * *" and delete this file — running both would double every tick.
+#
+# Setup (once):
+#   1. Repo → Settings → Secrets and variables → Actions → New repository secret
+#        CRON_SECRET   the same value set in your Vercel environment
+#        APP_URL       your public origin, e.g. https://app.equityflowgroup.com
+#   2. Merge this file to your default branch. GitHub only schedules workflows
+#      that exist there.
+#
+# Note: GitHub's scheduler is best-effort and can lag under load, so treat
+# 5 minutes as a floor rather than a guarantee. A late tick is harmless — the
+# engine works from "which step is next for this lead", not from wall-clock
+# slots, so it simply catches up.
+#
+# Run exactly ONE scheduler. The engine decides a step is due by counting past
+# attempt events, and that count is read before the per-lead write lock — which
+# is in-process anyway, so it cannot serialise two schedulers or two serverless
+# instances. Two overlapping ticks can therefore both send the same step. The
+# concurrency group below prevents that within this workflow; it cannot prevent
+# it if a Vercel Cron entry is also firing, so keep vercel.json on its daily
+# schedule or delete its cron block entirely while this workflow is active.
+
+name: Outreach cadence
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  # Lets you fire a tick by hand from the Actions tab — useful when verifying
+  # a go-live without waiting for the next scheduled run.
+  workflow_dispatch:
+
+# A slow tick must never overlap the next one: two concurrent runs could both
+# read a step as due before either records the attempt.
+concurrency:
+  group: outreach-cadence
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger cadence
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::APP_URL and CRON_SECRET repository secrets are required."
+            exit 1
+          fi
+
+          # --fail-with-body so a 401 surfaces the reason instead of an empty
+          # non-zero exit. The response body is the tick summary and contains
+          # no PII — only counts.
+          curl --silent --show-error --fail-with-body \
+               --max-time 120 \
+               --header "Authorization: Bearer ${CRON_SECRET}" \
+               "${APP_URL%/}/api/cron/cadence"

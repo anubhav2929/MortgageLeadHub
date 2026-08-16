@@ -10,6 +10,8 @@ import type {
   AuthToken,
   CadencePlan,
   ConsentRecord,
+  CreditPullConsent,
+  CreditPullResult,
   ContactAttempt,
   ConversationSession,
   DiscoveredSignal,
@@ -17,6 +19,8 @@ import type {
   ExportRecord,
   FieldCandidate,
   IntakeDraft,
+  LeadDocument,
+  VoiceAnnouncement,
   KillSwitchState,
   Lead,
   LeadEvent,
@@ -39,6 +43,11 @@ export interface Database {
   leads: Map<string, Lead>;
   people: Map<string, Person>;
   consents: ConsentRecord[];
+  /** FCRA authorisations for soft credit pulls, and the pull results. Kept
+   *  separate from `consents` because these are consumer-report
+   *  authorisations under a different statute, with their own retention. */
+  creditConsents: CreditPullConsent[];
+  creditPulls: CreditPullResult[];
   disclosures: Map<string, DisclosureVersion>;
   suppressions: Map<string, Suppression>; // keyed by phoneE164
   events: LeadEvent[];
@@ -55,6 +64,10 @@ export interface Database {
   notes: Note[];
   credentials: Map<string, IntegrationCredential>; // keyed by env-var name — see core/integrationRegistry.ts
   killSwitch: KillSwitchState;
+  /** When the cadence engine last completed a tick. Absence or staleness is
+   *  the only way to detect that the scheduler was never wired up — without
+   *  it, "nothing is being contacted" looks exactly like "nothing is due". */
+  lastCadenceRunAt?: string;
   users: Map<string, User>;
   signals: Map<string, DiscoveredSignal>;
   config: SystemConfig;
@@ -62,6 +75,15 @@ export interface Database {
   sessions: Map<string, Session>; // keyed by token
   authTokens: Map<string, AuthToken>; // keyed by token — invite/reset links
   intakeDrafts: Map<string, IntakeDraft>; // keyed by clientDraftId — see IntakeDraft
+  /** Short-lived TeXML announcement scripts, keyed by a random id. Telnyx
+   *  fetches call instructions from a URL rather than accepting inline XML
+   *  (unlike Twilio), so the text has to be retrievable by a second, separate
+   *  HTTP request — which on serverless may hit a different instance. Hence
+   *  the database rather than a module-level Map. Purged after use/expiry;
+   *  see adapters/voice.ts and app/api/texml/announcement. */
+  voiceAnnouncements: Map<string, VoiceAnnouncement>;
+  /** Files attached to leads — see LeadDocument. */
+  leadDocuments: LeadDocument[];
 }
 
 declare global {
@@ -71,6 +93,7 @@ declare global {
 export const DEFAULT_CONFIG: SystemConfig = {
   firstContactSlaMinutes: 5,
   dailyAttemptCap: 3,
+  engagementWindowMinutes: 5,
   minSpacingHours: 4,
   quietHoursStart: 8,
   quietHoursEnd: 21,
@@ -78,6 +101,7 @@ export const DEFAULT_CONFIG: SystemConfig = {
   senderEmail: "leads@equityflowgroup.demo",
   scoringWeights: { equity: 40, margin: 25, compliance: 20, behavior: 15 },
   hotLeadThreshold: 80,
+  showEnvironmentBanner: true,
 };
 
 function createEmptyDb(): Database {
@@ -85,6 +109,8 @@ function createEmptyDb(): Database {
     leads: new Map(),
     people: new Map(),
     consents: [],
+    creditConsents: [],
+    creditPulls: [],
     disclosures: new Map(),
     suppressions: new Map(),
     events: [],
@@ -108,6 +134,8 @@ function createEmptyDb(): Database {
     sessions: new Map(),
     authTokens: new Map(),
     intakeDrafts: new Map(),
+    voiceAnnouncements: new Map(),
+    leadDocuments: [],
   };
 }
 

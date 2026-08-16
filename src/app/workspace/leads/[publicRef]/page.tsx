@@ -13,7 +13,7 @@ import { NotesTab } from "@/components/workspace/tabs/notes-tab";
 import { CallsTab } from "@/components/workspace/tabs/calls-tab";
 import { can } from "@/core/rbac";
 import { buildLeadThread } from "@/core/conversationThread";
-import { computeLeadCompleteness, getLeadByRef, listOfficers, listReferralPartners } from "@/domain/queries";
+import { computeLeadCompleteness, getLeadByRef, listLeadDocuments, listOfficers, listReferralPartners } from "@/domain/queries";
 import { getCurrentUser } from "@/domain/session";
 import { currentVoiceStrategy } from "@/domain/voiceOrchestrator";
 import { getConfigValue } from "@/lib/runtimeConfig";
@@ -44,12 +44,29 @@ export default async function LeadDetailPage({ params }: PageProps) {
     attempts: detail.attempts,
     conversations: detail.conversations,
     notes: detail.notes,
+    // Opens the thread with what the borrower told the intake form, so the
+    // Conversation tab reads as one continuous exchange from first contact.
+    intake: {
+      submittedAt: detail.lead.createdAt,
+      intent: detail.lead.intent,
+      goal: detail.lead.goal,
+      timeline: detail.lead.timeline,
+      stateCode: detail.lead.stateCode,
+      occupancy: detail.lead.occupancy,
+      estimatedValue: detail.lead.estimatedValue,
+      currentBalance: detail.lead.currentBalance,
+      missedPayments: detail.lead.missedPayments,
+    },
   });
   // Voice readiness is resolved per request, so entering a Vapi key in the
   // admin panel flips this card from "Configuring" to "Ready" on the next
   // page load — no redeploy, no restart.
   const voiceStrategy = await currentVoiceStrategy();
   const inboundNumber = (await getConfigValue("INBOUND_PHONE_NUMBER")) ?? null;
+  const documents = await listLeadDocuments(detail.lead.id);
+  // Whether the officer can actually route a disclosure for signature, rather
+  // than only store it. Resolved per request like every other credential.
+  const eSignConfigured = Boolean(await getConfigValue("DOCUSIGN_ACCOUNT_ID"));
   const calls = detail.attempts
     .filter((a) => a.channel === "VOICE")
     .sort((a, b) => new Date(b.startedAt ?? b.scheduledFor).getTime() - new Date(a.startedAt ?? a.scheduledFor).getTime());
@@ -148,6 +165,7 @@ export default async function LeadDetailPage({ params }: PageProps) {
               canRefer={canCallNow}
               qualityScore={detail.qualityScore}
               propertyValuation={detail.propertyValuation}
+              creditPull={detail.creditPull}
               attemptsToday={detail.attemptsToday}
               officers={officers}
               canAssignOfficer={canAssignOfficer}
@@ -180,7 +198,13 @@ export default async function LeadDetailPage({ params }: PageProps) {
             <TasksTab publicRef={publicRef} tasks={detail.tasks} />
           </TabsContent>
           <TabsContent value="notes">
-            <NotesTab publicRef={publicRef} notes={detail.notes} />
+            <NotesTab
+              publicRef={publicRef}
+              notes={detail.notes}
+              documents={documents}
+              canEdit={can(subject, "EDIT_FIELDS")}
+              eSignConfigured={eSignConfigured}
+            />
           </TabsContent>
         </div>
       </LeadDetailTabs>

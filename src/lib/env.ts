@@ -34,8 +34,6 @@ const envSchema = z.object({
   VAPI_PHONE_NUMBER_ID: z.string().optional(),
   VAPI_WEBHOOK_SECRET: z.string().optional(),
   RETELL_API_KEY: z.string().optional(),
-  REDDIT_CLIENT_ID: z.string().optional(),
-  REDDIT_CLIENT_SECRET: z.string().optional(),
   PROPERTY_DATA_API_KEY: z.string().optional(),
   SUPABASE_CA_CERT: z.string().optional(),
   CRON_SECRET: z.string().optional(),
@@ -62,8 +60,6 @@ const parsed = envSchema.safeParse({
   VAPI_PHONE_NUMBER_ID: process.env.VAPI_PHONE_NUMBER_ID,
   VAPI_WEBHOOK_SECRET: process.env.VAPI_WEBHOOK_SECRET,
   RETELL_API_KEY: process.env.RETELL_API_KEY,
-  REDDIT_CLIENT_ID: process.env.REDDIT_CLIENT_ID,
-  REDDIT_CLIENT_SECRET: process.env.REDDIT_CLIENT_SECRET,
   PROPERTY_DATA_API_KEY: process.env.PROPERTY_DATA_API_KEY,
   SUPABASE_CA_CERT: process.env.SUPABASE_CA_CERT,
   CRON_SECRET: process.env.CRON_SECRET,
@@ -103,7 +99,11 @@ export const capabilities = {
   hasVoiceAgent: Boolean(env.VAPI_API_KEY || env.RETELL_API_KEY),
   // The full, genuinely-callable Vapi setup — see adapters/voiceAgent.ts.
   hasLiveVoiceAgent: Boolean(env.VAPI_API_KEY && env.VAPI_PHONE_NUMBER_ID && env.VAPI_WEBHOOK_SECRET),
-  hasLeadDiscovery: Boolean(env.REDDIT_CLIENT_ID && env.REDDIT_CLIENT_SECRET),
+  // No credential gate: discovery reads a public archive (Arctic Shift) that
+  // needs no auth, so this capability is always live. Reddit's /prefs/apps
+  // registration is no longer dependable, which is precisely why it is not a
+  // dependency any more. See adapters/leadDiscovery.ts.
+  hasLeadDiscovery: true,
   hasPropertyData: Boolean(env.PROPERTY_DATA_API_KEY),
 };
 
@@ -125,7 +125,7 @@ export function announceCapabilitiesOnce() {
     `Email (Resend): ${capabilities.hasResend ? "LIVE" : "simulated — set RESEND_API_KEY"}`,
     `Inbound email (Resend receiving): ${capabilities.hasInboundEmail ? "LIVE — webhook wired at /api/webhooks/resend-inbound" : "not configured — set RESEND_INBOUND_WEBHOOK_SECRET and add the webhook in the Resend dashboard (see DEPLOY.md)"}`,
     `Voice AI agent (Vapi): ${capabilities.hasLiveVoiceAgent ? "LIVE — outbound calls + webhook wired" : capabilities.hasVoiceAgent ? "API key present but VAPI_PHONE_NUMBER_ID/VAPI_WEBHOOK_SECRET missing — see adapters/voiceAgent.ts" : "not configured — set VAPI_API_KEY, VAPI_PHONE_NUMBER_ID, VAPI_WEBHOOK_SECRET"}`,
-    `Lead discovery (Reddit): ${capabilities.hasLeadDiscovery ? "LIVE" : "simulated — set REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET"}`,
+    `Lead discovery (Arctic Shift public archive): LIVE — no credentials required`,
     `Property valuation/AVM (RentCast): ${capabilities.hasPropertyData ? "LIVE for leads with a street address, simulated otherwise" : "simulated — set PROPERTY_DATA_API_KEY (free tier at rentcast.io)"}`,
     `Automated cadence engine: endpoint ready at /api/cron/cadence (${env.CRON_SECRET ? "protected by CRON_SECRET" : "UNPROTECTED — set CRON_SECRET before scheduling it"}) — needs a scheduler (Vercel Cron or an external pinger) actually hitting it; see vercel.json.`,
   ];

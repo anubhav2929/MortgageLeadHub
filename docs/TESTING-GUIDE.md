@@ -220,14 +220,20 @@ from intake data; completeness measures how much 1003 data you've collected.
 
 ## 4. Lead discovery
 
-1. **Without credentials:** `/workspace/discovery` shows four **fictional**
-   Reddit signals with a visible warning. Their links go to subreddit home pages,
-   not real threads. These illustrate the workflow — do not act on them.
-2. **Live:** create a Reddit app at reddit.com/prefs/apps (type: *script*), then
-   enter `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` under Integrations.
-3. Reload. The header changes from "Simulated" to **"Live — Reddit search"** and
-   results become real posts.
+No credentials are required — discovery reads a public archive rather than
+Reddit's API (see ADR 0006), so it is live out of the box.
+
+1. Open `/workspace/discovery` and click **Run discovery**. It takes ~30 s: it
+   sweeps recent posts and comments across eight consumer-mortgage subreddits.
+2. Expect roughly 40–50 signals, all posted within the last 14 days. Anything
+   older is dropped rather than shown.
+3. Spot-check a result: the title links to the **original thread** on Reddit.
+   Confirm the post is real, recent, and genuinely about a mortgage.
 4. Click a signal → **Classify intent** (needs an LLM key) → **Draft reply**.
+
+**If it returns nothing:** that means the archive was unreachable, and the
+banner says so explicitly. An empty queue is never silently reported as a
+successful run.
 
 **Important:** discovery surfaces *signals*, not contactable leads. Nothing here
 is auto-contacted and it must not be. Someone who posted publicly has a very

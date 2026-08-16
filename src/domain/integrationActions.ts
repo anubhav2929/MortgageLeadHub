@@ -264,21 +264,17 @@ export async function testIntegrationAction(integrationId: string): Promise<Test
           : { ok: false, message: `NVIDIA rejected the key (HTTP ${res.status}).` };
       }
       case "reddit": {
-        const id = await getConfigValue("REDDIT_CLIENT_ID");
-        const secret = await getConfigValue("REDDIT_CLIENT_SECRET");
-        if (!id || !secret) return { ok: false, message: "Client ID and secret are both required." };
-        const res = await fetch("https://www.reddit.com/api/v1/access_token", {
-          method: "POST",
-          headers: {
-            Authorization: `Basic ${Buffer.from(`${id}:${secret}`).toString("base64")}`,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "equityflowgroup-discovery/1.0",
-          },
-          body: "grant_type=client_credentials",
-        });
-        return res.ok
-          ? { ok: true, message: "Connected to Reddit." }
-          : { ok: false, message: `Reddit rejected the credentials (HTTP ${res.status}).` };
+        // No credentials to check — discovery reads a public archive (see
+        // ADR 0006). The useful test is therefore "is the archive answering
+        // right now", which is the thing that actually breaks.
+        const res = await fetch(
+          "https://arctic-shift.photon-reddit.com/api/posts/search?subreddit=Mortgages&limit=1&sort=desc",
+          { headers: { "User-Agent": "equityflowgroup-discovery/2.0" }, signal: AbortSignal.timeout(15_000) }
+        );
+        if (!res.ok) return { ok: false, message: `Discovery archive unavailable (HTTP ${res.status}).` };
+        const json = (await res.json()) as { data?: unknown[]; error?: string };
+        if (json.error) return { ok: false, message: `Discovery archive error: ${json.error}` };
+        return { ok: true, message: "Discovery archive is reachable — no credentials needed." };
       }
       default:
         return { ok: false, message: "This integration has no connection test." };

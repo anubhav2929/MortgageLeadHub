@@ -127,7 +127,13 @@ export type LeadEventType =
   | "KILL_SWITCH_TOGGLED"
   | "PRIORITY_CALLBACK_REQUESTED"
   | "HOT_LEAD_SCORED"
-  | "AUTOMATED_CADENCE_STEP";
+  | "AUTOMATED_CADENCE_STEP"
+  /** A soft credit inquiry was permitted and ran. */
+  | "CREDIT_PULL_COMPLETED"
+  /** The FCRA gate refused an inquiry — no consent, low intent, or duplicate. */
+  | "CREDIT_PULL_BLOCKED"
+  /** The bureau returned no match, or the provider errored. */
+  | "CREDIT_PULL_FAILED";
 
 export interface Person {
   id: string;
@@ -255,6 +261,15 @@ export interface SystemConfig {
   senderEmail: string;
   scoringWeights: ScoringWeights;
   hotLeadThreshold: number;
+  /** Minutes to hold automated outreach while the borrower is active in the
+   *  post-submit chat. See core/engagementWindow.ts. */
+  engagementWindowMinutes?: number;
+  /**
+   * Show the environment banner in the root layout. Defaults to true.
+   * Its *text* is always derived from live capabilities (see
+   * core/environmentBanner.ts) — this only controls whether it renders.
+   */
+  showEnvironmentBanner?: boolean;
   /**
    * Admin escalation for manual outreach. Relaxes pacing rules only — quiet
    * hours, daily caps, spacing. It cannot relax consent, suppression,
@@ -364,6 +379,12 @@ export interface ConversationSession {
   transcript: ConversationTurn[];
   summary?: string;
   redactionApplied: boolean;
+  /** Live-call handles from the provider, captured when the call is placed.
+   *  Per-call and short-lived — they cannot be rebuilt from the call id, so
+   *  they are stored rather than fetched on demand. Only meaningful while
+   *  status is IN_PROGRESS. */
+  listenUrl?: string;
+  controlUrl?: string;
 }
 
 export interface FieldCandidate {
@@ -482,6 +503,9 @@ export interface Lead {
   slaDueAt: string;
   firstContactAt?: string;
   lastContactAt?: string;
+  /** Last borrower interaction in the post-submit chat / status page. While
+   *  this is fresh, automated outreach holds off — see core/engagementWindow.ts. */
+  lastEngagedAt?: string;
   completenessScore: number;
   createdAt: string;
   updatedAt: string;
@@ -605,6 +629,23 @@ export interface DiscoveredSignal {
   matchedKeywords: string[];
   status: SignalStatus;
   discoveredAt: string;
+  /** Which source the post came from, so a reviewer can weigh it. */
+  sourceLabel?: string;
+  /** Deterministic keyword/recency score before any model input, kept
+   *  alongside the blended `confidence` so a reviewer can see how much of the
+   *  ranking was measured and how much was judged. */
+  baseScore?: number;
+  /** AI assessment (see adapters/llm.ts assessSignal). Absent when no LLM is
+   *  configured — the feature degrades to deterministic scoring rather than
+   *  disappearing. */
+  assessment?: {
+    isProspect: boolean;
+    urgency: "IMMEDIATE" | "WEEKS" | "RESEARCHING" | "UNKNOWN";
+    situation: string;
+    suggestedAngle: string;
+    concerns: string[];
+    qualityScore: number;
+  };
   reviewedById?: string;
   reviewedByName?: string;
   reviewNote?: string;
@@ -622,6 +663,63 @@ export interface DiscoveredSignal {
 // this is PII sitting outside the consent-gated flow, so it doesn't get to
 // live forever just because nobody remembered to clean it up.
 // ---------------------------------------------------------------------------
+/**
+ * A one-shot voice announcement script fetched by Telnyx at call time.
+ *
+ * Twilio accepts TwiML inline in the same request that places the call, so it
+ * needs nothing like this. Telnyx TeXML only accepts a `Url` to fetch, which
+ * means the script must survive between "place the call" and "carrier fetches
+ * instructions" — two separate HTTP requests, potentially on two different
+ * serverless instances.
+ *
+ * Deliberately not passed as a query parameter: the script would then appear
+ * in access logs, and anyone who could reach the endpoint could make our
+ * number read out arbitrary text.
+ */
+/**
+ * A file attached to a lead — a paystub the borrower emailed over, a signed
+ * disclosure, a title document.
+ *
+ * Content is held inline as a data URI with a hard size cap. That is a
+ * deliberate interim choice, not an oversight: the alternative is a blob
+ * store, which is one more credential to configure before the product does
+ * anything useful. `storageRef` exists so that migration is a background job
+ * over existing rows rather than a schema change. See DEPLOY.md before
+ * raising MAX_DOCUMENT_BYTES.
+ */
+export interface LeadDocument {
+  id: string;
+  leadId: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  /** Data URI. Null once the file has been migrated to external storage. */
+  inlineContent?: string | null;
+  /** External object key, once a blob store is configured. */
+  storageRef?: string;
+  category: "DISCLOSURE" | "INCOME" | "PROPERTY" | "IDENTITY" | "OTHER";
+  uploadedById: string;
+  uploadedByName: string;
+  uploadedAt: string;
+  /** Set when this document was sent for signature. */
+  signature?: {
+    provider: string;
+    envelopeId: string;
+    status: "SENT" | "DELIVERED" | "SIGNED" | "DECLINED" | "VOIDED";
+    sentAt: string;
+    completedAt?: string;
+  };
+}
+
+export interface VoiceAnnouncement {
+  id: string;
+  text: string;
+  createdAt: string;
+  expiresAt: string;
+  /** Set once Telnyx has fetched it, so a leaked URL can't be replayed. */
+  consumedAt?: string;
+}
+
 export interface IntakeDraft {
   id: string;
   /** Client-generated, stored in the borrower's localStorage — lets repeat
@@ -634,4 +732,44 @@ export interface IntakeDraft {
   furthestStep: number;
   createdAt: string;
   updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Soft credit pull (iSoftpull) — FCRA-gated, see core/creditGate.ts
+// ---------------------------------------------------------------------------
+
+/** The borrower's FCRA authorisation, captured at the intent gate. Stored with
+ *  the exact text shown, because "what did this consumer actually agree to"
+ *  is the question an auditor asks and a version number alone can't answer. */
+export interface CreditPullConsent {
+  id: string;
+  leadId: string;
+  granted: boolean;
+  /** Verbatim copy of the authorisation shown on screen. */
+  exactTextSnapshot: string;
+  textVersion: string;
+  capturedAt: string;
+  /** Which interaction produced the authorisation. */
+  trigger: "INTAKE_QUALIFIED" | "CHAT_PREQUAL_REQUEST" | "OFFICER_REQUEST";
+  ipAddress: string;
+  userAgent: string;
+}
+
+export type CreditBand = "EXCELLENT_740_PLUS" | "GOOD_680_739" | "FAIR_620_679" | "BELOW_620" | "UNSURE";
+
+/** Result of a soft inquiry. `simulated` is true when no provider is
+ *  configured — the same honesty rule every other adapter follows. */
+export interface CreditPullResult {
+  id: string;
+  leadId: string;
+  pulledAt: string;
+  /** Numeric score when the bureau returned one. */
+  score?: number;
+  /** Score mapped onto the band the rest of the app already speaks. */
+  band: CreditBand;
+  bureau?: string;
+  providerReferenceId?: string;
+  simulated: boolean;
+  /** Set when the pull failed — no score, and a reason a human can act on. */
+  failureMessage?: string;
 }

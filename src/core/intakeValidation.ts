@@ -25,10 +25,16 @@ export const intakeInputSchema = z.object({
   goal: z.enum(["LOWER_PAYMENT", "CASH_OUT", "SHORTEN_TERM", "DEBT_CONSOLIDATION", "OTHER"]),
   timeline: z.enum(["ASAP", "1_3_MONTHS", "3_6_MONTHS", "EXPLORING"]),
   bestContactTime: z.enum(["MORNING", "AFTERNOON", "EVENING", "ANY"]),
-  creditRange: z.enum(["EXCELLENT_740_PLUS", "GOOD_680_739", "FAIR_620_679", "BELOW_620", "UNSURE"]),
+  // No longer asked on the form — self-reported scores were unreliable. The
+  // value now arrives from the iSoftpull soft pull at the pre-qualification
+  // gate, so intake must accept its absence.
+  creditRange: z.enum(["EXCELLENT_740_PLUS", "GOOD_680_739", "FAIR_620_679", "BELOW_620", "UNSURE"]).optional(),
   missedPayments: z.enum(["NONE", "ONE_TO_TWO", "THREE_PLUS"]),
   hasExistingHomeEquityLoan: z.boolean().optional(),
   intakeDurationSeconds: z.number().finite().nonnegative().max(86_400).optional(),
+  /** FCRA authorisation for a soft credit pull, captured at the
+   *  pre-qualification gate. Absent/false means no pull may run. */
+  creditConsent: z.boolean().optional(),
   consents: z.object({
     voice: z.boolean(),
     sms: z.boolean(),

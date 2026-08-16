@@ -2,13 +2,13 @@ import { ExternalLink, Radar, ShieldX } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { ReadMore } from "@/components/ui/read-more";
 import { EmptyState } from "@/components/ui/empty-state";
 import { RunDiscoveryButton } from "@/components/discovery/run-discovery-button";
 import { SignalActions } from "@/components/discovery/signal-actions";
 import { can } from "@/core/rbac";
 import { listSignals } from "@/domain/queries";
 import { getCurrentUser } from "@/domain/session";
-import { getCapabilities } from "@/lib/runtimeConfig";
 import { formatRelative } from "@/lib/utils";
 import type { DiscoveredSignal } from "@/domain/types";
 
@@ -27,7 +27,6 @@ const STATUS_TONE: Record<DiscoveredSignal["status"], "neutral" | "success" | "w
 };
 
 export default async function DiscoveryPage() {
-  const caps = await getCapabilities();
   const user = await getCurrentUser();
   const subject = { role: user.role, officerId: user.officerId };
 
@@ -43,7 +42,10 @@ export default async function DiscoveryPage() {
   }
 
   const signals = await listSignals();
-  const newSignals = signals.filter((s) => s.status === "NEW");
+  // Highest intent first. A reviewer works top-down and rarely reaches the
+  // bottom of a 50-item queue, so insertion order silently decides which
+  // leads get seen — it should be the score that decides.
+  const newSignals = signals.filter((s) => s.status === "NEW").sort((a, b) => b.confidence - a.confidence);
   const reviewedSignals = signals.filter((s) => s.status !== "NEW");
 
   return (
@@ -55,9 +57,8 @@ export default async function DiscoveryPage() {
       />
 
       <div className="mb-5 flex items-center gap-2">
-        <Badge tone={caps.hasLeadDiscovery ? "success" : "neutral"}>
-          {caps.hasLeadDiscovery ? "Live — Reddit search" : "Simulated — set REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET"}
-        </Badge>
+        <Badge tone="success">Live — public Reddit archive</Badge>
+        <Badge tone="neutral">Last 14 days</Badge>
         <Badge tone="neutral">{newSignals.length} awaiting review</Badge>
       </div>
 
@@ -77,7 +78,7 @@ export default async function DiscoveryPage() {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-                      <Badge tone="neutral">r/{signal.subreddit}</Badge>
+                      <Badge tone="neutral">{signal.sourceLabel ?? `r/${signal.subreddit}`}</Badge>
                       <Badge tone={INTENT_TONE[signal.detectedIntent]}>
                         {signal.detectedIntent.replace("_", " ")} · {Math.round(signal.confidence * 100)}%
                       </Badge>
@@ -87,17 +88,58 @@ export default async function DiscoveryPage() {
                       href={signal.sourceUrl}
                       target="_blank"
                       rel="noreferrer"
-                      title={caps.hasLeadDiscovery ? undefined : "Simulated post — link goes to the real subreddit, not this exact (fictional) thread."}
+                      title="Opens the original thread on Reddit."
                       className="group inline-flex items-center gap-1.5 text-[14px] font-medium text-[var(--foreground)] hover:text-[var(--primary)]"
                     >
                       {signal.title}
                       <ExternalLink className="h-3 w-3 shrink-0 text-[var(--muted-foreground)] group-hover:text-[var(--primary)]" />
                     </a>
-                    <p className="mt-1 text-[13px] leading-relaxed text-[var(--muted-foreground)]">{signal.snippet}</p>
+                    {/* Forum posts run to hundreds of words. Showing them in
+                        full made a 50-item queue unscannable — the reviewer's
+                        job is to triage, and the full text only matters once
+                        they have decided this one is worth reading. */}
+                    <ReadMore text={signal.snippet} lines={2} className="mt-1" />
                     <p className="mt-2 text-xs text-[var(--muted-foreground)]">
                       {signal.authorHandle} · {formatRelative(signal.postedAt)}
                       {signal.matchedKeywords.length > 0 && <> · matched &ldquo;{signal.matchedKeywords.join(", ")}&rdquo;</>}
                     </p>
+
+                    {signal.assessment && (
+                      <div className="mt-2.5 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--background)] p-2.5">
+                        <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+                          <Badge tone="primary">AI read</Badge>
+                          {signal.assessment.urgency !== "UNKNOWN" && (
+                            <Badge tone={signal.assessment.urgency === "IMMEDIATE" ? "success" : "neutral"}>
+                              {signal.assessment.urgency === "IMMEDIATE"
+                                ? "Acting now"
+                                : signal.assessment.urgency === "WEEKS"
+                                  ? "Next few weeks"
+                                  : "Researching"}
+                            </Badge>
+                          )}
+                          {/* Both numbers, because they can disagree — and the
+                              disagreement is the interesting part. */}
+                          {signal.baseScore !== undefined && (
+                            <span className="text-xs text-[var(--muted-foreground)]">
+                              keyword {signal.baseScore} · AI {signal.assessment.qualityScore}
+                            </span>
+                          )}
+                        </div>
+                        {signal.assessment.situation && (
+                          <p className="text-[13px] text-[var(--foreground)]">{signal.assessment.situation}</p>
+                        )}
+                        {signal.assessment.suggestedAngle && (
+                          <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                            <span className="font-medium">Angle:</span> {signal.assessment.suggestedAngle}
+                          </p>
+                        )}
+                        {signal.assessment.concerns.length > 0 && (
+                          <p className="mt-1 text-xs text-[var(--warning)]">
+                            <span className="font-medium">Watch:</span> {signal.assessment.concerns.join("; ")}
+                          </p>
+                        )}
+                      </div>
+                    )}
                     {signal.reviewNote && (
                       <p className="mt-1.5 text-xs italic text-[var(--muted-foreground)]">
                         {signal.reviewedByName}: &ldquo;{signal.reviewNote}&rdquo;

@@ -1,10 +1,47 @@
-// Lead discovery adapter — searches public forum posts for refinance/equity
-// intent signals. Deliberately read-only and one-way: it finds and surfaces
-// candidate posts for a human to review, and never creates a contactable CRM
-// record on its own. See domain/types.ts (DiscoveredSignal) and
-// domain/actions.ts (runLeadDiscoveryAction) for the rest of the pipeline.
+// Lead discovery adapter — finds public forum posts expressing refinance or
+// equity intent. Read-only and one-way: it surfaces candidates for a human to
+// review and never creates a contactable CRM record on its own. That boundary
+// is the whole safety model here (see domain/types.ts, DiscoveredSignal): the
+// people found this way have given us no consent of any kind, so they must
+// never be reachable by PolicyGate or the automated cadence.
+//
+// ---------------------------------------------------------------------------
+// Retrieval: Arctic Shift, not the Reddit API
+// ---------------------------------------------------------------------------
+// Reddit's script-app registration at /prefs/apps is no longer reliably
+// available, so OAuth credentials cannot be a hard dependency. We benchmarked
+// the two community archives in Aug 2026:
+//
+//   PullPush      newest indexed content 452 days old; 502s under load
+//   Arctic Shift  same-day content, no auth, 100 results/request
+//
+// Arctic Shift wins on the only axis that decides a lead-gen feature:
+// freshness. PullPush is deliberately NOT wired in as a fallback — falling
+// back to a year-stale archive would fill the review queue with dead leads
+// while still looking like the feature worked, which is worse than returning
+// nothing. If Arctic Shift is down, we say so.
+//
+// One real constraint: Arctic Shift rejects a bare `query` (it requires
+// `subreddit` or `author`), so there is no internet-wide keyword search. We
+// scope to a curated subreddit list instead and do keyword/intent filtering
+// locally in core/discoveryQuery.ts. That is a better trade anyway — precision
+// across a curated set of consumer finance subreddits beats recall across all
+// of Reddit.
+//
+// Breadth, not depth: deep pagination (`before` cursor) was measured and times
+// out on this archive, so coverage comes from sweeping MORE subreddits rather
+// than paging further back through any one of them. Two non-Reddit sources
+// were evaluated and rejected on the evidence — Stack Exchange's money site
+// had no mortgage question newer than 53 days (our window is 14), and Hacker
+// News is fresh but carries commentary *about* mortgages rather than people
+// seeking one.
+//
+// Replaceability: everything vendor-specific is confined to fetchFromArctic()
+// below. Swapping archives means writing one new function that returns
+// RawCandidate[]; the scoring, dedup, and review pipeline are untouched.
 
-import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
+import type { RawCandidate } from "@/core/discoveryQuery";
+import { DISCOVERY_SUBREDDITS, MAX_SIGNAL_AGE_DAYS, selectSignals } from "@/core/discoveryQuery";
 
 export interface RawSignal {
   source: "REDDIT";
@@ -14,110 +51,233 @@ export interface RawSignal {
   title: string;
   snippet: string;
   postedAt: string;
+  intentScore: number;
+  matchedKeywords: string[];
+  kind: "POST" | "COMMENT";
+  /** Human-readable origin, e.g. "r/Mortgages". Kept distinct from
+   *  `subreddit` so a non-Reddit source can slot in without the UI having to
+   *  special-case it. */
+  sourceLabel: string;
 }
 
 export interface DiscoveryResult {
   signals: RawSignal[];
   simulated: boolean;
+  /** Populated when the archive was unreachable, so the UI can say why. */
+  error?: string;
+  stats?: { fetched: number; kept: number; queries: number; sources: number };
 }
 
-const SUBREDDITS = ["personalfinance", "Mortgages", "RealEstate", "HomeImprovement"];
-const DEFAULT_QUERY = "refinance OR \"cash out refi\" OR \"home equity loan\"";
+const ARCTIC = "https://arctic-shift.photon-reddit.com/api";
+const UA = "equityflowgroup-discovery/2.0";
 
-let cachedToken: { value: string; expiresAt: number } | null = null;
+const PER_REQUEST_LIMIT = 100;
+const REQUEST_TIMEOUT_MS = 25_000;
+const REQUEST_DELAY_MS = 800;
+const MAX_RETRIES = 2;
 
-async function getRedditToken(): Promise<string> {
-  if (cachedToken && cachedToken.expiresAt > Date.now()) return cachedToken.value;
+/**
+ * ---------------------------------------------------------------------------
+ * Why there are no keyword queries here
+ * ---------------------------------------------------------------------------
+ * The obvious design — search each subreddit for each of our intent terms —
+ * was measured and rejected. A 36-search sweep took 345 seconds and 19 of the
+ * 36 requests failed, with the archive returning a blunt "Timeout. Maybe slow
+ * down a bit". Full-text search is the expensive operation on this archive,
+ * and on high-volume subreddits it simply does not complete.
+ *
+ * So we invert it: ask only for *recent posts per subreddit*, which is a
+ *  * cheap time-indexed read, and do all keyword and intent filtering locally in
+ * core/discoveryQuery.ts. That cut a 36-request sweep to one request per
+ * subreddit, which is what makes a wide source list affordable at all.
+ *
+ * This is strictly better, not merely faster. Local filtering also catches
+ * intent phrased in ways no term list anticipates — "can I pull money out of
+ * my house to pay off cards?" contains none of our keywords as written, and a
+ * server-side keyword search would never have returned it.
+ */
 
-  const basic = Buffer.from(`${await getConfigValue("REDDIT_CLIENT_ID")}:${await getConfigValue("REDDIT_CLIENT_SECRET")}`).toString("base64");
-  const res = await fetch("https://www.reddit.com/api/v1/access_token", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basic}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": "equityflowgroup-discovery/1.0",
-    },
-    body: "grant_type=client_credentials",
-  });
-  if (!res.ok) throw new Error(`Reddit auth failed: ${res.status}`);
-  const data = (await res.json()) as { access_token: string; expires_in: number };
-  cachedToken = { value: data.access_token, expiresAt: Date.now() + (data.expires_in - 60) * 1000 };
-  return data.access_token;
+/** Subreddits where comments are worth the extra request. */
+const TOPICAL_SUBS = new Set(["Mortgages", "FirstTimeHomeBuyer", "HomeLoans"]);
+
+interface ArcticPost {
+  id: string;
+  permalink?: string;
+  author?: string;
+  title?: string;
+  selftext?: string;
+  body?: string;
+  subreddit?: string;
+  created_utc: number;
+  removed_by_category?: string | null;
+  over_18?: boolean;
+  link_title?: string;
 }
 
-export async function searchForSignals(query = DEFAULT_QUERY): Promise<DiscoveryResult> {
-  if (!(await getCapabilities()).hasLeadDiscovery) {
-    return { signals: simulateSignals(), simulated: true };
+async function fetchFromArctic(
+  path: "posts" | "comments",
+  params: Record<string, string>
+): Promise<ArcticPost[]> {
+  const qs = new URLSearchParams({ limit: String(PER_REQUEST_LIMIT), sort: "desc", ...params });
+
+  // The archive answers overload with 422/500 and the text "Timeout. Maybe
+  // slow down a bit" — an explicitly retryable condition, not a bad request.
+  // Backing off and retrying recovers most of them.
+  let lastError = "";
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+    if (attempt > 0) await sleep(1500 * attempt);
+    try {
+      const res = await fetch(`${ARCTIC}/${path}/search?${qs}`, {
+        headers: { "User-Agent": UA, Accept: "application/json" },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      const json = (await res.json().catch(() => ({}))) as { data?: ArcticPost[] | null; error?: string };
+      if (res.ok && !json.error) return json.data ?? [];
+      lastError = json.error ?? `HTTP ${res.status}`;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+    }
   }
-  try {
-    const token = await getRedditToken();
-    const subredditPath = SUBREDDITS.join("+");
-    const url = `https://oauth.reddit.com/r/${subredditPath}/search?q=${encodeURIComponent(query)}&restrict_sr=1&sort=new&limit=15`;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}`, "User-Agent": "equityflowgroup-discovery/1.0" },
-    });
-    if (!res.ok) throw new Error(`Reddit search failed: ${res.status}`);
-    const data = (await res.json()) as {
-      data: { children: { data: { id: string; subreddit: string; author: string; title: string; selftext: string; permalink: string; created_utc: number } }[] };
+  throw new Error(`Arctic Shift ${path}: ${lastError}`);
+}
+
+function toCandidate(raw: ArcticPost, kind: "POST" | "COMMENT"): RawCandidate | null {
+  const author = raw.author ?? "";
+  const permalink = raw.permalink;
+  if (!permalink || !author) return null;
+  // Removed or moderator-deleted content cannot be replied to and often has
+  // an empty body, so it would score as noise anyway.
+  if (raw.removed_by_category) return null;
+
+  const title = raw.title ?? raw.link_title ?? "";
+  const body = raw.selftext ?? raw.body ?? "";
+  if (body === "[removed]" || body === "[deleted]") return null;
+
+  return {
+    sourceUrl: `https://www.reddit.com${permalink}`,
+    subreddit: raw.subreddit ?? "",
+    authorHandle: `u/${author}`,
+    title: title || body.slice(0, 80),
+    body,
+    postedAt: new Date(raw.created_utc * 1000).toISOString(),
+    kind,
+  };
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * @param query optional operator-supplied keyword; when absent we run the
+ *   standard expansion from core/discoveryQuery.ts.
+ */
+export async function searchForSignals(query?: string): Promise<DiscoveryResult> {
+  const candidates: RawCandidate[] = [];
+  const failures: string[] = [];
+  let queries = 0;
+
+  /**
+   * Each request is isolated. An early version let one failure escape the
+   * loop, and a single 422 on r/RealEstate cut a 40-search sweep down to 6 —
+   * silently, since the partial result still looked like a successful run.
+   * Sources degrade independently; one bad subreddit must cost us that
+   * subreddit and nothing else.
+   */
+  const collect = async (
+    path: "posts" | "comments",
+    params: Record<string, string>,
+    kind: "POST" | "COMMENT"
+  ) => {
+    queries += 1;
+    try {
+      for (const raw of await fetchFromArctic(path, params)) {
+        const c = toCandidate(raw, kind);
+        if (c) candidates.push(c);
+      }
+    } catch (err) {
+      const label = `${params.subreddit}${params.query ? `/"${params.query}"` : ""}`;
+      failures.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    await sleep(REQUEST_DELAY_MS);
+  };
+
+  // Only pull the window we would actually keep. Anything older is discarded
+  // by the freshness rule anyway, so fetching it wastes the archive's time
+  // and ours.
+  const after = String(Math.floor((Date.now() - MAX_SIGNAL_AGE_DAYS * 86_400_000) / 1000));
+
+  // Sequentially, one request per subreddit across a 17-source list took 104
+  // seconds — past a serverless function's ceiling, so discovery would work
+  // locally and time out in production.
+  //
+  // Modest concurrency is safe *here* specifically because these are cheap
+  // time-indexed reads. The earlier rate-limit failures came from expensive
+  // full-text scans, which is a different workload; the per-request retry and
+  // backoff in fetchFromArctic() remains the safety net either way. Kept
+  // deliberately low — the goal is to fit the budget, not to extract maximum
+  // throughput from someone else's free archive.
+  const SOURCE_CONCURRENCY = 4;
+  let cursor = 0;
+
+  const worker = async () => {
+    while (cursor < DISCOVERY_SUBREDDITS.length) {
+      const { name } = DISCOVERY_SUBREDDITS[cursor++];
+    // An operator-typed keyword is the one case we still pay for a
+    // server-side search: it is one deliberate request per subreddit, not a
+    // 36-way automated sweep, and the operator is waiting on a specific answer.
+      const params: Record<string, string> = { subreddit: name, after };
+      if (query) params.query = query;
+
+      await collect("posts", params, "POST");
+
+      // Comments only for the topical subs — a mortgage question buried in a
+      // r/personalfinance comment thread is real, but too sparse to justify
+      // doubling the request budget.
+      if (TOPICAL_SUBS.has(name)) {
+        await collect("comments", { subreddit: name, after }, "COMMENT");
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(SOURCE_CONCURRENCY, DISCOVERY_SUBREDDITS.length) }, worker)
+  );
+
+  if (failures.length > 0) {
+    console.warn(`[discovery] ${failures.length}/${queries} searches failed:`, failures.join("; "));
+  }
+  // Only a total wipeout is an error. Partial results are genuinely useful,
+  // but the caller is told so it can say "results may be incomplete" instead
+  // of implying a clean sweep.
+  if (candidates.length === 0) {
+    return {
+      signals: [],
+      simulated: false,
+      error: failures.length > 0 ? failures[0] : undefined,
+      stats: { fetched: 0, kept: 0, queries, sources: DISCOVERY_SUBREDDITS.length },
     };
-    const signals: RawSignal[] = data.data.children.map((c) => ({
-      source: "REDDIT",
-      sourceUrl: `https://reddit.com${c.data.permalink}`,
-      subreddit: c.data.subreddit,
-      authorHandle: `u/${c.data.author}`,
-      title: c.data.title,
-      snippet: (c.data.selftext || c.data.title).slice(0, 400),
-      postedAt: new Date(c.data.created_utc * 1000).toISOString(),
-    }));
-    return { signals, simulated: false };
-  } catch (err) {
-    console.error("[Reddit discovery] falling back to simulated signals:", err);
-    return { signals: simulateSignals(), simulated: true };
   }
-}
 
-function simulateSignals(): RawSignal[] {
-  const now = Date.now();
-  const hoursAgo = (h: number) => new Date(now - h * 3_600_000).toISOString();
-  return [
-    {
-      source: "REDDIT",
-      sourceUrl: "https://www.reddit.com/r/personalfinance/",
-      subreddit: "personalfinance",
-      authorHandle: "u/throwaway_homeown3r",
-      title: "Is now a good time to refinance? Rate is 7.1% from 2023",
-      snippet:
-        "We bought in 2023 at 7.1% and I keep hearing rates have come down. Trying to figure out if it's worth it to refinance our mortgage or if we should just wait it out. Anyone done this recently?",
-      postedAt: hoursAgo(3),
-    },
-    {
-      source: "REDDIT",
-      sourceUrl: "https://www.reddit.com/r/RealEstate/",
-      subreddit: "RealEstate",
-      authorHandle: "u/kitchen_remodel_2026",
-      title: "Cash out refi to pay for a kitchen remodel — bad idea?",
-      snippet:
-        "We have about 200k in equity and want to do a cash out refi to fund a kitchen remodel instead of a HELOC. Rates on both seem similar right now. Anyone have experience comparing the two?",
-      postedAt: hoursAgo(9),
-    },
-    {
-      source: "REDDIT",
-      sourceUrl: "https://www.reddit.com/r/Mortgages/",
-      subreddit: "Mortgages",
-      authorHandle: "u/first_gen_buyer",
-      title: "HELOC vs home equity loan for tuition costs",
-      snippet:
-        "Trying to decide between a home equity loan and a HELOC to cover my daughter's tuition for the next two years. Want something with a fixed payment. Any lenders people recommend?",
-      postedAt: hoursAgo(20),
-    },
-    {
-      source: "REDDIT",
-      sourceUrl: "https://www.reddit.com/r/HomeImprovement/",
-      subreddit: "HomeImprovement",
-      authorHandle: "u/diy_deck_builder",
-      title: "Best way to seal a deck before winter?",
-      snippet: "Built a deck this summer and want to get a sealant on it before the weather turns. Any product recommendations?",
-      postedAt: hoursAgo(30),
-    },
-  ];
+  const selected = selectSignals(candidates, new Date());
+
+  return {
+    signals: selected.map((s) => ({
+      source: "REDDIT" as const,
+      sourceUrl: s.sourceUrl,
+      subreddit: s.subreddit,
+      authorHandle: s.authorHandle,
+      title: s.title,
+      // The full post text, not a summary — an officer replying in-thread
+      // needs the borrower's own words, and a generated précis loses exactly
+      // the details (rate, balance, timeline) that make the reply useful.
+      snippet: s.body.slice(0, 2000) || s.title,
+      postedAt: s.postedAt,
+      intentScore: s.intentScore,
+      matchedKeywords: s.matchedKeywords,
+      kind: s.kind,
+      sourceLabel: `r/${s.subreddit}`,
+    })),
+    simulated: false,
+    error: failures.length > 0 ? `${failures.length} of ${queries} searches failed` : undefined,
+    stats: { fetched: candidates.length, kept: selected.length, queries, sources: DISCOVERY_SUBREDDITS.length },
+  };
 }

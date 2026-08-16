@@ -1,22 +1,24 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronLeft, ChevronRight, Home, RefreshCw, Wallet, RotateCcw } from "lucide-react";
+import { ChevronLeft, ChevronRight, Home, RefreshCw, Wallet, RotateCcw, ShieldCheck } from "lucide-react";
 import { cloneElement, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { CurrencyInput, Input, Label, Select } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
+import { ReadMore } from "@/components/ui/read-more";
 import { PostSubmitChat } from "@/components/intake/post-submit-chat";
 import { discardIntakeDraftAction, saveIntakeDraftAction, submitIntakeAction, type IntakeInput } from "@/domain/actions";
 import { STATE_NAMES } from "@/domain/stateTimezone";
+import { FCRA_CREDIT_AUTHORIZATION_TEXT } from "@/core/creditGate";
 import { STATE_CITIES, isKnownCity } from "@/domain/stateCities";
 import { cn } from "@/lib/utils";
 import { trackEvent } from "@/lib/analytics";
 import type { LoanIntent } from "@/domain/types";
 
-const STEPS = ["Purpose", "Contact", "Property", "Timeline & credit", "Consent"];
+const STEPS = ["Purpose", "Property", "Your situation", "Contact", "Consent"];
 const DRAFT_KEY = "mlh_intake_draft_v1";
 const CLIENT_DRAFT_ID_KEY = "mlh_intake_draft_id_v1";
 const DRAFT_SAVE_DEBOUNCE_MS = 2000;
@@ -60,12 +62,18 @@ function isValidUsPhone(raw: string): boolean {
   return digits.length === 10 || (digits.length === 11 && digits.startsWith("1"));
 }
 
+// Which step to jump back to when the server rejects a field. Contact moved
+// to step 3 (the last data step) so borrowers answer three anonymous
+// questions before being asked for a phone number — they are markedly more
+// likely to hand it over once they have already invested the effort.
 const FIELD_STEP: Record<string, number> = {
-  firstName: 1,
-  lastName: 1,
-  phone: 1,
-  email: 1,
-  stateCode: 2,
+  stateCode: 1,
+  timeline: 2,
+  missedPayments: 2,
+  firstName: 3,
+  lastName: 3,
+  phone: 3,
+  email: 3,
 };
 
 const MISSED_PAYMENT_OPTIONS: { value: IntakeInput["missedPayments"]; label: string }[] = [
@@ -90,6 +98,8 @@ interface FormState {
   hasExistingHomeEquityLoan: boolean | null;
   timeline: IntakeInput["timeline"] | null;
   creditRange: IntakeInput["creditRange"] | null;
+  /** FCRA authorisation for the soft pull. Opt-in, never pre-ticked. */
+  creditConsent: boolean;
   missedPayments: IntakeInput["missedPayments"] | null;
   bestContactTime: IntakeInput["bestContactTime"];
   voice: boolean;
@@ -113,6 +123,7 @@ const INITIAL: FormState = {
   hasExistingHomeEquityLoan: null,
   timeline: null,
   creditRange: null,
+  creditConsent: false,
   missedPayments: null,
   bestContactTime: "ANY",
   // Unchecked by default — express written consent for an ATDS/prerecorded
@@ -287,16 +298,18 @@ export function IntakeWizard({
       if (!form.intent) e.intent = "Select what you're looking to do.";
       if (!form.goal) e.goal = "Select your main goal.";
     } else if (s === 1) {
+      if (!form.stateCode) e.stateCode = "Select your property's state.";
+    } else if (s === 2) {
+      if (!form.timeline) e.timeline = "Select a timeline.";
+      if (!form.missedPayments) e.missedPayments = "Select an answer.";
+      // Credit range is no longer asked. It comes from the soft pull at the
+      // pre-qualification gate — self-reported scores were unreliable
+      // (most people either don't know or overstate them).
+    } else if (s === 3) {
       if (!form.firstName.trim()) e.firstName = "Enter your first name.";
       if (!form.lastName.trim()) e.lastName = "Enter your last name.";
       if (!isValidUsPhone(form.phone)) e.phone = "Enter a 10-digit US phone number.";
       if (!form.email.includes("@")) e.email = "Enter a valid email address.";
-    } else if (s === 2) {
-      if (!form.stateCode) e.stateCode = "Select your property's state.";
-    } else if (s === 3) {
-      if (!form.timeline) e.timeline = "Select a timeline.";
-      if (!form.creditRange) e.creditRange = "Select a credit range.";
-      if (!form.missedPayments) e.missedPayments = "Select an answer.";
     }
     return e;
   }
@@ -335,11 +348,12 @@ export function IntakeWizard({
         goal: form.goal!,
         timeline: form.timeline!,
         bestContactTime: form.bestContactTime,
-        creditRange: form.creditRange!,
+        creditRange: form.creditRange ?? undefined,
         missedPayments: form.missedPayments!,
         hasExistingHomeEquityLoan: form.hasExistingHomeEquityLoan ?? undefined,
         intakeDurationSeconds: Math.round((Date.now() - startedAt) / 1000),
         consents: { voice: form.voice, sms: form.sms, email: form.email_, recording: form.voice },
+        creditConsent: form.creditConsent,
       }, clientDraftId || undefined);
       if (res.ok && res.publicRef && res.slaDueAt) {
         trackEvent("intake_submitted", { intent: form.intent! });
@@ -468,7 +482,7 @@ export function IntakeWizard({
               </div>
             )}
 
-            {step === 1 && (
+            {step === 3 && (
               <div>
                 <h2 ref={stepHeadingRef} tabIndex={-1} className="sr-only">
                   Contact information
@@ -491,11 +505,20 @@ export function IntakeWizard({
                   <Field id="email" label="Email" error={errors.email}>
                     <Input type="email" autoComplete="email" inputMode="email" value={form.email} onChange={(e) => update("email", e.target.value)} placeholder="you@example.com" />
                   </Field>
+                  <Field id="bestContactTime" label="Best time to reach you">
+                    <Select value={form.bestContactTime} onChange={(e) => update("bestContactTime", e.target.value as FormState["bestContactTime"])}>
+                      <option value="ANY">Any time</option>
+                      <option value="MORNING">Morning</option>
+                      <option value="AFTERNOON">Afternoon</option>
+                      <option value="EVENING">Evening</option>
+                    </Select>
+                  </Field>
+
                 </div>
               </div>
             )}
 
-            {step === 2 && (
+            {step === 1 && (
               <div>
                 <h2 ref={stepHeadingRef} tabIndex={-1} className="sr-only">
                   Property details
@@ -563,7 +586,7 @@ export function IntakeWizard({
               </div>
             )}
 
-            {step === 3 && (
+            {step === 2 && (
               <div>
                 <h2 ref={stepHeadingRef} tabIndex={-1} className="sr-only">
                   Timeline and credit
@@ -579,17 +602,6 @@ export function IntakeWizard({
                       <option value="3_6_MONTHS">3–6 months</option>
                     </Select>
                   </Field>
-                  <Field id="creditRange" label="Self-reported credit range" error={errors.creditRange} hint={!errors.creditRange ? "Even with a lower score, we can often still find a workable option." : undefined}>
-                    <Select value={form.creditRange ?? ""} onChange={(e) => update("creditRange", e.target.value as FormState["creditRange"])}>
-                      <option value="" disabled>
-                        Select a range
-                      </option>
-                      <option value="EXCELLENT_740_PLUS">Excellent (740+)</option>
-                      <option value="GOOD_680_739">Good (680–739)</option>
-                      <option value="FAIR_620_679">Fair (620–679)</option>
-                      <option value="BELOW_620">Below 620</option>
-                    </Select>
-                  </Field>
                   <Field id="missedPayments" label="Missed mortgage payments (last 12 months)" error={errors.missedPayments}>
                     <Select value={form.missedPayments ?? ""} onChange={(e) => update("missedPayments", e.target.value as FormState["missedPayments"])}>
                       <option value="" disabled>
@@ -600,14 +612,6 @@ export function IntakeWizard({
                           {o.label}
                         </option>
                       ))}
-                    </Select>
-                  </Field>
-                  <Field id="bestContactTime" label="Best time to reach you">
-                    <Select value={form.bestContactTime} onChange={(e) => update("bestContactTime", e.target.value as FormState["bestContactTime"])}>
-                      <option value="ANY">Any time</option>
-                      <option value="MORNING">Morning</option>
-                      <option value="AFTERNOON">Afternoon</option>
-                      <option value="EVENING">Evening</option>
                     </Select>
                   </Field>
                 </div>
@@ -631,14 +635,51 @@ export function IntakeWizard({
                       { key: "email_" as const, label: "Email", text: DISCLOSURES.email },
                     ]
                   ).map((c) => (
-                    <label key={c.key} className="flex cursor-pointer items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3.5 hover:bg-[var(--background)]">
-                      <Checkbox checked={form[c.key]} onChange={(e) => update(c.key, e.target.checked)} className="mt-0.5" />
-                      <span>
-                        <span className="block text-[13px] font-medium text-[var(--foreground)]">{c.label}</span>
-                        <span className="mt-0.5 block text-xs leading-relaxed text-[var(--muted-foreground)]">{c.text}</span>
-                      </span>
-                    </label>
+                    // The disclosure sits OUTSIDE the <label> so its Read more
+                    // button cannot be swallowed by the label and silently tick
+                    // the consent box. The full text stays in the DOM either
+                    // way — ReadMore clamps visually, it does not truncate.
+                    <div
+                      key={c.key}
+                      className="rounded-[var(--radius-md)] border border-[var(--border)] p-3.5 hover:bg-[var(--background)]"
+                    >
+                      <label className="flex cursor-pointer items-start gap-3">
+                        <Checkbox checked={form[c.key]} onChange={(e) => update(c.key, e.target.checked)} className="mt-0.5" />
+                        <span className="text-[13px] font-medium text-[var(--foreground)]">{c.label}</span>
+                      </label>
+                      <ReadMore text={c.text} lines={2} className="mt-1 pl-7" />
+                    </div>
                   ))}
+                </div>
+
+                {/* Pre-qualification gate. The soft pull is billed per inquiry
+                    and is a consumer report under FCRA, so it fires only when
+                    the borrower crosses this gate deliberately — never
+                    automatically from the name and address they typed earlier.
+                    Unticked by default: a pre-ticked box is not authorisation. */}
+                <div className="mt-5 rounded-[var(--radius-md)] border-2 border-[var(--primary)] bg-[var(--primary-tint)] p-4">
+                  <p className="mb-1 flex items-center gap-1.5 text-[13px] font-semibold text-[var(--foreground)]">
+                    <ShieldCheck className="h-4 w-4 text-[var(--primary)]" />
+                    Want to see what you pre-qualify for?
+                  </p>
+                  <p className="mb-3 text-xs leading-relaxed text-[var(--muted-foreground)]">
+                    Optional. Tick this and we&apos;ll check your credit with a{" "}
+                    <strong className="text-[var(--foreground)]">soft inquiry</strong> so your officer can give you real
+                    numbers on the first call instead of ranges.
+                  </p>
+                  <label className="flex cursor-pointer items-start gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3.5">
+                    <Checkbox
+                      checked={form.creditConsent}
+                      onChange={(e) => update("creditConsent", e.target.checked)}
+                      className="mt-0.5"
+                    />
+                    <span className="text-xs leading-relaxed text-[var(--muted-foreground)]">
+                      {FCRA_CREDIT_AUTHORIZATION_TEXT}
+                    </span>
+                  </label>
+                  <p className="mt-2 text-xs font-medium text-[var(--primary)]">
+                    A soft inquiry will not affect your credit score.
+                  </p>
                 </div>
               </div>
             )}
@@ -667,10 +708,11 @@ export function IntakeWizard({
               .
             </p>
             <p className="mb-3 text-xs leading-relaxed text-[var(--muted-foreground)]">
-              <span className="font-medium text-[var(--foreground)]">Fair Credit Reporting Act:</span> submitting this
-              form does not authorize a credit report or score pull. If you later apply with a licensed officer, they
-              may pull your credit in connection with that application — under the FCRA you have the right to know
-              what&apos;s in your credit file, dispute inaccurate information, and obtain a copy of your report.
+              <span className="font-medium text-[var(--foreground)]">Fair Credit Reporting Act:</span>{" "}
+              we will not
+              obtain your credit report unless you tick the pre-qualification box above. If you do, it is a soft
+              inquiry that does not affect your score. Under the FCRA you have the right to know what&apos;s in your
+              credit file, dispute inaccurate information, and obtain a copy of your report.
             </p>
           </>
         )}

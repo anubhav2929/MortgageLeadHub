@@ -8,7 +8,7 @@ import { AssignOfficerPicker } from "@/components/workspace/assign-officer-picke
 import type { LeadScoreResult } from "@/core/leadScoring";
 import { maskEmail, maskPhone } from "@/core/rbac";
 import { formatDateTime, titleCase } from "@/lib/utils";
-import type { CadencePlan, Lead, Officer, Person, PropertyValuationResult, ReferralPartner } from "@/domain/types";
+import type { CadencePlan, CreditPullResult, Lead, Officer, Person, PropertyValuationResult, ReferralPartner } from "@/domain/types";
 
 const SCORE_COMPONENT_LABEL: Record<keyof LeadScoreResult["breakdown"], string> = {
   equity: "Usable equity",
@@ -56,6 +56,7 @@ export function OverviewTab({
   canRefer,
   qualityScore,
   propertyValuation,
+  creditPull,
   completenessScore,
   attemptsToday,
   officers,
@@ -73,6 +74,7 @@ export function OverviewTab({
   officers?: Officer[];
   canAssignOfficer?: boolean;
   propertyValuation: PropertyValuationResult;
+  creditPull?: CreditPullResult;
   completenessScore: number;
   attemptsToday: number;
 }) {
@@ -142,7 +144,35 @@ export function OverviewTab({
             <Field icon={Clock} label="Timezone" value={person?.timezone ?? "UNKNOWN"} />
             <Field icon={Target} label="Goal" value={titleCase(lead.goal)} />
             <Field icon={Clock} label="Timeline" value={titleCase(lead.timeline)} />
-            <Field icon={CreditCard} label="Credit range" value={titleCase(lead.creditRange)} />
+            <Field
+              icon={CreditCard}
+              label="Credit range"
+              value={
+                creditPull && !creditPull.failureMessage ? (
+                  <span className="flex flex-wrap items-center gap-1.5">
+                    {titleCase(creditPull.band)}
+                    <span
+                      title={
+                        creditPull.simulated
+                          ? "Simulated — no iSoftpull credentials configured."
+                          : `Verified by soft credit inquiry${creditPull.bureau ? ` (${creditPull.bureau})` : ""}.`
+                      }
+                      className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+                        creditPull.simulated
+                          ? "bg-[var(--warning-tint)] text-[var(--warning)]"
+                          : "bg-[var(--success-tint)] text-[var(--success)]"
+                      }`}
+                    >
+                      {creditPull.simulated ? "simulated" : "verified"}
+                    </span>
+                  </span>
+                ) : (
+                  // No pull on file. Saying "Unsure" would imply the borrower
+                  // told us that — they were never asked.
+                  <span className="text-[var(--muted-foreground)]">Not checked</span>
+                )
+              }
+            />
             <Field
               icon={DollarSign}
               label="Est. value / balance"

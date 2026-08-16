@@ -49,8 +49,8 @@ Datadog, S3 with object lock). Retention ≥ 1 year.
 `P4`, `CC6.5`
 
 Leads, transcripts, and consent records accumulate indefinitely. There is no
-scheduled purge, no per-record retention clock, and `deleteLeadAction` (which
-I added this session) is a manual admin action, not a policy. Mortgage leads
+scheduled purge, no per-record retention clock, and `deleteLeadAction` is a
+manual admin action, not a policy. Mortgage leads
 contain financial PII; "we keep everything forever" fails both SOC 2 privacy
 criteria and state privacy law (CCPA/CPRA gives Californians deletion rights,
 and you operate in CA).

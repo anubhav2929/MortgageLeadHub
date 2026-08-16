@@ -13,6 +13,7 @@
 
 import { getAppUrl, getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import { classifyFailure, type DeliveryFailure } from "@/core/deliveryStatus";
+import { classifyVapiCreateError } from "@/core/vapiLifecycle";
 import type { GoalType, LoanIntent } from "@/domain/types";
 
 export interface PlaceVoiceAgentCallInput {
@@ -132,7 +133,21 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`Vapi call creation failed: ${response.status} ${body}`);
+      // Classified here, where the HTTP status is still available. Falling
+      // through to the generic handler below marked every Vapi error
+      // TRANSIENT — so a hard daily-quota wall was redialled on every cadence
+      // tick, and the operator saw four identical failures with a badge
+      // saying it would be retried.
+      const { failureClass, detail } = classifyVapiCreateError(response.status, body);
+      console.error(`[Vapi] call creation refused (${failureClass}):`, detail);
+      return {
+        ok: false,
+        failure: {
+          class: failureClass,
+          message: `${detail} (HTTP ${response.status})`,
+          affectsAllLeads: failureClass === "CONFIGURATION",
+        },
+      };
     }
     // Vapi returns a `monitor` object alongside the call id: a WebSocket that
     // streams live audio, and a control URL that can inject a message, mute

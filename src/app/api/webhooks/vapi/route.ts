@@ -10,7 +10,8 @@ import { NextResponse } from "next/server";
 import { pushEvent, runExtractionForConversation } from "@/domain/actions";
 import { getDb, nowIso, saveDb } from "@/domain/store";
 import { safeCompare } from "@/core/auth";
-import { isAnsweredOutcome, mapVapiEndedReason } from "@/core/deliveryStatus";
+import { isAnsweredOutcome } from "@/core/deliveryStatus";
+import { advanceCallStatus, classifyEndedReason, mapVapiCallStatus } from "@/core/vapiLifecycle";
 import { transition, InvalidTransitionError } from "@/core/stateMachine";
 import { getConfigValue } from "@/lib/runtimeConfig";
 
@@ -65,32 +66,25 @@ export async function POST(request: Request) {
 
   switch (message.type) {
     case "status-update": {
-      // Vapi emits scheduled | queued | ringing | in-progress | forwarding | ended.
-      //
-      // Mirror the carrier's own view onto callStatus so the live board can
-      // show the call progressing rather than jumping straight to "connected".
-      // Deliberately monotonic: a late-arriving RINGING must not drag a call
-      // that is already CONNECTED backwards, and webhooks do not guarantee
-      // ordering.
-      const RANK = { QUEUED: 0, RINGING: 1, CONNECTED: 2, ENDED: 3 } as const;
-      const mapped =
-        message.status === "ringing"
-          ? "RINGING"
-          : message.status === "in-progress" || message.status === "forwarding"
-            ? "CONNECTED"
-            : message.status === "ended"
-              ? "ENDED"
-              : "QUEUED";
-
-      if (RANK[mapped] > RANK[conversation.callStatus ?? "QUEUED"]) {
-        conversation.callStatus = mapped;
+      // Mirror the carrier's own view onto callStatus so the board shows the
+      // call progressing instead of claiming "connected" from the moment we
+      // dialled. advanceCallStatus never regresses — webhook ordering is not
+      // guaranteed, and a late "ringing" must not un-connect a live call.
+      const next = advanceCallStatus(conversation.callStatus, mapVapiCallStatus(message.status));
+      if (next !== conversation.callStatus) {
+        conversation.callStatus = next;
         saveDb();
       }
 
       if (message.status === "in-progress" && conversation.status !== "IN_PROGRESS") {
         conversation.status = "IN_PROGRESS";
+        // The call is genuinely connected now, so restart the clock here
+        // rather than from when we queued it. Otherwise the live timer counts
+        // ringing time as conversation time.
+        conversation.startedAt = nowIso();
         saveDb();
       }
+
       // "ended" normally arrives just before end-of-call-report, which does the
       // real settling. Recording it here too means a call that never produces a
       // report (provider hiccup) still leaves the session closed rather than
@@ -127,11 +121,22 @@ export async function POST(request: Request) {
       // Settle the ContactAttempt. Without this every AI call sits at QUEUED
       // forever: the lead's history shows a call that never resolved, and
       // nothing downstream can tell a conversation from a voicemail.
-      const outcome = mapVapiEndedReason(message.endedReason);
+      // One classification for both what happened to the lead and whether an
+      // administrator needs to act. A call that never placed because our
+      // credit ran out is not "no answer" — nobody was dialled, and recording
+      // it as such silently spends the lead's attempt budget on our fault.
+      const verdict = classifyEndedReason(message.endedReason);
+      const outcome = verdict.outcome;
+      conversation.callStatus = "ENDED";
+      conversation.endedReason = message.endedReason;
       const attempt = db.attempts.find((a) => a.id === conversation.contactAttemptId);
       if (attempt) {
         attempt.outcome = outcome;
         attempt.endedAt = nowIso();
+        if (verdict.failureClass !== "NONE") {
+          attempt.failureClass = verdict.failureClass;
+          attempt.failureMessage = verdict.detail;
+        }
         const rec = message.artifact?.recording;
         const recordingUrl =
           rec?.stereoUrl ?? rec?.combinedUrl ?? rec?.url ?? rec?.mono?.combinedUrl ?? message.artifact?.recordingUrl;

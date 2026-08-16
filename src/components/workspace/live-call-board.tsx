@@ -3,7 +3,12 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Headphones, PhoneCall, Radio } from "lucide-react";
+import { useTransition } from "react";
+import { Headphones, MicOff, PhoneCall, PhoneForwarded, PhoneOff, Radio, Send } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { useToast } from "@/components/ui/toast";
+import { controlLiveCallAction } from "@/domain/actions";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -46,6 +51,79 @@ function elapsed(startedAt: string, now: number): string {
   return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
 }
 
+/**
+ * Live intervention on a connected call.
+ *
+ * Only ever sends a conversation id. The provider's control URL is a bearer
+ * credential — anyone holding it can speak as the company to a borrower — so
+ * it stays server-side and is never a prop.
+ */
+function CallControls({ conversationId, transferTo }: { conversationId: string; transferTo?: string }) {
+  const [say, setSay] = useState("");
+  const [isPending, startTransition] = useTransition();
+  const { push } = useToast();
+
+  const run = (action: Parameters<typeof controlLiveCallAction>[1], clear = false) =>
+    startTransition(async () => {
+      const result = await controlLiveCallAction(conversationId, action);
+      push({ title: result.message, tone: result.ok ? "success" : "danger" });
+      if (result.ok && clear) setSay("");
+    });
+
+  return (
+    <div className="mt-3 border-t border-[var(--border)] pt-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          value={say}
+          onChange={(e) => setSay(e.target.value)}
+          placeholder="Have the agent say something…"
+          className="min-w-[14rem] flex-1"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && say.trim()) run({ type: "SAY", content: say.trim() }, true);
+          }}
+        />
+        <Button
+          size="sm"
+          variant="secondary"
+          loading={isPending}
+          disabled={!say.trim()}
+          onClick={() => run({ type: "SAY", content: say.trim() }, true)}
+        >
+          <Send className="h-3.5 w-3.5" /> Say
+        </Button>
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button size="sm" variant="ghost" disabled={isPending} onClick={() => run({ type: "MUTE_AGENT" })}>
+          <MicOff className="h-3.5 w-3.5" /> Mute agent
+        </Button>
+        {transferTo && (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={isPending}
+            onClick={() =>
+              run({
+                type: "TRANSFER",
+                toNumberE164: transferTo,
+                sayFirst: "Let me put you through to a licensed loan officer now.",
+              })
+            }
+          >
+            <PhoneForwarded className="h-3.5 w-3.5" /> Transfer to officer
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" disabled={isPending} onClick={() => run({ type: "END_CALL" })}>
+          <PhoneOff className="h-3.5 w-3.5 text-[var(--danger)]" /> End call
+        </Button>
+      </div>
+      <p className="mt-1.5 text-xs text-[var(--muted-foreground)]">
+        Anything you send here is spoken to the borrower and recorded against your name.
+      </p>
+    </div>
+  );
+}
+
 export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
   const router = useRouter();
   const [now, setNow] = useState(() => Date.now());
@@ -54,11 +132,48 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
     // Nothing live means nothing to poll for. A board that keeps hitting the
     // server all night to render "no calls" is pure cost.
     if (calls.length === 0) return;
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    const poll = setInterval(() => router.refresh(), POLL_MS);
+
+    let tick: ReturnType<typeof setInterval> | undefined;
+    let poll: ReturnType<typeof setInterval> | undefined;
+
+    const stop = () => {
+      if (tick) clearInterval(tick);
+      if (poll) clearInterval(poll);
+      tick = undefined;
+      poll = undefined;
+    };
+
+    const start = () => {
+      if (tick) return; // already running
+      tick = setInterval(() => setNow(Date.now()), 1000);
+      poll = setInterval(() => router.refresh(), POLL_MS);
+    };
+
+    // Polling pauses while the tab is in the background and resumes on
+    // return, with an immediate refresh so the operator never reads a stale
+    // board for up to a full interval.
+    //
+    // This is not only about saving requests. Browsers throttle timers in
+    // hidden tabs and then fire the backlog on focus, so an unguarded poll
+    // produces a burst of refreshes the moment someone switches back — which
+    // is exactly when they are trying to read the screen. The elapsed timer
+    // recomputes from a timestamp rather than counting ticks, so pausing it
+    // costs nothing: it shows the correct duration immediately on return.
+    const onVisibility = () => {
+      if (document.hidden) {
+        stop();
+      } else {
+        setNow(Date.now());
+        router.refresh();
+        start();
+      }
+    };
+
+    if (!document.hidden) start();
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      clearInterval(tick);
-      clearInterval(poll);
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [calls.length, router]);
 
@@ -101,7 +216,7 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
                 {c.officerName && (
                   <span className="text-xs text-[var(--muted-foreground)]">assigned to {c.officerName}</span>
                 )}
-                {convo.listenUrl && (
+                {convo.hasAudioStream && (
                   <span className="ml-auto flex items-center gap-1 text-xs text-[var(--muted-foreground)]">
                     <Headphones className="h-3.5 w-3.5" /> audio stream available
                   </span>
@@ -126,6 +241,12 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
                   ))
                 )}
               </div>
+
+              {/* Only a connected AI call can be controlled. Showing these on
+                  a ringing call would offer actions that cannot work yet. */}
+              {convo.callStatus === "CONNECTED" && convo.hasControl && (
+                <CallControls conversationId={convo.id} transferTo={c.officerPhone} />
+              )}
             </CardContent>
           </Card>
         );

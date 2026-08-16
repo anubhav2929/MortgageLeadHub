@@ -583,13 +583,34 @@ export async function listLeadDocuments(leadId: string) {
 // Call centre — voice activity across every lead, not one lead at a time.
 // ---------------------------------------------------------------------------
 
+/**
+ * A conversation as the browser may see it.
+ *
+ * `controlUrl` and `listenUrl` are stripped and replaced by booleans. Both are
+ * pre-authenticated bearer URLs — anyone holding the control URL can speak as
+ * the company to a borrower mid-call, or transfer them anywhere. This type
+ * crosses into a client component, so the URLs must not be on it; only the
+ * server resolves them, from the conversation id.
+ */
+export type SafeConversation = Omit<ConversationSession, "controlUrl" | "listenUrl"> & {
+  hasControl: boolean;
+  hasAudioStream: boolean;
+};
+
+function toSafeConversation(c: ConversationSession): SafeConversation {
+  const { controlUrl, listenUrl, ...rest } = c;
+  return { ...rest, hasControl: Boolean(controlUrl), hasAudioStream: Boolean(listenUrl) };
+}
+
 export interface CallCentreEntry {
   attempt: ContactAttempt;
-  conversation?: ConversationSession;
+  conversation?: SafeConversation;
   leadPublicRef: string;
   borrowerName: string;
   stateCode: string;
   officerName?: string;
+  /** Destination for a warm transfer, when the assigned officer has a number. */
+  officerPhone?: string;
 }
 
 /**
@@ -615,13 +636,16 @@ export async function listCallActivity(limit = 100): Promise<CallCentreEntry[]> 
     .map((attempt) => {
       const lead = db.leads.get(attempt.leadId);
       const person = Array.from(db.people.values()).find((p) => p.leadId === attempt.leadId && p.role === "PRIMARY");
+      const officer = lead?.assignedOfficerId ? officers.get(lead.assignedOfficerId) : undefined;
+      const convo = conversationsByAttempt.get(attempt.id);
       return {
         attempt,
-        conversation: conversationsByAttempt.get(attempt.id),
+        conversation: convo ? toSafeConversation(convo) : undefined,
         leadPublicRef: lead?.publicRef ?? "",
         borrowerName: person ? `${person.firstName} ${person.lastName}` : "Unknown borrower",
         stateCode: lead?.stateCode ?? "",
-        officerName: lead?.assignedOfficerId ? officers.get(lead.assignedOfficerId)?.name : undefined,
+        officerName: officer?.name,
+        officerPhone: officer?.phone,
       };
     })
     .filter((e) => e.leadPublicRef !== "");

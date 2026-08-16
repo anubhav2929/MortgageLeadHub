@@ -19,6 +19,7 @@ import { placeVoiceAgentCall } from "@/adapters/voiceAgent";
 import { placeCall } from "@/adapters/voice";
 import { generateOutreachContent } from "@/adapters/llm";
 import { producesConversation, selectVoiceStrategy, type VoiceStrategy } from "@/core/callStrategy";
+import { evaluateCallPreflight } from "@/core/callPreflight";
 import { buildConversationBrief, buildLeadThread } from "@/core/conversationThread";
 import type { DeliveryFailure } from "@/core/deliveryStatus";
 import { getCapabilities } from "@/lib/runtimeConfig";
@@ -34,6 +35,10 @@ export interface PlaceCallOutcome {
   /** The announcement script, when that's what ran — the officer should see
    *  exactly what the borrower is hearing. */
   script?: string;
+  /** Set when pre-flight refused the call — nothing was dialled. */
+  blockedReason?: string;
+  /** What would make the call possible. */
+  remedy?: string;
   simulated: boolean;
   failure?: DeliveryFailure;
 }
@@ -66,6 +71,49 @@ export async function placeOutboundCall(
   const strategy = await currentVoiceStrategy();
   const attemptId = newId("attempt");
   const idempotencyKey = newId("idem");
+
+  // Refuse calls that cannot succeed, before the provider ever sees them.
+  // Every one of these previously reached Vapi, was rejected, consumed an
+  // attempt from the lead's budget, and left a red row an operator had to
+  // decode. The cheapest failure is the one that never leaves the building.
+  const preflight = evaluateCallPreflight({
+    phoneE164: person?.phoneE164,
+    hasVoiceAgent: strategy.mechanism === "VAPI_AGENT",
+    hasAnnouncementVoice: strategy.mechanism === "ANNOUNCEMENT",
+    hasLiveCall: Array.from(db.conversations.values()).some(
+      (c) => c.leadId === lead.id && c.status === "IN_PROGRESS" && c.callStatus !== "ENDED"
+    ),
+    // An unresolved configuration fault produces the identical failure on
+    // every lead; dialling into it just multiplies what an admin must read.
+    providerMisconfigured: db.attempts.some(
+      (a) => a.leadId === lead.id && a.channel === "VOICE" && a.failureClass === "CONFIGURATION" && a.outcome === "FAILED"
+    ),
+    isAutomated: !actor,
+  });
+
+  if (!preflight.allowed) {
+    db.attempts.push({
+      id: attemptId,
+      leadId: lead.id,
+      channel: "VOICE",
+      direction: "OUTBOUND",
+      idempotencyKey,
+      outcome: "BLOCKED",
+      blockedReason: preflight.reason,
+      attemptNumber: lead.attemptsTotal + 1,
+      scheduledFor: nowIso(),
+      loggedById: actor?.id,
+      loggedByName: actor?.name,
+    });
+    return {
+      ok: false,
+      strategy,
+      attemptId,
+      simulated: false,
+      blockedReason: preflight.reason,
+      remedy: preflight.remedy,
+    };
+  }
 
   // One thread, all channels. This is what makes a call a continuation of the
   // text conversation rather than a fresh cold call.

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ShieldX, Users, UserPlus, GitBranch, FileText, ShieldOff, Power, ScrollText, Plug, SlidersHorizontal, HeartHandshake, ShieldQuestion, FileClock, Rocket } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/ui/empty-state";
 import { OfficersPanel } from "@/components/admin/officers-panel";
 import { UsersPanel } from "@/components/admin/users-panel";
@@ -13,6 +13,24 @@ import { KillSwitchPanel } from "@/components/admin/kill-switch-panel";
 import { AuditLogPanel } from "@/components/admin/audit-log-panel";
 import { IntegrationsPanel } from "@/components/admin/integrations-panel";
 import { GoLivePanel } from "@/components/admin/go-live-panel";
+import { UrlTabs } from "@/components/ui/url-tabs";
+
+/** Kept in sync with the TabsTrigger values below. An unknown ?tab= falls back
+ *  to users rather than rendering an empty page. */
+const ADMIN_TABS = [
+  "users",
+  "officers",
+  "suppression",
+  "settings",
+  "killswitch",
+  "cadence",
+  "referrals",
+  "disclosures",
+  "integrations",
+  "golive",
+  "audit",
+  "drafts",
+] as const;
 import { getIntegrationStatusesAction } from "@/domain/integrationActions";
 import { ReferralPartnersPanel } from "@/components/admin/referral-partners-panel";
 import { IntakeDraftsPanel } from "@/components/admin/intake-drafts-panel";
@@ -84,7 +102,7 @@ export default async function AdminPage() {
         }
       />
 
-      <Tabs defaultValue="users">
+      <UrlTabs validTabs={ADMIN_TABS} defaultTab="users">
         <TabsList>
           <TabsTrigger value="users">
             <span className="flex items-center gap-1.5">
@@ -206,7 +224,7 @@ export default async function AdminPage() {
             <IntakeDraftsPanel drafts={intakeDrafts} canManage={user.role === "ADMIN"} retentionDays={DRAFT_RETENTION_DAYS} />
           </TabsContent>
         </div>
-      </Tabs>
+      </UrlTabs>
     </div>
   );
 }

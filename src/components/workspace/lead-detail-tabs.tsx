@@ -1,28 +1,25 @@
 "use client";
 
-import { useRouter, usePathname, useSearchParams } from "next/navigation";
-import { Tabs } from "@/components/ui/tabs";
+import { UrlTabs } from "@/components/ui/url-tabs";
 
-const VALID_TABS = ["overview", "timeline", "package", "calls", "conversation", "consent", "tasks", "notes"];
+const VALID_TABS = [
+  "overview",
+  "timeline",
+  "package",
+  "calls",
+  "conversation",
+  "consent",
+  "tasks",
+  "notes",
+] as const;
 
-/** URL-backed so a tab selection survives refresh/back-forward and can be
- *  linked directly (e.g. from a notification pointing straight at Tasks). */
+/** URL-backed so a tab selection survives refresh, back/forward, and the
+ *  periodic router.refresh() the live boards perform — and so a notification
+ *  can link straight at Tasks. See components/ui/url-tabs.tsx. */
 export function LeadDetailTabs({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
-  const requested = searchParams.get("tab");
-  const tab = requested && VALID_TABS.includes(requested) ? requested : "overview";
-
-  function onValueChange(value: string) {
-    const params = new URLSearchParams(searchParams.toString());
-    params.set("tab", value);
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-  }
-
   return (
-    <Tabs value={tab} onValueChange={onValueChange}>
+    <UrlTabs validTabs={VALID_TABS} defaultTab="overview">
       {children}
-    </Tabs>
+    </UrlTabs>
   );
 }

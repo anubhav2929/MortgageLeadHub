@@ -11,6 +11,7 @@ import { searchForSignals } from "@/adapters/leadDiscovery";
 import { blendScore, dedupeKey } from "@/core/discoveryQuery";
 import { ALLOWED_DOCUMENT_TYPES, MAX_DOCUMENT_BYTES, dataUriBytes } from "@/core/documentPolicy";
 import { clampSms } from "@/core/smsFormat";
+import { controlLiveCall, type CallControlAction } from "@/adapters/vapiCallControl";
 import { getPropertyValuation } from "@/adapters/propertyData";
 import { promoteCandidate, type RawCandidate } from "@/core/extraction/promote";
 import { resolveCadence } from "@/core/cadence";
@@ -2988,4 +2989,97 @@ export async function deleteLeadDocumentAction(publicRef: string, documentId: st
   saveDb();
   revalidatePath(`/workspace/leads/${publicRef}`);
   return { ok: true, message: `${removed.filename} removed.` };
+}
+
+// ---------------------------------------------------------------------------
+// Live call control — intervening in a call that is already connected.
+// ---------------------------------------------------------------------------
+
+/**
+ * Every control action is audited before it is attempted.
+ *
+ * Speaking as the company to a borrower mid-call, or transferring them, is an
+ * outward-facing act by a named person. If a borrower later disputes what they
+ * were told, "who made the agent say that, and when" has to be answerable
+ * from the record rather than from memory.
+ *
+ * The client passes a conversation id, never a control URL — that URL is a
+ * bearer credential and must not reach the browser (see
+ * adapters/vapiCallControl.ts).
+ */
+export async function controlLiveCallAction(
+  conversationId: string,
+  action: CallControlAction
+): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  if (!can({ role: user.role, officerId: user.officerId }, "CALL_NOW")) {
+    return { ok: false, message: "You do not have permission to control a live call." };
+  }
+
+  const db = await getDb();
+  const conversation = db.conversations.get(conversationId);
+  if (!conversation) return { ok: false, message: "That call was not found." };
+
+  if (conversation.status !== "IN_PROGRESS" || conversation.callStatus === "ENDED") {
+    return { ok: false, message: "That call has already ended." };
+  }
+  if (!conversation.controlUrl) {
+    // Announcement calls and simulated calls have no control channel. Saying
+    // so beats a generic failure the officer cannot act on.
+    return { ok: false, message: "This call cannot be controlled — only AI agent calls support live control." };
+  }
+
+  await audit(user.id, user.name, `LIVE_CALL_${action.type}`, "ConversationSession", conversationId, "ALLOW", {
+    leadId: conversation.leadId,
+    ...(action.type === "SAY" ? { content: action.content } : {}),
+    ...(action.type === "TRANSFER" ? { to: action.toNumberE164 } : {}),
+  });
+
+  const result = await controlLiveCall(conversation.controlUrl, action);
+  if (!result.ok) {
+    // A control URL dies the instant the call does, which an officer will hit
+    // routinely by clicking as the borrower hangs up. Settle the session so
+    // the board stops showing it as live.
+    if (result.failure.class === "PERMANENT") {
+      conversation.callStatus = "ENDED";
+      conversation.endedAt = conversation.endedAt ?? nowIso();
+      saveDb();
+    }
+    return { ok: false, message: result.failure.message };
+  }
+
+  // Recorded on the transcript so the intervention appears in the conversation
+  // itself, not only in the audit log — an officer reading the call afterwards
+  // needs to see that a human stepped in.
+  if (action.type === "SAY") {
+    conversation.transcript.push({
+      turn: conversation.transcript.length + 1,
+      role: "AGENT",
+      text: action.content,
+      at: nowIso(),
+    });
+    saveDb();
+  }
+
+  await pushEvent({
+    leadId: conversation.leadId,
+    type: "NOTE_ADDED",
+    actorType: user.role === "OFFICER" ? "OFFICER" : "ADMIN",
+    actorId: user.id,
+    actorName: user.name,
+    channel: "VOICE",
+    occurredAt: nowIso(),
+    payload: { liveCallControl: action.type },
+  });
+
+  revalidatePath("/workspace/calls");
+  const confirmations: Record<CallControlAction["type"], string> = {
+    SAY: "Sent to the agent — it will speak now.",
+    ADD_CONTEXT: "Context added; the agent will use it on its next turn.",
+    MUTE_AGENT: "Agent muted.",
+    UNMUTE_AGENT: "Agent unmuted.",
+    TRANSFER: "Transferring the call.",
+    END_CALL: "Ending the call.",
+  };
+  return { ok: true, message: confirmations[action.type] };
 }

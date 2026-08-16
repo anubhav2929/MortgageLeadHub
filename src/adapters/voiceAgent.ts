@@ -113,6 +113,17 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
           },
           voice: { provider: "playht", voiceId: "jennifer" },
           transcriber: { provider: "deepgram", model: "nova-2" },
+          // Declared explicitly rather than relying on the provider's default
+          // set. Vapi documents "transcript" as one of many optional server
+          // messages, and an assistant that does not ask for it receives only
+          // the end-of-call report — which means the live call board sits on
+          // "waiting for the first words" for the entire call and only fills
+          // in once the borrower has already hung up.
+          //
+          // status-update is what actually drives the call through
+          // queued -> ringing -> in-progress; without it the session stays on
+          // whatever we optimistically set when we placed the call.
+          serverMessages: ["status-update", "transcript", "end-of-call-report", "hang"],
           server: { url: `${await getAppUrl()}/api/webhooks/vapi`, secret: await getConfigValue("VAPI_WEBHOOK_SECRET") },
         },
         metadata: { leadId: input.leadId, conversationId: input.conversationId },

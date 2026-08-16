@@ -25,6 +25,22 @@ import type { CallCentreEntry } from "@/domain/queries";
  */
 const POLL_MS = 4000;
 
+/**
+ * What to show for each stage of the call.
+ *
+ * The board previously rendered a hardcoded "LIVE" for every session, because
+ * the session was created as IN_PROGRESS at dial time. A queued call, a
+ * ringing call, and a call nobody answered all looked identical to a live
+ * conversation — and one that never connected stayed on the board forever
+ * claiming to be connected.
+ */
+const STAGE = {
+  QUEUED: { label: "Calling", tone: "text-[var(--muted-foreground)]", pulse: false, placeholder: "Placing the call…" },
+  RINGING: { label: "Ringing", tone: "text-[var(--warning)]", pulse: true, placeholder: "Ringing — nobody has picked up yet." },
+  CONNECTED: { label: "LIVE", tone: "text-[var(--success)]", pulse: true, placeholder: "Connected — waiting for the first words." },
+  ENDED: { label: "Ended", tone: "text-[var(--muted-foreground)]", pulse: false, placeholder: "Call ended." },
+} as const;
+
 function elapsed(startedAt: string, now: number): string {
   const secs = Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
   return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
@@ -63,12 +79,16 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
       {calls.map((c) => {
         const convo = c.conversation!;
         const turns = convo.transcript;
+        const stage = STAGE[convo.callStatus ?? "QUEUED"];
         return (
-          <Card key={convo.id} className="border-[var(--success)]">
+          <Card
+            key={convo.id}
+            className={convo.callStatus === "CONNECTED" ? "border-[var(--success)]" : undefined}
+          >
             <CardContent className="p-4">
               <div className="mb-3 flex flex-wrap items-center gap-2">
-                <span className="flex items-center gap-1.5 text-[13px] font-semibold text-[var(--success)]">
-                  <Radio className="h-3.5 w-3.5 animate-pulse" /> LIVE
+                <span className={`flex items-center gap-1.5 text-[13px] font-semibold ${stage.tone}`}>
+                  <Radio className={`h-3.5 w-3.5 ${stage.pulse ? "animate-pulse" : ""}`} /> {stage.label}
                 </span>
                 <Link
                   href={`/workspace/leads/${c.leadPublicRef}`}
@@ -90,9 +110,7 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
 
               <div className="max-h-72 space-y-2 overflow-y-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--background)] p-3">
                 {turns.length === 0 ? (
-                  <p className="text-[13px] italic text-[var(--muted-foreground)]">
-                    Connected — waiting for the first words.
-                  </p>
+                  <p className="text-[13px] italic text-[var(--muted-foreground)]">{stage.placeholder}</p>
                 ) : (
                   turns.map((t) => (
                     <div key={t.turn} className={t.role === "BORROWER" ? "text-left" : "text-left"}>

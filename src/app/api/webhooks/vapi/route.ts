@@ -66,6 +66,27 @@ export async function POST(request: Request) {
   switch (message.type) {
     case "status-update": {
       // Vapi emits scheduled | queued | ringing | in-progress | forwarding | ended.
+      //
+      // Mirror the carrier's own view onto callStatus so the live board can
+      // show the call progressing rather than jumping straight to "connected".
+      // Deliberately monotonic: a late-arriving RINGING must not drag a call
+      // that is already CONNECTED backwards, and webhooks do not guarantee
+      // ordering.
+      const RANK = { QUEUED: 0, RINGING: 1, CONNECTED: 2, ENDED: 3 } as const;
+      const mapped =
+        message.status === "ringing"
+          ? "RINGING"
+          : message.status === "in-progress" || message.status === "forwarding"
+            ? "CONNECTED"
+            : message.status === "ended"
+              ? "ENDED"
+              : "QUEUED";
+
+      if (RANK[mapped] > RANK[conversation.callStatus ?? "QUEUED"]) {
+        conversation.callStatus = mapped;
+        saveDb();
+      }
+
       if (message.status === "in-progress" && conversation.status !== "IN_PROGRESS") {
         conversation.status = "IN_PROGRESS";
         saveDb();

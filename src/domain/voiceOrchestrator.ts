@@ -165,6 +165,9 @@ export async function placeOutboundCall(
       redactionApplied: false,
       listenUrl: result.listenUrl,
       controlUrl: result.controlUrl,
+      // The provider has accepted the request; nothing has rung yet. Anything
+      // beyond this is asserted only by a webhook.
+      callStatus: "QUEUED",
     });
   }
 

@@ -385,6 +385,20 @@ export interface ConversationSession {
    *  status is IN_PROGRESS. */
   listenUrl?: string;
   controlUrl?: string;
+  /**
+   * The carrier's own view of the call, distinct from `status`.
+   *
+   * `status` is our workflow state (is a transcript coming, is it settled).
+   * This is where the call actually is on the network. They are not the same
+   * thing and conflating them is why the live board showed "connected" for a
+   * call that was still ringing — or for one that never connected at all.
+   *
+   * Set optimistically to QUEUED when we place the call, then advanced only
+   * by provider webhooks.
+   */
+  callStatus?: "QUEUED" | "RINGING" | "CONNECTED" | "ENDED";
+  /** Set when the provider tells us why the call ended. */
+  endedReason?: string;
 }
 
 export interface FieldCandidate {

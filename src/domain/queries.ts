@@ -859,3 +859,9 @@ export async function listMessageThreads(limit = 60): Promise<MessageThreadSumma
     })
     .slice(0, limit);
 }
+
+/** Admin override for a public legal page, or null to use the built-in copy. */
+export async function getLegalPage(slug: "privacy" | "terms") {
+  const db = await getDb();
+  return db.legalPages.get(slug) ?? null;
+}

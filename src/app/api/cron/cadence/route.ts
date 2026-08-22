@@ -38,7 +38,7 @@ export async function GET(request: Request) {
   }
 
   const summary = await runCadenceTick();
-  console.log(`[cadence-engine] processed=${summary.processed} delivered=${summary.delivered} blocked=${summary.blocked} exhausted=${summary.exhausted} errors=${summary.errors.length}`);
+  console.log(`[cadence-engine] processed=${summary.processed} delivered=${summary.delivered} blocked=${summary.blocked} heldForChannel=${summary.heldForChannel} exhausted=${summary.exhausted} errors=${summary.errors.length}`);
 
   // Piggybacks on the same scheduled trigger rather than a second cron job —
   // pre-consent draft PII (src/domain/types.ts IntakeDraft) shouldn't outlive

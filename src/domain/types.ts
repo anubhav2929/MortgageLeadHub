@@ -737,6 +737,27 @@ export interface LeadDocument {
   };
 }
 
+/**
+ * An admin-editable public page (privacy policy, terms).
+ *
+ * Content is stored and rendered as PLAIN TEXT split into paragraphs, never
+ * as HTML. These pages are edited in the admin panel and served to the public
+ * internet, so treating the field as markup would turn any admin account —
+ * or anyone who compromises one — into stored XSS against every visitor.
+ * The formatting loss is worth it; legal copy is prose.
+ *
+ * Absent means "use the built-in default", so a deployment that never touches
+ * this still serves a complete page.
+ */
+export interface LegalPage {
+  slug: "privacy" | "terms";
+  /** Plain text. Blank lines separate paragraphs; a line ending in ':' or
+   *  written in Title Case on its own is rendered as a heading. */
+  body: string;
+  updatedAt: string;
+  updatedByName: string;
+}
+
 export interface VoiceAnnouncement {
   id: string;
   text: string;

@@ -11,6 +11,8 @@ import { searchForSignals } from "@/adapters/leadDiscovery";
 import { blendScore, dedupeKey } from "@/core/discoveryQuery";
 import { ALLOWED_DOCUMENT_TYPES, MAX_DOCUMENT_BYTES, dataUriBytes } from "@/core/documentPolicy";
 import { clampSms } from "@/core/smsFormat";
+import { mapWithConcurrency } from "@/core/concurrency";
+import { FIELD_TO_LEAD_PROPERTY, type MappedFieldPath } from "@/core/callInsights";
 import { controlLiveCall, type CallControlAction } from "@/adapters/vapiCallControl";
 import { getPropertyValuation } from "@/adapters/propertyData";
 import { promoteCandidate, type RawCandidate } from "@/core/extraction/promote";
@@ -722,27 +724,6 @@ export async function toggleKillSwitchAction(reason: string): Promise<ActionResu
 // permanently — the same gate that protects every other lead protects these
 // by construction, not by a special case.
 // ---------------------------------------------------------------------------
-/**
- * Runs `fn` over `items` with at most `limit` in flight.
- *
- * Sequential LLM calls made a 50-signal discovery run take minutes, and
- * unbounded Promise.all trips the provider's rate limit and fails the whole
- * batch. Results stay index-aligned with the input so callers can zip them
- * back together.
- */
-async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor++;
-      results[index] = await fn(items[index]);
-    }
-  });
-  await Promise.all(workers);
-  return results;
-}
-
 export async function runLeadDiscoveryAction(query?: string): Promise<ActionResult> {
   const user = await getCurrentUser();
   if (!can({ role: user.role, officerId: user.officerId }, "MANAGE_SUPPRESSION")) {
@@ -1669,6 +1650,19 @@ export async function startDialerCallAction(publicRef: string): Promise<DialerSt
   // existing SMS/email thread into the call.
   const outcome = await placeOutboundCall(db, lead, person, user);
 
+  // Pre-flight refused before anything was dialled. Returned WITHOUT a
+  // `failure`, so it must be handled before the provider-failure branch —
+  // otherwise it falls through, burns an attempt, and emits
+  // OUTREACH_ATTEMPTED for a call that never left the building.
+  if (!outcome.ok && outcome.blockedReason) {
+    saveDb();
+    revalidateLead(publicRef);
+    return {
+      ok: false,
+      message: outcome.remedy ? `${outcome.blockedReason} ${outcome.remedy}` : outcome.blockedReason,
+    };
+  }
+
   if (!outcome.ok && outcome.failure) {
     await recordSendFailure(db, lead, person, "VOICE", outcome.failure, user);
     saveDb();
@@ -1806,6 +1800,19 @@ export async function startVoiceAgentCallAction(publicRef: string): Promise<Acti
   // call now. This action remains so the AI-call entry point keeps working,
   // but it no longer represents a separate mechanism.
   const outcome = await placeOutboundCall(db, lead, person, user);
+
+  // Pre-flight refused before anything was dialled. Returned WITHOUT a
+  // `failure`, so it must be handled before the provider-failure branch —
+  // otherwise it falls through, burns an attempt, and emits
+  // OUTREACH_ATTEMPTED for a call that never left the building.
+  if (!outcome.ok && outcome.blockedReason) {
+    saveDb();
+    revalidateLead(publicRef);
+    return {
+      ok: false,
+      message: outcome.remedy ? `${outcome.blockedReason} ${outcome.remedy}` : outcome.blockedReason,
+    };
+  }
 
   if (!outcome.ok && outcome.failure) {
     await recordSendFailure(db, lead, person, "VOICE", outcome.failure, user);
@@ -2472,6 +2479,18 @@ async function deliverOutreachLocked(
   if (channel === "VOICE") {
     const outcome = await placeOutboundCall(db, lead, person, undefined);
 
+    // Same ordering hazard as the manual paths: a blocked pre-flight carries
+    // no `failure`, and must not be allowed to count as a cadence attempt.
+    if (!outcome.ok && outcome.blockedReason) {
+      lead.updatedAt = nowIso();
+      console.warn(`[deliverOutreach] VOICE pre-flight blocked for lead ${lead.id}: ${outcome.blockedReason}`);
+      return {
+        ok: false,
+        blocked: true,
+        message: "We could not place the call — a licensed loan officer will follow up directly.",
+      };
+    }
+
     if (!outcome.ok && outcome.failure) {
       await recordSendFailure(db, lead, person, "VOICE", outcome.failure, undefined);
       lead.updatedAt = nowIso();
@@ -3114,4 +3133,130 @@ export async function acknowledgeCallFailuresAction(attemptIds: string[]): Promi
   saveDb();
   revalidatePath("/workspace/calls");
   return { ok: true, message: `Dismissed ${count} alert${count === 1 ? "" : "s"} — still in the call log.` };
+}
+
+/**
+ * Replaces the copy on a public legal page.
+ *
+ * Stored and rendered as plain text, never HTML — see LegalPage in types.ts.
+ * Clearing the body restores the built-in default rather than publishing an
+ * empty page, because an accidentally-blanked privacy policy on a site that
+ * collects PII is worse than a slightly generic one.
+ */
+export async function updateLegalPageAction(slug: "privacy" | "terms", body: string): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  if (!can({ role: user.role, officerId: user.officerId }, "EDIT_CADENCE_PROMPTS_DISCLOSURES")) {
+    return { ok: false, message: "Only Admin can edit the public legal pages." };
+  }
+  if (slug !== "privacy" && slug !== "terms") return { ok: false, message: "Unknown page." };
+
+  const db = await getDb();
+  const trimmed = body.trim();
+
+  if (!trimmed) {
+    db.legalPages.delete(slug);
+    await audit(user.id, user.name, "RESET_LEGAL_PAGE", "LegalPage", slug, "ALLOW");
+    saveDb();
+    revalidatePath(`/${slug}`);
+    return { ok: true, message: `Reset to the built-in ${slug} copy.` };
+  }
+
+  db.legalPages.set(slug, { slug, body: trimmed, updatedAt: nowIso(), updatedByName: user.name });
+  // Carriers fetch these URLs during 10DLC review and regulators cite them,
+  // so who changed the wording and when is worth keeping.
+  await audit(user.id, user.name, "UPDATE_LEGAL_PAGE", "LegalPage", slug, "ALLOW", { length: trimmed.length });
+  saveDb();
+  revalidatePath(`/${slug}`);
+  return { ok: true, message: `${slug === "privacy" ? "Privacy policy" : "Terms"} updated and live.` };
+}
+
+/**
+ * Applies one call-derived fact to the lead record.
+ *
+ * Deliberately a human action rather than something extraction does on its
+ * own. The lead record is what the borrower typed and consented to; a model's
+ * reading of a phone call is good evidence but not authority, and silently
+ * rewriting the record would leave no trace of what they originally said.
+ *
+ * Accepting marks the field OFFICER_ENTERED, which core/extraction/promote.ts
+ * then locks against any further automated change — so a later re-extraction
+ * cannot undo a person's decision.
+ */
+export async function acceptCallInsightAction(publicRef: string, fieldPath: string): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  if (!can({ role: user.role, officerId: user.officerId }, "EDIT_FIELDS")) {
+    return { ok: false, message: "You do not have permission to change lead details." };
+  }
+  const lead = await requireLead(publicRef);
+  const db = await getDb();
+
+  const property = FIELD_TO_LEAD_PROPERTY[fieldPath as MappedFieldPath];
+  if (!property) return { ok: false, message: "That field cannot be applied to the lead." };
+
+  const field = db.leadFields.get(`${lead.id}:${fieldPath}`);
+  if (!field) return { ok: false, message: "No extracted value for that field." };
+
+  // A CONFLICTED field holds the disputed value separately — accepting means
+  // taking the call's version over the form's.
+  const value = field.status === "CONFLICTED" ? field.conflictingValue : field.value;
+  if (value === undefined || value === null || value === "UNKNOWN") {
+    return { ok: false, message: "That value is not usable." };
+  }
+
+  const previous = (lead as unknown as Record<string, unknown>)[property];
+  (lead as unknown as Record<string, unknown>)[property] = value;
+  lead.updatedAt = nowIso();
+
+  // Promote to officer-entered so re-extraction cannot revert it.
+  db.leadFields.set(`${lead.id}:${fieldPath}`, {
+    ...field,
+    value,
+    status: "CONFIRMED",
+    sourceType: "OFFICER_ENTERED",
+    conflictingValue: undefined,
+    lastUpdatedById: user.id,
+  });
+
+  await pushEvent({
+    leadId: lead.id,
+    type: "FIELD_CORRECTED",
+    actorType: user.role === "OFFICER" ? "OFFICER" : "ADMIN",
+    actorId: user.id,
+    actorName: user.name,
+    occurredAt: nowIso(),
+    payload: { fieldPath, from: previous, to: value, source: "call_extraction" },
+  });
+  await audit(user.id, user.name, "ACCEPT_CALL_INSIGHT", "Lead", lead.id, "ALLOW", { fieldPath, from: previous, to: value });
+
+  saveDb();
+  revalidateLead(publicRef);
+  return { ok: true, message: `Updated from the call.` };
+}
+
+/** Dismisses a call-derived suggestion without changing the lead. */
+export async function dismissCallInsightAction(publicRef: string, fieldPath: string): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  if (!can({ role: user.role, officerId: user.officerId }, "EDIT_FIELDS")) {
+    return { ok: false, message: "You do not have permission to change lead details." };
+  }
+  const lead = await requireLead(publicRef);
+  const db = await getDb();
+
+  const field = db.leadFields.get(`${lead.id}:${fieldPath}`);
+  if (!field) return { ok: false, message: "No extracted value for that field." };
+
+  // Keeps the existing value and marks it officer-owned, so the same
+  // suggestion does not reappear after every subsequent call.
+  db.leadFields.set(`${lead.id}:${fieldPath}`, {
+    ...field,
+    status: "CONFIRMED",
+    sourceType: "OFFICER_ENTERED",
+    conflictingValue: undefined,
+    lastUpdatedById: user.id,
+  });
+
+  await audit(user.id, user.name, "DISMISS_CALL_INSIGHT", "Lead", lead.id, "ALLOW", { fieldPath });
+  saveDb();
+  revalidateLead(publicRef);
+  return { ok: true, message: "Kept the existing value." };
 }

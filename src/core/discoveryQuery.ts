@@ -176,10 +176,6 @@ const OUT_OF_MARKET = [
   "offset mortgage",
 ];
 
-export function expandQueries(): string[] {
-  return [...QUERY_TERMS.primary, ...QUERY_TERMS.secondary];
-}
-
 /**
  * Stable identity for a candidate across repeated runs and across the two
  * archives. Reddit permalinks are the one field both sources agree on, but

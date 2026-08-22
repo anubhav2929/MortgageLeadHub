@@ -6,6 +6,7 @@
 // on end-of-call-report runs the transcript through the exact same
 // extraction/promotion pipeline the manual "Run AI extraction" button uses.
 
+import { createHmac } from "node:crypto";
 import { NextResponse } from "next/server";
 import { pushEvent, runExtractionForConversation } from "@/domain/actions";
 import { getDb, nowIso, saveDb } from "@/domain/store";
@@ -42,15 +43,59 @@ interface VapiServerMessage {
   call?: { metadata?: { leadId?: string; conversationId?: string } };
 }
 
+/**
+ * True when the request genuinely came from Vapi.
+ *
+ * Accepts either authentication style. Both comparisons are constant-time —
+ * a webhook that can suppress a borrower or inject transcript text is worth
+ * protecting from a timing oracle.
+ */
+function isAuthenticVapiRequest(request: Request, rawBody: string, secret: string): boolean {
+  const plaintext = request.headers.get("x-vapi-secret");
+  if (plaintext && safeCompare(plaintext, secret)) return true;
+
+  const signature = request.headers.get("x-vapi-signature");
+  if (!signature) return false;
+
+  const expected = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+  // Some senders prefix the algorithm; compare against the hex either way.
+  const supplied = signature.includes("=") ? signature.split("=").pop()! : signature;
+  return safeCompare(supplied.trim().toLowerCase(), expected);
+}
+
 export async function POST(request: Request) {
   const vapiSecret = await getConfigValue("VAPI_WEBHOOK_SECRET");
-  if (!vapiSecret || !safeCompare(request.headers.get("x-vapi-secret") ?? "", vapiSecret)) {
+
+  // Read the body as text first: HMAC verification needs the exact bytes, and
+  // re-serialising a parsed object would not reproduce them.
+  const rawBody = await request.text();
+
+  // ---------------------------------------------------------------------
+  // Vapi authenticates in TWO different ways and we must accept both.
+  //
+  // Setting `server.secret` does NOT make Vapi send `x-vapi-secret`. By
+  // default it sends `x-vapi-signature`, an HMAC-SHA256 of the raw body keyed
+  // with that secret. Checking only for the plaintext header meant the header
+  // was simply absent, so EVERY status-update and end-of-call-report was
+  // rejected 401 — which is why calls placed fine and then never produced a
+  // transcript or advanced past "Calling".
+  //
+  // We now also send the plaintext header explicitly via `server.headers`
+  // (see adapters/voiceAgent.ts), so both paths work regardless of which
+  // behaviour the account is on.
+  // ---------------------------------------------------------------------
+  if (!vapiSecret || !isAuthenticVapiRequest(request, rawBody, vapiSecret)) {
+    console.error(
+      vapiSecret
+        ? "[vapi-webhook] rejected: neither x-vapi-secret nor a valid x-vapi-signature matched VAPI_WEBHOOK_SECRET"
+        : "[vapi-webhook] rejected: VAPI_WEBHOOK_SECRET is not configured"
+    );
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
   let body: { message?: VapiServerMessage };
   try {
-    body = await request.json();
+    body = JSON.parse(rawBody);
   } catch {
     // Malformed body — reply 200 rather than 500 so Vapi doesn't treat this
     // as a transient failure and retry-storm the same bad payload.

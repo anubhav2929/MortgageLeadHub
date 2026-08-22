@@ -182,6 +182,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     fields: [
       { key: "VAPI_API_KEY", label: "Private API key", secret: true },
       { key: "VAPI_PHONE_NUMBER_ID", label: "Phone number ID", secret: false, help: "The number's id, not the number itself" },
+      { key: "VAPI_VOICE_ID", label: "Voice", secret: false, optional: true, placeholder: "Savannah", help: "Vapi built-in voices, no extra account needed: Elliot, Savannah, Rohan, Emma, Clara, Nico, Kai." },
       { key: "VAPI_WEBHOOK_SECRET", label: "Webhook secret", secret: true, help: "Any random string — generate with: openssl rand -hex 32" },
     ],
     setupSteps: [

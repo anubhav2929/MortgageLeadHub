@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ShieldX, Users, UserPlus, GitBranch, FileText, ShieldOff, Power, ScrollText, Plug, SlidersHorizontal, HeartHandshake, ShieldQuestion, FileClock, Rocket } from "lucide-react";
+import { ShieldX, Users, UserPlus, GitBranch, FileText, ShieldOff, Power, ScrollText, Plug, SlidersHorizontal, HeartHandshake, ShieldQuestion, FileClock, Rocket, Scale } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -14,6 +14,7 @@ import { AuditLogPanel } from "@/components/admin/audit-log-panel";
 import { IntegrationsPanel } from "@/components/admin/integrations-panel";
 import { GoLivePanel } from "@/components/admin/go-live-panel";
 import { UrlTabs } from "@/components/ui/url-tabs";
+import { LegalPagesPanel } from "@/components/admin/legal-pages-panel";
 
 /** Kept in sync with the TabsTrigger values below. An unknown ?tab= falls back
  *  to users rather than rendering an empty page. */
@@ -26,6 +27,7 @@ const ADMIN_TABS = [
   "cadence",
   "referrals",
   "disclosures",
+  "legal",
   "integrations",
   "golive",
   "audit",
@@ -37,6 +39,7 @@ import { IntakeDraftsPanel } from "@/components/admin/intake-drafts-panel";
 import { can } from "@/core/rbac";
 import {
   getGoLiveReadiness,
+  getLegalPage,
   getKillSwitch,
   getSystemConfig,
   listAuditLogs,
@@ -86,6 +89,10 @@ export default async function AdminPage() {
   // Admin-only; the tab itself is gated below.
   const integrationData = user.role === "ADMIN" ? await getIntegrationStatusesAction() : null;
   const goLive = user.role === "ADMIN" ? await getGoLiveReadiness() : null;
+  const legalPages =
+    user.role === "ADMIN"
+      ? { privacy: await getLegalPage("privacy"), terms: await getLegalPage("terms") }
+      : null;
 
   return (
     <div className="animate-fade-in">
@@ -144,6 +151,11 @@ export default async function AdminPage() {
               <FileText className="h-3.5 w-3.5" /> Disclosures
             </span>
           </TabsTrigger>
+          <TabsTrigger value="legal">
+            <span className="flex items-center gap-1.5">
+              <Scale className="h-3.5 w-3.5" /> Legal pages
+            </span>
+          </TabsTrigger>
           <TabsTrigger value="integrations">
             <span className="flex items-center gap-1.5">
               <Plug className="h-3.5 w-3.5" /> Integrations
@@ -197,6 +209,13 @@ export default async function AdminPage() {
               canEdit={can(subject, "EDIT_CADENCE_PROMPTS_DISCLOSURES")}
               canApprove={can(subject, "APPROVE_CADENCE_PROMPTS_DISCLOSURES")}
             />
+          </TabsContent>
+          <TabsContent value="legal">
+            {legalPages ? (
+              <LegalPagesPanel pages={legalPages} />
+            ) : (
+              <EmptyState icon={ShieldX} title="Admin only" description="Public page copy can only be changed by an Admin." />
+            )}
           </TabsContent>
           <TabsContent value="integrations">
             {integrationData ? (

@@ -2,10 +2,16 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { MktNav } from "@/components/marketing/mkt-nav";
 import { MktFooter } from "@/components/marketing/mkt-footer";
+import { LegalBody } from "@/components/marketing/legal-body";
+import { getLegalPage } from "@/domain/queries";
 
 export const metadata: Metadata = { title: "Privacy Policy — Equity Flow Group" };
 
-export default function PrivacyPage() {
+export default async function PrivacyPage() {
+  // Admin override wins; absent means serve the built-in copy below, so a
+  // deployment that never edits this still has a complete page.
+  const override = await getLegalPage("privacy");
+
   return (
     <div className="mkt flex-1 overflow-y-auto">
       <MktNav />
@@ -19,6 +25,9 @@ export default function PrivacyPage() {
           policy before handling real borrower data.
         </div>
 
+        {override ? (
+          <LegalBody body={override.body} />
+        ) : (
         <div className="mt-8 space-y-6 text-[13.5px] leading-relaxed text-[var(--mkt-body)]">
           <section>
             <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">What we collect</h2>
@@ -104,6 +113,7 @@ export default function PrivacyPage() {
             </p>
           </section>
         </div>
+        )}
       </main>
       <MktFooter />
     </div>

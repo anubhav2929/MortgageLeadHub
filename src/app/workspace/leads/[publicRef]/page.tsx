@@ -4,6 +4,7 @@ import { TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LeadDetailTabs } from "@/components/workspace/lead-detail-tabs";
 import { LeadDetailHeader } from "@/components/workspace/lead-detail-header";
 import { OverviewTab } from "@/components/workspace/tabs/overview-tab";
+import { CallInsightsCard } from "@/components/workspace/call-insights-card";
 import { TimelineTab } from "@/components/workspace/tabs/timeline-tab";
 import { PackageTab } from "@/components/workspace/tabs/package-tab";
 import { ConversationTab } from "@/components/workspace/tabs/conversation-tab";
@@ -13,6 +14,7 @@ import { NotesTab } from "@/components/workspace/tabs/notes-tab";
 import { CallsTab } from "@/components/workspace/tabs/calls-tab";
 import { can } from "@/core/rbac";
 import { buildLeadThread } from "@/core/conversationThread";
+import { deriveCallInsights } from "@/core/callInsights";
 import { computeLeadCompleteness, getLeadByRef, listLeadDocuments, listOfficers, listReferralPartners } from "@/domain/queries";
 import { getCurrentUser } from "@/domain/session";
 import { currentVoiceStrategy } from "@/domain/voiceOrchestrator";
@@ -61,6 +63,9 @@ export default async function LeadDetailPage({ params }: PageProps) {
   // Voice readiness is resolved per request, so entering a Vapi key in the
   // admin panel flips this card from "Configuring" to "Ready" on the next
   // page load — no redeploy, no restart.
+  // Extraction writes to db.leadFields; the Lead record is only written by a
+  // manual edit. This is the difference between the two.
+  const callInsights = deriveCallInsights(detail.lead, detail.leadFields, detail.fieldCandidates);
   const voiceStrategy = await currentVoiceStrategy();
   const inboundNumber = (await getConfigValue("INBOUND_PHONE_NUMBER")) ?? null;
   const documents = await listLeadDocuments(detail.lead.id);
@@ -153,6 +158,10 @@ export default async function LeadDetailPage({ params }: PageProps) {
 
         <div className="pt-5">
           <TabsContent value="overview">
+            {/* What the call told us that the header does not yet say. Sits
+                above the profile because the officer reads the header before
+                dialling, and a stale goal there is acted on. */}
+            <CallInsightsCard publicRef={publicRef} insights={callInsights} />
             <OverviewTab
               lead={detail.lead}
               person={detail.person}

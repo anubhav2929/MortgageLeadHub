@@ -20,6 +20,7 @@ import type {
   FieldCandidate,
   IntakeDraft,
   LeadDocument,
+  LegalPage,
   VoiceAnnouncement,
   KillSwitchState,
   Lead,
@@ -84,6 +85,8 @@ export interface Database {
   voiceAnnouncements: Map<string, VoiceAnnouncement>;
   /** Files attached to leads — see LeadDocument. */
   leadDocuments: LeadDocument[];
+  /** Admin-authored overrides for the public legal pages. */
+  legalPages: Map<string, LegalPage>;
 }
 
 declare global {
@@ -136,6 +139,7 @@ function createEmptyDb(): Database {
     intakeDrafts: new Map(),
     voiceAnnouncements: new Map(),
     leadDocuments: [],
+    legalPages: new Map(),
   };
 }
 

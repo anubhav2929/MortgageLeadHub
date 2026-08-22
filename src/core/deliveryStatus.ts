@@ -210,29 +210,6 @@ export function mapProviderStatus(
   }
 }
 
-/**
- * Map Vapi's `endedReason` on an end-of-call-report to a call outcome.
- *
- * Without this every AI call is recorded as QUEUED forever, so the lead's
- * history shows a call that never resolved and the cadence can't tell a
- * conversation from a voicemail. Vapi's reasons are free-form strings that
- * grow over time, so this matches on stable substrings rather than an exact
- * enum, and falls back to ANSWERED only when the call genuinely connected.
- */
-export function mapVapiEndedReason(endedReason: string | undefined): AttemptOutcome {
-  const r = (endedReason ?? "").toLowerCase();
-  if (!r) return "ANSWERED";
-  if (r.includes("no-answer") || r.includes("did-not-answer") || r.includes("no_answer")) return "NO_ANSWER";
-  if (r.includes("voicemail")) return "VOICEMAIL";
-  if (r.includes("busy")) return "BUSY";
-  // Errors on our side or the provider's — the borrower was never spoken to.
-  if (r.includes("error") || r.includes("failed") || r.includes("rejected")) return "FAILED";
-  // "silence-timed-out" means it connected but nobody spoke — closer to a
-  // voicemail/no-answer than to a real conversation.
-  if (r.includes("silence")) return "NO_ANSWER";
-  // customer-ended-call, assistant-ended-call, etc. — a real conversation.
-  return "ANSWERED";
-}
 
 /** Did the borrower actually engage, i.e. should the lead advance to
  *  IN_CONVERSATION and the transcript be worth extracting from? */

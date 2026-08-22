@@ -39,6 +39,7 @@ const MAP_KEYS: (keyof Database)[] = [
   "sessions",
   "authTokens",
   "voiceAnnouncements",
+  "legalPages",
   "intakeDrafts",
   "credentials",
 ];

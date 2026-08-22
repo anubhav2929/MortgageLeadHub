@@ -15,6 +15,8 @@
 
 import { deliverOutreach, pushEvent } from "@/domain/actions";
 import { shouldAutomateVoice } from "@/core/callStrategy";
+import { evaluateChannelReadiness } from "@/core/channelReadiness";
+import { getCapabilities } from "@/lib/runtimeConfig";
 import { evaluateEngagementWindow } from "@/core/engagementWindow";
 import { currentVoiceStrategy } from "@/domain/voiceOrchestrator";
 import { transition, InvalidTransitionError } from "@/core/stateMachine";
@@ -103,6 +105,8 @@ export interface CadenceTickSummary {
   voiceDowngraded: number;
   /** Held because the borrower is actively engaged in the chat right now. */
   heldForEngagement: number;
+  /** Steps held because the channel has no provider configured. */
+  heldForChannel: number;
   /** Cadence is paused on this lead pending human action — a permanently bad
    *  contact address, or a provider misconfiguration affecting everyone. */
   heldForFailure: number;
@@ -116,7 +120,11 @@ export async function runCadenceTick(): Promise<CadenceTickSummary> {
   // is for. Recording it only on success would report a crashing engine as
   // an unwired scheduler and send someone to fix the wrong thing.
   db.lastCadenceRunAt = new Date().toISOString();
-  const summary: CadenceTickSummary = { processed: 0, delivered: 0, blocked: 0, exhausted: 0, failed: 0, heldForFailure: 0, voiceDowngraded: 0, heldForEngagement: 0, errors: [] };
+  const summary: CadenceTickSummary = { processed: 0, delivered: 0, blocked: 0, exhausted: 0, failed: 0, heldForFailure: 0, voiceDowngraded: 0, heldForEngagement: 0, heldForChannel: 0, errors: [] };
+
+  // Resolved once per tick rather than per lead: it is the same answer for
+  // every lead in the run, and it is a decrypt on each call.
+  const caps = await getCapabilities();
 
   const eligibleLeads = Array.from(db.leads.values()).filter((lead) => AUTOMATION_ELIGIBLE_STATES.includes(lead.state));
 
@@ -231,6 +239,33 @@ export async function runCadenceTick(): Promise<CadenceTickSummary> {
       }
 
       if (routed.note) console.log(`[cadence-router] lead ${lead.publicRef}: ${routed.note}`);
+
+      // Hold rather than fake it. An unconfigured channel does not fail — the
+      // adapter logs the message and reports success — so without this the
+      // step would be recorded as SENT, consume an attempt, and advance the
+      // schedule. A lead would march through its whole cadence on a dead
+      // channel and land in NURTURE having received nothing.
+      const readiness = evaluateChannelReadiness({
+        channel: routed.channel,
+        hasSms: caps.hasSms,
+        hasEmail: caps.hasResend,
+        hasVoiceAgent: caps.hasVoiceAgent,
+        isAutomated: true,
+      });
+      if (!readiness.ready) {
+        summary.heldForChannel += 1;
+        console.warn(`[cadence] lead ${lead.publicRef}: ${routed.channel} step held — ${readiness.reason}`);
+        await pushEvent({
+          leadId: lead.id,
+          type: "OUTREACH_DEFERRED",
+          actorType: "SYSTEM",
+          channel: routed.channel,
+          occurredAt: nowIso(),
+          payload: { reason: readiness.reason, heldFor: "channel_not_configured" },
+        });
+        continue;
+      }
+
       const result = await deliverOutreach(db, lead, routed.channel, "SYSTEM", "automated_cadence_step");
       if (result.blocked) summary.blocked += 1;
       else if (result.ok) summary.delivered += 1;

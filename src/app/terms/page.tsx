@@ -1,10 +1,16 @@
 import type { Metadata } from "next";
 import { MktNav } from "@/components/marketing/mkt-nav";
 import { MktFooter } from "@/components/marketing/mkt-footer";
+import { LegalBody } from "@/components/marketing/legal-body";
+import { getLegalPage } from "@/domain/queries";
 
 export const metadata: Metadata = { title: "Terms of Service — Equity Flow Group" };
 
-export default function TermsPage() {
+export default async function TermsPage() {
+  // Admin override wins; absent means serve the built-in copy below, so a
+  // deployment that never edits this still has a complete page.
+  const override = await getLegalPage("terms");
+
   return (
     <div className="mkt flex-1 overflow-y-auto">
       <MktNav />
@@ -17,6 +23,9 @@ export default function TermsPage() {
           replace it with your own reviewed terms before a real launch.
         </div>
 
+        {override ? (
+          <LegalBody body={override.body} />
+        ) : (
         <div className="mt-8 space-y-6 text-[13.5px] leading-relaxed text-[var(--mkt-body)]">
           <section>
             <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Not a loan application</h2>
@@ -53,6 +62,7 @@ export default function TermsPage() {
             </p>
           </section>
         </div>
+        )}
       </main>
       <MktFooter />
     </div>

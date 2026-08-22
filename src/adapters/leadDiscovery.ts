@@ -42,6 +42,7 @@
 
 import type { RawCandidate } from "@/core/discoveryQuery";
 import { DISCOVERY_SUBREDDITS, MAX_SIGNAL_AGE_DAYS, selectSignals } from "@/core/discoveryQuery";
+import { mapWithConcurrency } from "@/core/concurrency";
 
 export interface RawSignal {
   source: "REDDIT";
@@ -87,7 +88,7 @@ const MAX_RETRIES = 2;
  * and on high-volume subreddits it simply does not complete.
  *
  * So we invert it: ask only for *recent posts per subreddit*, which is a
- *  * cheap time-indexed read, and do all keyword and intent filtering locally in
+ * cheap time-indexed read, and do all keyword and intent filtering locally in
  * core/discoveryQuery.ts. That cut a 36-request sweep to one request per
  * subreddit, which is what makes a wide source list affordable at all.
  *
@@ -216,31 +217,23 @@ export async function searchForSignals(query?: string): Promise<DiscoveryResult>
   // deliberately low — the goal is to fit the budget, not to extract maximum
   // throughput from someone else's free archive.
   const SOURCE_CONCURRENCY = 4;
-  let cursor = 0;
 
-  const worker = async () => {
-    while (cursor < DISCOVERY_SUBREDDITS.length) {
-      const { name } = DISCOVERY_SUBREDDITS[cursor++];
+  await mapWithConcurrency(DISCOVERY_SUBREDDITS, SOURCE_CONCURRENCY, async ({ name }) => {
     // An operator-typed keyword is the one case we still pay for a
-    // server-side search: it is one deliberate request per subreddit, not a
-    // 36-way automated sweep, and the operator is waiting on a specific answer.
-      const params: Record<string, string> = { subreddit: name, after };
-      if (query) params.query = query;
+    // server-side search: one deliberate request per subreddit, not a 36-way
+    // automated sweep, and the operator is waiting on a specific answer.
+    const params: Record<string, string> = { subreddit: name, after };
+    if (query) params.query = query;
 
-      await collect("posts", params, "POST");
+    await collect("posts", params, "POST");
 
-      // Comments only for the topical subs — a mortgage question buried in a
-      // r/personalfinance comment thread is real, but too sparse to justify
-      // doubling the request budget.
-      if (TOPICAL_SUBS.has(name)) {
-        await collect("comments", { subreddit: name, after }, "COMMENT");
-      }
+    // Comments only for the topical subs — a mortgage question buried in a
+    // r/personalfinance comment thread is real, but too sparse to justify
+    // doubling the request budget.
+    if (TOPICAL_SUBS.has(name)) {
+      await collect("comments", { subreddit: name, after }, "COMMENT");
     }
-  };
-
-  await Promise.all(
-    Array.from({ length: Math.min(SOURCE_CONCURRENCY, DISCOVERY_SUBREDDITS.length) }, worker)
-  );
+  });
 
   if (failures.length > 0) {
     console.warn(`[discovery] ${failures.length}/${queries} searches failed:`, failures.join("; "));

@@ -46,6 +46,10 @@ export type PlaceVoiceAgentCallResult =
 // (adapters/llm.ts's OUTREACH_SYSTEM_PROMPT) — a live conversational agent
 // needs them even more, since there's no officer reviewing what it says
 // before it's spoken.
+/** Vapi's own curated voice set needs no separate provider account. Override
+ *  with VAPI_VOICE_ID (Elliot, Savannah, Rohan, Emma, Clara, Nico, Kai…). */
+const DEFAULT_VAPI_VOICE = "Savannah";
+
 const VOICE_AGENT_SYSTEM_PROMPT = (firstName: string, intentLabel: string, goalLabel: string) =>
   `You are a warm, brief qualification specialist for a licensed mortgage lending desk, calling ${firstName} about their ${intentLabel} inquiry (goal: ${goalLabel}). ` +
   `Hard rules, never break these: never quote a rate, payment amount, or approval odds; never say "you qualify", "you're approved", or "you'll likely get"; ` +
@@ -83,6 +87,7 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
 
   const intentLabel = input.intent.replace("_", " ").toLowerCase();
   const goalLabel = input.goal.replace("_", " ").toLowerCase();
+  const webhookSecret = await getConfigValue("VAPI_WEBHOOK_SECRET");
 
   try {
     const response = await fetch("https://api.vapi.ai/call", {
@@ -112,8 +117,25 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
               },
             ],
           },
-          voice: { provider: "playht", voiceId: "jennifer" },
-          transcriber: { provider: "deepgram", model: "nova-2" },
+          // Vapi's OWN voices — no third-party credential required.
+          //
+          // This was `playht/jennifer`, which is a bring-your-own-credential
+          // provider. On an account with no PlayHT key every outbound call
+          // died at 0 seconds with "Playht unknown error" before the phone
+          // ever rang. Nothing in our logs distinguished that from a bad
+          // number, because the call never reached a state that reports one.
+          //
+          // Choosing a provider the customer must separately sign up for is a
+          // dependency we imposed on them for no benefit. Vapi's built-in
+          // voices work on any account with a Vapi key and nothing else.
+          voice: {
+            provider: "vapi",
+            voiceId: (await getConfigValue("VAPI_VOICE_ID")) || DEFAULT_VAPI_VOICE,
+          },
+          // Transcriber intentionally omitted so Vapi applies its own bundled
+          // default. Pinning `deepgram/nova-2` explicitly is what produced the
+          // `call.start.error-get-transcriber` failures — an explicit provider
+          // is resolved against account credentials, while the default is not.
           // Declared explicitly rather than relying on the provider's default
           // set. Vapi documents "transcript" as one of many optional server
           // messages, and an assistant that does not ask for it receives only
@@ -125,7 +147,15 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
           // queued -> ringing -> in-progress; without it the session stays on
           // whatever we optimistically set when we placed the call.
           serverMessages: ["status-update", "transcript", "end-of-call-report", "hang"],
-          server: { url: `${await getAppUrl()}/api/webhooks/vapi`, secret: await getConfigValue("VAPI_WEBHOOK_SECRET") },
+          server: {
+            url: `${await getAppUrl()}/api/webhooks/vapi`,
+            // `secret` alone makes Vapi send x-vapi-signature (an HMAC), NOT
+            // x-vapi-secret. Sending the plaintext header explicitly as well
+            // means the callback authenticates whichever style the account
+            // uses. The receiver accepts both — see the webhook route.
+            secret: webhookSecret,
+            headers: webhookSecret ? { "x-vapi-secret": webhookSecret } : undefined,
+          },
         },
         metadata: { leadId: input.leadId, conversationId: input.conversationId },
       }),

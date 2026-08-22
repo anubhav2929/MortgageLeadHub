@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { PhoneIncoming, PhoneOutgoing, Copy, Check, Bot, Loader2, Wrench } from "lucide-react";
+import Link from "next/link";
+import { PhoneIncoming, PhoneOutgoing, Copy, Check, Bot, Loader2, Radio, Wrench } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,6 +42,7 @@ export function CallsTab({
   outboundReady,
   outboundNote,
   calls,
+  liveStage = {},
 }: {
   publicRef: string;
   borrowerName: string;
@@ -52,6 +54,8 @@ export function CallsTab({
   /** Why outbound isn't ready, when it isn't. */
   outboundNote: string;
   calls: ContactAttempt[];
+  /** attemptId → human stage label, for calls still in flight. */
+  liveStage?: Record<string, string>;
 }) {
   const [copied, setCopied] = useState(false);
   const [dialing, setDialing] = useState(false);
@@ -198,7 +202,20 @@ export function CallsTab({
                       <p className="mt-1 text-xs text-[var(--danger)]">{call.failureMessage}</p>
                     )}
                   </div>
-                  <Badge tone={OUTCOME_TONE[call.outcome] ?? "neutral"}>{call.outcome.replace("_", " ")}</Badge>
+                  {/* A call still in flight shows where it actually is, not
+                      its resting outcome. "QUEUED" against a ringing phone is
+                      technically true and useless to the person watching. */}
+                  {liveStage[call.id] ? (
+                    <Link
+                      href="/workspace/calls"
+                      className="flex items-center gap-1.5 text-[13px] font-semibold text-[var(--success)] hover:underline"
+                    >
+                      <Radio className="h-3.5 w-3.5 animate-pulse" />
+                      {liveStage[call.id]}
+                    </Link>
+                  ) : (
+                    <Badge tone={OUTCOME_TONE[call.outcome] ?? "neutral"}>{call.outcome.replace("_", " ")}</Badge>
+                  )}
                 </li>
               ))}
             </ul>

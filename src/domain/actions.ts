@@ -83,6 +83,12 @@ function revalidateLead(publicRef: string) {
   revalidatePath("/workspace/leads");
   revalidatePath(`/workspace/leads/${publicRef}`);
   revalidatePath("/workspace");
+  // The call centre is a cross-lead view of the same records. Omitting it
+  // meant placing a call from a lead left the board stale until the operator
+  // navigated away and back — the call appeared "after a while" rather than
+  // immediately.
+  revalidatePath("/workspace/calls");
+  revalidatePath("/workspace/messages");
 }
 
 export interface ActionResult {

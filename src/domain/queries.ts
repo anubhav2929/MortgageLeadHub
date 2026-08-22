@@ -4,6 +4,7 @@ import { getPropertyValuation } from "@/adapters/propertyData";
 import { getDb, saveDb, type Database } from "@/domain/store";
 import { evaluateGoLive, summariseGoLive } from "@/core/goLive";
 import { evaluateStaleCall, staleAttemptOutcome } from "@/core/staleCall";
+import { reconcileLiveCalls } from "@/domain/callReconciler";
 import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import type {
   AuditLog,
@@ -711,7 +712,13 @@ export async function reapStaleCalls(now = new Date()): Promise<number> {
 }
 
 export async function listLiveCalls(): Promise<CallCentreEntry[]> {
-  // Settle before listing, so the board never shows a call that has timed out.
+  // Order matters. Ask the provider first, THEN reap.
+  //
+  // Reaping first would delete calls purely because no webhook arrived — which
+  // is exactly what happened when webhook auth was misconfigured: every call
+  // vanished from the board at the five-minute mark. Reconciling first means a
+  // call is only ever reaped after the provider has failed to account for it.
+  await reconcileLiveCalls();
   await reapStaleCalls();
   const all = await listCallActivity(200);
   return all

@@ -76,6 +76,20 @@ export default async function LeadDetailPage({ params }: PageProps) {
     .filter((a) => a.channel === "VOICE")
     .sort((a, b) => new Date(b.startedAt ?? b.scheduledFor).getTime() - new Date(a.startedAt ?? a.scheduledFor).getTime());
 
+  // Live stage per attempt, so an in-flight call reads "Ringing" on the lead
+  // rather than the resting outcome the record still holds.
+  const STAGE_LABEL: Record<string, string> = {
+    QUEUED: "Calling",
+    RINGING: "Ringing",
+    CONNECTED: "Live now",
+  };
+  const liveStage: Record<string, string> = {};
+  for (const c of detail.conversations) {
+    if (c.status !== "IN_PROGRESS" || c.callStatus === "ENDED") continue;
+    const label = STAGE_LABEL[c.callStatus ?? "QUEUED"];
+    if (c.contactAttemptId && label) liveStage[c.contactAttemptId] = label;
+  }
+
   const canAssignOfficer = user.role === "ADMIN";
   const officers = canAssignOfficer ? (await listOfficers()).filter((o) => o.isActive) : undefined;
 
@@ -195,6 +209,7 @@ export default async function LeadDetailPage({ params }: PageProps) {
               outboundReady={voiceStrategy.mechanism === "VAPI_AGENT"}
               outboundNote={`${voiceStrategy.reason}${voiceStrategy.remedy ? ` ${voiceStrategy.remedy}` : ""}`}
               calls={calls}
+              liveStage={liveStage}
             />
           </TabsContent>
           <TabsContent value="conversation">

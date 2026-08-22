@@ -28,7 +28,18 @@ import type { CallCentreEntry } from "@/domain/queries";
  * per viewer for a board that is empty most of the day. Polling stops
  * entirely when nothing is live.
  */
-const POLL_MS = 4000;
+/**
+ * Poll cadence.
+ *
+ * The board previously stopped polling entirely when empty — an optimisation
+ * that broke the primary use case: place a call from a lead, open the board,
+ * and nothing ever appeared because an empty board never asked again. It only
+ * showed up if you navigated away and back.
+ *
+ * So it always polls; it just slows down when there is nothing happening.
+ */
+const POLL_ACTIVE_MS = 3000;
+const POLL_IDLE_MS = 8000;
 
 /**
  * What to show for each stage of the call.
@@ -146,11 +157,9 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
   const router = useRouter();
   const [now, setNow] = useState(() => Date.now());
 
-  useEffect(() => {
-    // Nothing live means nothing to poll for. A board that keeps hitting the
-    // server all night to render "no calls" is pure cost.
-    if (calls.length === 0) return;
+  const hasCalls = calls.length > 0;
 
+  useEffect(() => {
     let tick: ReturnType<typeof setInterval> | undefined;
     let poll: ReturnType<typeof setInterval> | undefined;
 
@@ -164,7 +173,7 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
     const start = () => {
       if (tick) return; // already running
       tick = setInterval(() => setNow(Date.now()), 1000);
-      poll = setInterval(() => router.refresh(), POLL_MS);
+      poll = setInterval(() => router.refresh(), hasCalls ? POLL_ACTIVE_MS : POLL_IDLE_MS);
     };
 
     // Polling pauses while the tab is in the background and resumes on
@@ -193,7 +202,7 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
       stop();
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [calls.length, router]);
+  }, [hasCalls, router]);
 
   if (calls.length === 0) {
     return (
@@ -201,7 +210,7 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
         <EmptyState
           icon={PhoneCall}
           title="No calls in progress"
-          description="Live calls appear here the moment the agent connects, with the transcript filling in as it is spoken."
+          description="Watching for calls — this updates on its own. Place one from a lead and it appears here within a few seconds, with the transcript filling in as it is spoken."
         />
       </Card>
     );

@@ -8,7 +8,7 @@ import { Headphones, MicOff, PhoneCall, PhoneForwarded, PhoneOff, Radio, Send } 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
-import { controlLiveCallAction } from "@/domain/actions";
+import { controlLiveCallAction, syncCallStateAction } from "@/domain/actions";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -170,10 +170,32 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
       poll = undefined;
     };
 
+    // Guards against overlap. A poll that takes longer than the interval —
+    // which is exactly what happens under load — would otherwise stack, and
+    // several refreshes landing together is what made the board flash.
+    let busy = false;
+    let cancelled = false;
+
+    const cycle = async () => {
+      if (busy || document.hidden) return;
+      busy = true;
+      try {
+        // Explicit sync, then read. The read itself is pure; this is the only
+        // thing that advances state, and concurrent callers join one pass.
+        await syncCallStateAction();
+        if (!cancelled) router.refresh();
+      } catch {
+        // Never surface this. A failed sync means slightly stale data, which
+        // is strictly better than an error boundary blanking a live call.
+      } finally {
+        busy = false;
+      }
+    };
+
     const start = () => {
       if (tick) return; // already running
       tick = setInterval(() => setNow(Date.now()), 1000);
-      poll = setInterval(() => router.refresh(), hasCalls ? POLL_ACTIVE_MS : POLL_IDLE_MS);
+      poll = setInterval(cycle, hasCalls ? POLL_ACTIVE_MS : POLL_IDLE_MS);
     };
 
     // Polling pauses while the tab is in the background and resumes on
@@ -191,14 +213,20 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
         stop();
       } else {
         setNow(Date.now());
-        router.refresh();
+        void cycle();
         start();
       }
     };
 
-    if (!document.hidden) start();
+    if (!document.hidden) {
+      // Sync immediately on mount so opening the board never shows a stale
+      // snapshot for a full interval.
+      void cycle();
+      start();
+    }
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
+      cancelled = true;
       stop();
       document.removeEventListener("visibilitychange", onVisibility);
     };

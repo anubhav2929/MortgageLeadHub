@@ -17,8 +17,17 @@ export interface StaleCallInput {
   /** QUEUED / RINGING / CONNECTED / ENDED — the provider's view. */
   callStatus?: "QUEUED" | "RINGING" | "CONNECTED" | "ENDED";
   startedAt: string;
-  /** Last time any webhook touched this call. Falls back to startedAt. */
+  /** Last time any webhook OR successful provider poll touched this call. */
   lastSignalAt?: string;
+  /**
+   * True when we can currently reach the provider to ask about calls.
+   *
+   * This is the difference between "the call is over" and "we are blind".
+   * Reaping while blind is what made the board flicker: a rate-limited or
+   * briefly-unreachable provider looked identical to a finished call, so live
+   * calls were deleted and then could not come back.
+   */
+  providerReachable?: boolean;
   now: Date;
 }
 
@@ -28,6 +37,16 @@ export interface StaleCallInput {
  * call whose closing event we simply did not receive.
  */
 export const UNCONNECTED_TIMEOUT_MINUTES = 5;
+
+/**
+ * When the provider is reachable and still claims the call exists, we do not
+ * reap on silence at all — the reconciler refreshes lastSignalAt on every
+ * successful poll, so silence here means we genuinely cannot see the call.
+ *
+ * This absolute ceiling exists only so a call can never be immortal: if
+ * something is wrong for this long, the record is closed regardless.
+ */
+export const ABSOLUTE_MAX_CALL_MINUTES = 120;
 
 /**
  * A connected call this long is implausible for this product — the agent is
@@ -64,6 +83,17 @@ export function evaluateStaleCall(input: StaleCallInput): StaleVerdict {
   if (elapsedMinutes < 0) return { stale: false };
 
   const connected = input.callStatus === "CONNECTED";
+
+  // Blind: we could not reach the provider on the last pass. Absence of news
+  // is not news. Hold the call until either the provider comes back and tells
+  // us, or the absolute ceiling is hit.
+  if (input.providerReachable === false) {
+    if (elapsedMinutes > ABSOLUTE_MAX_CALL_MINUTES) {
+      return { stale: true, reason: "unreachable-provider-absolute-timeout", neverConnected: !connected };
+    }
+    return { stale: false };
+  }
+
   const limit = connected ? CONNECTED_TIMEOUT_MINUTES : UNCONNECTED_TIMEOUT_MINUTES;
 
   if (elapsedMinutes <= limit) return { stale: false };

@@ -5,6 +5,7 @@ import { getDb, saveDb, type Database } from "@/domain/store";
 import { evaluateGoLive, summariseGoLive } from "@/core/goLive";
 import { evaluateStaleCall, staleAttemptOutcome } from "@/core/staleCall";
 import { reconcileLiveCalls } from "@/domain/callReconciler";
+import { singleFlight } from "@/core/singleFlight";
 import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import type {
   AuditLog,
@@ -23,6 +24,7 @@ import type {
   LeadField,
   Note,
   Officer,
+  Person,
   PolicyDecision,
   PropertyValuationResult,
   Suppression,
@@ -629,6 +631,16 @@ export async function listCallActivity(limit = 100): Promise<CallCentreEntry[]> 
     if (c.contactAttemptId) conversationsByAttempt.set(c.contactAttemptId, c);
   }
 
+  // Indexed once rather than scanned per attempt. The previous version ran
+  // `Array.from(db.people.values()).find(...)` INSIDE the map, making this
+  // O(attempts x people) — and it runs on every three-second poll, twice per
+  // render. At the volumes this is about to be tested at, that alone made the
+  // page slow enough for polls to overlap.
+  const primaryByLead = new Map<string, Person>();
+  for (const p of db.people.values()) {
+    if (p.role === "PRIMARY") primaryByLead.set(p.leadId, p);
+  }
+
   const officers = db.officers;
 
   return db.attempts
@@ -637,7 +649,7 @@ export async function listCallActivity(limit = 100): Promise<CallCentreEntry[]> 
     .slice(0, limit)
     .map((attempt) => {
       const lead = db.leads.get(attempt.leadId);
-      const person = Array.from(db.people.values()).find((p) => p.leadId === attempt.leadId && p.role === "PRIMARY");
+      const person = primaryByLead.get(attempt.leadId);
       const officer = lead?.assignedOfficerId ? officers.get(lead.assignedOfficerId) : undefined;
       const convo = conversationsByAttempt.get(attempt.id);
       return {
@@ -672,7 +684,7 @@ export async function listCallActivity(limit = 100): Promise<CallCentreEntry[]> 
  *
  * Returns the number settled.
  */
-export async function reapStaleCalls(now = new Date()): Promise<number> {
+export async function reapStaleCalls(now = new Date(), providerReachable = true): Promise<number> {
   const db = await getDb();
   let settled = 0;
 
@@ -683,6 +695,7 @@ export async function reapStaleCalls(now = new Date()): Promise<number> {
       callStatus: convo.callStatus,
       startedAt: convo.startedAt,
       lastSignalAt: convo.lastSignalAt,
+      providerReachable,
       now,
     });
     if (!verdict.stale) continue;
@@ -711,15 +724,37 @@ export async function reapStaleCalls(now = new Date()): Promise<number> {
   return settled;
 }
 
+/**
+ * Brings call state up to date. Safe to call from anywhere, any number of
+ * times — concurrent callers join one pass rather than racing.
+ *
+ * Order matters: ask the provider first, THEN reap. Reaping first deletes
+ * calls purely because no webhook arrived, which is exactly what happened when
+ * webhook auth was misconfigured — every call vanished at the five-minute
+ * mark.
+ */
+export async function syncCallState(): Promise<void> {
+  await singleFlight("call-sync", async () => {
+    const reconciled = await reconcileLiveCalls();
+    // Pass reachability through: if the provider could not be reached, nothing
+    // is reaped except calls past the absolute ceiling.
+    await reapStaleCalls(new Date(), reconciled.providerReachable);
+  });
+}
+
+/**
+ * Calls currently in flight.
+ *
+ * Deliberately READ-ONLY. This used to await a reconcile-and-reap pass, which
+ * meant every three-second poll performed destructive writes to shared state.
+ * Two open tabs produced interleaved passes; the slower write won; calls
+ * appeared and vanished at random. A render must not mutate the thing it is
+ * rendering.
+ *
+ * Freshness now comes from the caller invoking syncCallState() explicitly —
+ * the board does so through a server action, and the cron does so on a timer.
+ */
 export async function listLiveCalls(): Promise<CallCentreEntry[]> {
-  // Order matters. Ask the provider first, THEN reap.
-  //
-  // Reaping first would delete calls purely because no webhook arrived — which
-  // is exactly what happened when webhook auth was misconfigured: every call
-  // vanished from the board at the five-minute mark. Reconciling first means a
-  // call is only ever reaped after the provider has failed to account for it.
-  await reconcileLiveCalls();
-  await reapStaleCalls();
   const all = await listCallActivity(200);
   return all
     .filter((e) => e.conversation?.status === "IN_PROGRESS" && e.conversation.callStatus !== "ENDED")

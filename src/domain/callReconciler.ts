@@ -25,11 +25,20 @@ export interface ReconcileSummary {
   checked: number;
   updated: number;
   settled: number;
+  /**
+   * False when we tried to reach the provider and could not.
+   *
+   * The reaper needs this to distinguish "the call ended" from "we are blind".
+   * Without it a rate-limited provider — exactly what a hundred simultaneous
+   * calls produces — looks identical to a finished call, and live calls get
+   * deleted.
+   */
+  providerReachable: boolean;
 }
 
 export async function reconcileLiveCalls(now = new Date()): Promise<ReconcileSummary> {
   const db = await getDb();
-  const summary: ReconcileSummary = { checked: 0, updated: 0, settled: 0 };
+  const summary: ReconcileSummary = { checked: 0, updated: 0, settled: 0, providerReachable: true };
 
   const candidates = Array.from(db.conversations.values())
     .filter((c) => c.status === "IN_PROGRESS" && c.callStatus !== "ENDED")
@@ -50,6 +59,11 @@ export async function reconcileLiveCalls(now = new Date()): Promise<ReconcileSum
     summary.checked += 1;
     const result = await fetchVapiCallState(providerCallId);
 
+    if (!result.ok && !result.gone) {
+      // A transient failure means we learned nothing. Record that so the
+      // reaper holds off rather than treating silence as an ending.
+      summary.providerReachable = false;
+    }
     if (!result.ok) {
       // Only a definitive 404 lets us close the call. A network blip or a
       // rate limit must never be read as "the call ended" — that would end a

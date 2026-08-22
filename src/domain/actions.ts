@@ -13,6 +13,7 @@ import { ALLOWED_DOCUMENT_TYPES, MAX_DOCUMENT_BYTES, dataUriBytes } from "@/core
 import { clampSms } from "@/core/smsFormat";
 import { mapWithConcurrency } from "@/core/concurrency";
 import { FIELD_TO_LEAD_PROPERTY, type MappedFieldPath } from "@/core/callInsights";
+import { syncCallState } from "@/domain/queries";
 import { controlLiveCall, type CallControlAction } from "@/adapters/vapiCallControl";
 import { getPropertyValuation } from "@/adapters/propertyData";
 import { promoteCandidate, type RawCandidate } from "@/core/extraction/promote";
@@ -3265,4 +3266,30 @@ export async function dismissCallInsightAction(publicRef: string, fieldPath: str
   saveDb();
   revalidateLead(publicRef);
   return { ok: true, message: "Kept the existing value." };
+}
+
+/**
+ * Refreshes call state on demand, for the live board.
+ *
+ * Exists so the board's polling performs an explicit, intentional write
+ * instead of a page render doing it as a side effect. Reads stay pure; this is
+ * the one place that mutates on the board's behalf, and concurrent callers
+ * join a single pass rather than racing each other.
+ *
+ * Returns nothing the client needs — it refreshes afterwards — but never
+ * throws: a failed sync must degrade to slightly stale data, not an error
+ * boundary that blanks the screen mid-call.
+ */
+export async function syncCallStateAction(): Promise<{ ok: boolean }> {
+  const user = await getCurrentUser();
+  if (!can({ role: user.role, officerId: user.officerId }, "VIEW_LEAD_PII")) {
+    return { ok: false };
+  }
+  try {
+    await syncCallState();
+    return { ok: true };
+  } catch (err) {
+    console.error("[call-sync] pass failed:", err);
+    return { ok: false };
+  }
 }

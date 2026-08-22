@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ABSOLUTE_MAX_CALL_MINUTES,
   CONNECTED_TIMEOUT_MINUTES,
   UNCONNECTED_TIMEOUT_MINUTES,
   evaluateStaleCall,
@@ -89,5 +90,49 @@ describe("what we claim happened", () => {
     // call with no transcript in front of an officer as an opportunity.
     expect(staleAttemptOutcome(true)).toBe("FAILED");
     expect(staleAttemptOutcome(false)).toBe("NO_ANSWER");
+  });
+});
+
+describe("never reap while blind to the provider", () => {
+  it("holds a call when the provider could not be reached", () => {
+    // A rate-limited provider — exactly what 100 simultaneous calls produces
+    // — looked identical to a finished call. Live calls were deleted and
+    // could not come back, which is the board blanking mid-call.
+    const v = evaluateStaleCall({
+      callStatus: "QUEUED",
+      startedAt: minsAgo(30),
+      providerReachable: false,
+      now: NOW,
+    });
+    expect(v.stale).toBe(false);
+  });
+
+  it("still reaps a connected call when the provider IS reachable", () => {
+    expect(
+      evaluateStaleCall({
+        callStatus: "CONNECTED",
+        startedAt: minsAgo(CONNECTED_TIMEOUT_MINUTES + 1),
+        providerReachable: true,
+        now: NOW,
+      }).stale
+    ).toBe(true);
+  });
+
+  it("closes a call at the absolute ceiling even while blind", () => {
+    // Blindness must not make a call immortal — the record would block every
+    // future call to that lead through pre-flight.
+    const v = evaluateStaleCall({
+      callStatus: "CONNECTED",
+      startedAt: minsAgo(ABSOLUTE_MAX_CALL_MINUTES + 1),
+      providerReachable: false,
+      now: NOW,
+    });
+    expect(v.stale).toBe(true);
+    expect(v.reason).toMatch(/absolute-timeout/);
+  });
+
+  it("defaults to reachable when nothing is stated", () => {
+    // Callers that predate this flag keep their previous behaviour.
+    expect(evaluateStaleCall({ callStatus: "QUEUED", startedAt: minsAgo(30), now: NOW }).stale).toBe(true);
   });
 });

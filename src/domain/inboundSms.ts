@@ -20,7 +20,7 @@ import {
 import { normalizePhone } from "@/core/intakeNormalization";
 import { sendSms } from "@/adapters/sms";
 import { pushEvent } from "@/domain/actions";
-import { getDb, newId, nowIso, saveDb } from "@/domain/store";
+import { getDb, refreshDb, newId, nowIso, saveDb } from "@/domain/store";
 import type { Lead, Person } from "@/domain/types";
 
 export interface InboundSmsInput {
@@ -59,7 +59,7 @@ export async function ingestInboundSms(input: InboundSmsInput): Promise<InboundS
   const phone = normalizePhone(input.from);
   if (!phone || !input.body?.trim()) return { handled: false, reason: "unparseable" };
 
-  const db = await getDb();
+  const db = await refreshDb();
   const intent = classifyInboundMessage(input.body);
   const matches = leadsForPhone(db, phone);
 

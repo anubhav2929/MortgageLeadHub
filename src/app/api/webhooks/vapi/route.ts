@@ -9,7 +9,7 @@
 import { createHmac } from "node:crypto";
 import { NextResponse } from "next/server";
 import { pushEvent, runExtractionForConversation } from "@/domain/actions";
-import { getDb, nowIso, saveDb } from "@/domain/store";
+import { nowIso, refreshDb, saveDb } from "@/domain/store";
 import { safeCompare } from "@/core/auth";
 import { isAnsweredOutcome } from "@/core/deliveryStatus";
 import { advanceCallStatus, classifyEndedReason, mapVapiCallStatus } from "@/core/vapiLifecycle";
@@ -105,7 +105,11 @@ export async function POST(request: Request) {
   const conversationId = message?.call?.metadata?.conversationId;
   if (!message || !conversationId) return NextResponse.json({ ok: true });
 
-  const db = await getDb();
+  // Refresh before mutating. A webhook can land on any instance, and applying
+  // a status update to a snapshot that predates the call itself would both
+  // miss the conversation and, on save, overwrite whatever the instance that
+  // placed the call had written.
+  const db = await refreshDb();
   const conversation = db.conversations.get(conversationId);
   if (!conversation) return NextResponse.json({ ok: true });
 

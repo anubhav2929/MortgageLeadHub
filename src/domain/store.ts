@@ -38,7 +38,7 @@ import type {
   User,
 } from "@/domain/types";
 import { seedDatabase } from "@/domain/seed";
-import { loadDb, persist } from "@/domain/persistence";
+import { loadDb, persist, reloadIfStale } from "@/domain/persistence";
 
 export interface Database {
   leads: Map<string, Lead>;
@@ -200,6 +200,35 @@ export function resetDb(): Database {
 }
 
 /** Call after any mutation so the change survives a server restart. */
+/**
+ * Ensures this instance is not serving a stale snapshot.
+ *
+ * The whole database is one row cached on globalThis and, until now, never
+ * re-read. On a horizontally-scaled host that meant every instance served the
+ * past it happened to boot into: the instance that placed a call could see it,
+ * one that booted a minute earlier could not. A board polling every few
+ * seconds hit them alternately, so a live call appeared, vanished, and
+ * reappeared purely according to which instance answered.
+ *
+ * Call this before reading anything that changes second-to-second. It is a
+ * single timestamp comparison, and reloads only when another writer has moved
+ * the store on.
+ */
+export async function refreshDb(): Promise<Database> {
+  const db = await getDb();
+  try {
+    const fresh = await reloadIfStale();
+    if (fresh) {
+      global.__mlh_db__ = fresh;
+      return fresh;
+    }
+  } catch {
+    // A failed freshness check must never take the store away — serving a
+    // slightly old copy beats serving none.
+  }
+  return db;
+}
+
 export function saveDb() {
   if (global.__mlh_db__) persist(global.__mlh_db__);
 }

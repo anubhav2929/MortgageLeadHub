@@ -1,7 +1,7 @@
 import { computeCompleteness, type CompletenessInputs } from "@/core/completeness";
 import { computeLeadQualityScore, type LeadScoreResult } from "@/core/leadScoring";
 import { getPropertyValuation } from "@/adapters/propertyData";
-import { getDb, saveDb, type Database } from "@/domain/store";
+import { getDb, refreshDb, saveDb, type Database } from "@/domain/store";
 import { evaluateGoLive, summariseGoLive } from "@/core/goLive";
 import { evaluateStaleCall, staleAttemptOutcome } from "@/core/staleCall";
 import { reconcileLiveCalls } from "@/domain/callReconciler";
@@ -625,7 +625,10 @@ export interface CallCentreEntry {
  * slice would walk every attempt three times.
  */
 export async function listCallActivity(limit = 100): Promise<CallCentreEntry[]> {
-  const db = await getDb();
+  // Call state is the most volatile data in the product and the most likely to
+  // have been written by a different instance moments ago. One timestamp
+  // comparison here is what stops the board oscillating between instances.
+  const db = await refreshDb();
   const conversationsByAttempt = new Map<string, ConversationSession>();
   for (const c of db.conversations.values()) {
     if (c.contactAttemptId) conversationsByAttempt.set(c.contactAttemptId, c);
@@ -735,6 +738,10 @@ export async function reapStaleCalls(now = new Date(), providerReachable = true)
  */
 export async function syncCallState(): Promise<void> {
   await singleFlight("call-sync", async () => {
+    // Reconcile and reap decide whether to CLOSE records. Doing that against a
+    // stale snapshot is how a call another instance had just opened got
+    // settled as unknown — so refresh before judging anything.
+    await refreshDb();
     const reconciled = await reconcileLiveCalls();
     // Pass reachability through: if the provider could not be reached, nothing
     // is reaped except calls past the absolute ceiling.

@@ -166,31 +166,74 @@ async function ensureSchema() {
 // transient Postgres error looked identical to an empty database and
 // getDb() would seed fresh over it, silently discarding every real lead.
 // Letting the error propagate means the request fails loudly instead.
+/**
+ * The `updated_at` of the stored snapshot, without transferring it.
+ *
+ * The whole database is one JSONB row cached per serverless instance and, until
+ * now, never re-read. Two instances therefore served two different pasts: the
+ * one that placed a call saw it, the one that booted earlier did not. A board
+ * polling every few seconds hit them alternately, so a live call appeared,
+ * vanished, and reappeared depending purely on which instance answered.
+ *
+ * This is the cheap check that lets an instance notice it is behind — a single
+ * timestamp, not the document.
+ */
+export async function fetchStoreVersion(): Promise<string | null> {
+  if (!capabilities.hasDatabase) return null;
+  try {
+    await ensureSchema();
+    const rows = usesNeonDriver()
+      ? await getNeonSql()`SELECT updated_at FROM mlh_store WHERE key = 'main' LIMIT 1`
+      : (await getPostgresPool().query<{ updated_at: Date }>("SELECT updated_at FROM mlh_store WHERE key = 'main' LIMIT 1")).rows;
+    if (rows.length === 0) return null;
+    const v = (rows[0] as { updated_at: Date | string }).updated_at;
+    return v instanceof Date ? v.toISOString() : String(v);
+  } catch {
+    // Unreachable database: report "unknown" rather than "unchanged", so the
+    // caller holds its current copy instead of concluding it is fresh.
+    return null;
+  }
+}
+
 async function loadFromPostgres(): Promise<Database | null> {
   await ensureSchema();
   const rows = usesNeonDriver()
-    ? await getNeonSql()`SELECT value FROM mlh_store WHERE key = 'main' LIMIT 1`
-    : (await getPostgresPool().query<{ value: Record<string, unknown> }>("SELECT value FROM mlh_store WHERE key = 'main' LIMIT 1")).rows;
+    ? await getNeonSql()`SELECT value, updated_at FROM mlh_store WHERE key = 'main' LIMIT 1`
+    : (await getPostgresPool().query<{ value: Record<string, unknown>; updated_at: Date }>("SELECT value, updated_at FROM mlh_store WHERE key = 'main' LIMIT 1")).rows;
   if (rows.length === 0) return null;
-  return fromSerializable(rows[0].value as Record<string, unknown>);
+  const row = rows[0] as { value: Record<string, unknown>; updated_at?: Date | string };
+  if (row.updated_at) {
+    setLastKnownVersion(row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at));
+  }
+  return fromSerializable(row.value);
 }
 
 async function saveToPostgres(db: Database) {
   await ensureSchema();
   const value = toSerializable(db);
+  // RETURNING the new timestamp keeps this instance's idea of the stored
+  // version aligned with what it just wrote. Without it, an instance would
+  // immediately consider its own write "someone else's change" and reload the
+  // document it had just produced.
   if (usesNeonDriver()) {
-    await getNeonSql()`
+    const rows = await getNeonSql()`
       INSERT INTO mlh_store (key, value, updated_at)
       VALUES ('main', ${JSON.stringify(value)}::jsonb, now())
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+      RETURNING updated_at
     `;
+    const v = (rows as { updated_at: Date | string }[])[0]?.updated_at;
+    if (v) setLastKnownVersion(v instanceof Date ? v.toISOString() : String(v));
   } else {
-    await getPostgresPool().query(
+    const res = await getPostgresPool().query<{ updated_at: Date }>(
       `INSERT INTO mlh_store (key, value, updated_at)
        VALUES ($1, $2::jsonb, now())
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+       RETURNING updated_at`,
       ["main", JSON.stringify(value)]
     );
+    const v = res.rows[0]?.updated_at;
+    if (v) setLastKnownVersion(v instanceof Date ? v.toISOString() : String(v));
   }
 }
 
@@ -229,6 +272,56 @@ let writeInFlight = false;
 let writePending = false;
 
 /** Call after any mutation so the change survives a server restart / cold start. */
+/**
+ * Reloads the in-memory store if another instance has written since we loaded.
+ *
+ * Costs one `SELECT updated_at` — a timestamp, not the document — so it is
+ * cheap enough to run before a volatile read. Returns the fresh Database when
+ * a reload happened, or null when the cached copy is already current.
+ *
+ * Only ever pulls FORWARD. If the version check fails (database unreachable),
+ * the caller keeps its existing copy rather than being handed nothing.
+ */
+let lastCheckedAt = 0;
+
+/**
+ * How long a freshness check is trusted before we ask again.
+ *
+ * A single page render can call this several times (the call board reads call
+ * activity twice), and several viewers poll concurrently. Without a short
+ * floor each of those becomes its own round trip for an answer that cannot
+ * have changed meaningfully in the interim. One second is well below the
+ * three-second poll interval, so the board never serves anything older than
+ * one tick.
+ */
+const VERSION_CHECK_TTL_MS = 1000;
+
+export async function reloadIfStale(): Promise<Database | null> {
+  if (!capabilities.hasDatabase) return null;
+
+  const now = Date.now();
+  if (now - lastCheckedAt < VERSION_CHECK_TTL_MS) return null;
+  lastCheckedAt = now;
+
+  const current = await fetchStoreVersion();
+  if (!current) return null;               // unknown — hold what we have
+  if (current === lastKnownVersion) return null; // already current
+  const fresh = await loadFromPostgres();  // also updates lastKnownVersion
+  return fresh;
+}
+
+/** Set after every successful write and every load, so an instance can tell
+ *  whether the stored snapshot has moved on without it. */
+let lastKnownVersion: string | null = null;
+
+export function getLastKnownVersion(): string | null {
+  return lastKnownVersion;
+}
+
+export function setLastKnownVersion(v: string | null): void {
+  lastKnownVersion = v;
+}
+
 export function persist(db: Database) {
   // Fire-and-forget, coalesced: if a write is already in flight when another
   // save comes in, just remember to run once more after — never queue N writes.

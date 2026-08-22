@@ -33,7 +33,7 @@ import { computeOfficerLoadToday } from "@/domain/queries";
 import { buildGateInput, evaluateForLead } from "@/domain/gateHelpers";
 import { getCurrentUser } from "@/domain/session";
 import { audit } from "@/domain/audit";
-import { getDb, newId, nowIso, saveDb, withLeadLock, type Database } from "@/domain/store";
+import { getDb, newId, nowIso, refreshDb, saveDb, withLeadLock, type Database } from "@/domain/store";
 import { getAppUrl } from "@/lib/runtimeConfig";
 import { formatDateTime } from "@/lib/utils";
 import { STATE_NAMES } from "@/domain/stateTimezone";
@@ -1629,7 +1629,7 @@ export async function startDialerCallAction(publicRef: string): Promise<DialerSt
   }
 
   const decision = await evaluateForLead(lead, "VOICE", true);
-  const db = await getDb();
+  const db = await refreshDb();
   db.policyDecisions.push({
     id: newId("policy"),
     leadId: lead.id,
@@ -1782,7 +1782,7 @@ export async function startVoiceAgentCallAction(publicRef: string): Promise<Acti
   }
 
   const decision = await evaluateForLead(lead, "VOICE", true);
-  const db = await getDb();
+  const db = await refreshDb();
   db.policyDecisions.push({
     id: newId("policy"),
     leadId: lead.id,
@@ -3031,7 +3031,7 @@ export async function controlLiveCallAction(
     return { ok: false, message: "You do not have permission to control a live call." };
   }
 
-  const db = await getDb();
+  const db = await refreshDb();
   const conversation = db.conversations.get(conversationId);
   if (!conversation) return { ok: false, message: "That call was not found." };
 

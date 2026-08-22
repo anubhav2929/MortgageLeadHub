@@ -34,6 +34,15 @@ export default function TermsPage() {
               assistant where applicable. Consent to be contacted is not a condition of receiving loan services.
               Message and data rates may apply to text messages.
             </p>
+            {/* Carriers read this page during 10DLC review and look for the
+                CTIA-standard disclosures spelled out, not implied. */}
+            <p className="mt-2">
+              Message frequency varies with your inquiry. Reply{" "}
+              <strong className="text-[var(--mkt-ink)]">STOP</strong> at any time to opt out of all messages, or{" "}
+              <strong className="text-[var(--mkt-ink)]">HELP</strong> for assistance. Carriers are not liable for
+              delayed or undelivered messages. We do not sell or share mobile opt-in information with third parties
+              for their own marketing.
+            </p>
           </section>
           <section>
             <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">No warranty</h2>

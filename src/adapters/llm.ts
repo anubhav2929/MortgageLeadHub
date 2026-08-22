@@ -8,6 +8,7 @@
 
 import { getConfigValue } from "@/lib/runtimeConfig";
 import type { ConversationTurn, GoalType, LoanIntent } from "@/domain/types";
+import { resolveAiProvider, type AiProvider, type AiProviderPreference } from "@/core/aiRouting";
 
 // ---------------------------------------------------------------------------
 // NVIDIA NIM (build.nvidia.com) — free-tier, OpenAI-compatible chat completion
@@ -25,6 +26,28 @@ async function anthropicKey(): Promise<string | undefined> {
 }
 async function nvidiaKey(): Promise<string | undefined> {
   return getConfigValue("NVIDIA_API_KEY");
+}
+
+/**
+ * Which provider serves this call.
+ *
+ * Every AI function routes through here rather than testing keys inline, so
+ * the operator's AI_PROVIDER setting applies across the whole app and the
+ * preference order is defined once. See core/aiRouting.ts for why structured
+ * tasks are treated differently.
+ */
+async function pickProvider(needsStructuredOutput = false): Promise<AiProvider> {
+  const [anthropic, nvidia, preference] = await Promise.all([
+    anthropicKey(),
+    nvidiaKey(),
+    getConfigValue("AI_PROVIDER"),
+  ]);
+  return resolveAiProvider({
+    hasAnthropic: Boolean(anthropic),
+    hasNvidia: Boolean(nvidia),
+    preference: (preference as AiProviderPreference) || "AUTO",
+    needsStructuredOutput,
+  });
 }
 
 async function callNvidiaJSON<T>(system: string, user: string, maxTokens = 400): Promise<T> {
@@ -80,17 +103,68 @@ const FIELD_ENUMS: Record<string, string[] | "boolean"> = {
 const MODEL = "claude-sonnet-5";
 
 export async function extractFieldsFromTranscript(transcript: ConversationTurn[]): Promise<ExtractionResult> {
-  if (!(await anthropicKey())) {
-    return { fields: simulateExtraction(transcript), simulated: true };
+  // Structured: every extracted field is written to the lead record with a
+  // provenance reference, so schema-constrained output is worth preferring.
+  const provider = await pickProvider(true);
+
+  if (provider === "ANTHROPIC") {
+    try {
+      return { fields: await extractWithClaude(transcript), simulated: false };
+    } catch (err) {
+      console.error("[Anthropic extraction] falling back:", err);
+    }
   }
 
-  try {
-    const fields = await extractWithClaude(transcript);
-    return { fields, simulated: false };
-  } catch (err) {
-    console.error("[Anthropic extraction] falling back to simulated extraction:", err);
-    return { fields: simulateExtraction(transcript), simulated: true };
+  if (provider === "NVIDIA" || (provider === "ANTHROPIC" && (await nvidiaKey()))) {
+    try {
+      return { fields: await extractWithNvidia(transcript), simulated: false };
+    } catch (err) {
+      console.error("[NVIDIA extraction] falling back to simulated extraction:", err);
+    }
   }
+
+  return { fields: simulateExtraction(transcript), simulated: true };
+}
+
+/**
+ * NVIDIA has no tool-calling equivalent, so the schema is described in the
+ * prompt and enforced on the way back. Anything outside the allowed enum
+ * becomes UNKNOWN rather than being written to the lead — a hallucinated
+ * "SELF_EMPLOYED" reaching the record is worse than an admitted gap.
+ */
+async function extractWithNvidia(transcript: ConversationTurn[]): Promise<ExtractedField[]> {
+  const transcriptText = transcript.map((t) => `[turn ${t.turn}] ${t.role}: ${t.text}`).join("\n");
+  const schema = Object.entries(FIELD_ENUMS)
+    .map(([path, domain]) => `  "${path}": one of ${domain === "boolean" ? '["true","false","UNKNOWN"]' : JSON.stringify(domain)}`)
+    .join("\n");
+
+  const raw = await callNvidiaJSON<Record<string, { value?: string; confidence?: number; turnRefs?: number[] }>>(
+    "You extract structured facts from a mortgage qualification call transcript. " +
+      "If the borrower did not clearly state a field, return UNKNOWN with confidence 0 and an empty turnRefs array. " +
+      "Never infer or guess. turnRefs must be the exact turn numbers where the fact was stated.\n" +
+      `Return an object with exactly these keys, each {"value","confidence","turnRefs"}:\n${schema}`,
+    `Transcript:\n${transcriptText}`,
+    900
+  );
+
+  const fields: ExtractedField[] = [];
+  for (const [fieldPath, domain] of Object.entries(FIELD_ENUMS)) {
+    const r = raw?.[fieldPath];
+    const rawValue = typeof r?.value === "string" ? r.value : "UNKNOWN";
+    const valid = domain === "boolean" ? ["true", "false", "UNKNOWN"] : [...domain, "UNKNOWN"];
+    const accepted = valid.includes(rawValue) ? rawValue : "UNKNOWN";
+    const value: string | boolean = domain === "boolean" ? accepted === "true" : accepted;
+    fields.push({
+      fieldPath,
+      value,
+      confidence:
+        accepted === "UNKNOWN" || typeof r?.confidence !== "number"
+          ? 0
+          : Math.max(0, Math.min(1, r.confidence)),
+      transcriptTurnRefs: Array.isArray(r?.turnRefs) ? r.turnRefs.filter((n): n is number => typeof n === "number") : [],
+    });
+  }
+  return fields;
 }
 
 async function extractWithClaude(transcript: ConversationTurn[]): Promise<ExtractedField[]> {
@@ -281,7 +355,8 @@ export async function validateIntakeIdentity(input: IdentityValidationInput): Pr
     simulated: true,
   };
 
-  if (!(await anthropicKey()) && !(await nvidiaKey())) return heuristic;
+  const provider = await pickProvider();
+  if (provider === "NONE") return heuristic;
 
   const system =
     "You review a mortgage intake form's name fields for data quality. Normalize each name to standard title " +
@@ -291,7 +366,7 @@ export async function validateIntakeIdentity(input: IdentityValidationInput): Pr
   const user = `firstName: "${input.firstName}"\nlastName: "${input.lastName}"`;
 
   try {
-    if (await anthropicKey()) {
+    if (provider === "ANTHROPIC") {
       const { default: Anthropic } = await import("@anthropic-ai/sdk");
       const client = new Anthropic({ apiKey: (await anthropicKey())! });
       const message = await client.messages.create({
@@ -388,7 +463,8 @@ const CHANNEL_ARTEFACT: Record<OutreachContentInput["channel"], string> = {
 };
 
 export async function generateOutreachContent(input: OutreachContentInput): Promise<OutreachContentResult> {
-  if (await anthropicKey()) {
+  const provider = await pickProvider();
+  if (provider === "ANTHROPIC") {
     try {
       return await generateWithClaude(input);
     } catch (err) {
@@ -514,7 +590,8 @@ const SIGNAL_REPLY_SYSTEM_PROMPT =
   "sound like a knowledgeable person adding value to the thread, not an ad; one soft, low-pressure mention that the company can help them compare options if they want, with no link or contact info (that goes in a profile, not the reply body); keep it under 80 words.";
 
 export async function generateSignalReply(input: SignalReplyInput): Promise<{ body: string; simulated: boolean }> {
-  if (await anthropicKey()) {
+  const provider = await pickProvider();
+  if (provider === "ANTHROPIC") {
     try {
       const { default: Anthropic } = await import("@anthropic-ai/sdk");
       const client = new Anthropic({ apiKey: (await anthropicKey())! });
@@ -588,10 +665,9 @@ export async function classifySignalIntent(text: string): Promise<IntentClassifi
   // then keyword simulation. The NVIDIA rung used to be missing entirely: a
   // deployment with only NVIDIA_API_KEY set fell straight through to the
   // regex simulator while the admin panel reported the LLM as configured.
-  if (!(await anthropicKey())) {
-    if (await nvidiaKey()) return classifyIntentWithNvidia(text);
-    return simulateIntentClassification(text);
-  }
+  const provider = await pickProvider(true);
+  if (provider === "NVIDIA") return classifyIntentWithNvidia(text);
+  if (provider === "NONE") return simulateIntentClassification(text);
   try {
     const { default: Anthropic } = await import("@anthropic-ai/sdk");
     const client = new Anthropic({ apiKey: (await anthropicKey())! });
@@ -700,7 +776,8 @@ export async function assessSignal(input: {
 }): Promise<SignalAssessment> {
   const text = `Subreddit: r/${input.subreddit}\nTitle: ${input.title}\n\nPost:\n${input.body.slice(0, 3000)}`;
 
-  if (await nvidiaKey()) {
+  const provider = await pickProvider();
+  if (provider === "NVIDIA") {
     try {
       return normaliseAssessment(await callNvidiaJSON<Record<string, unknown>>(ASSESSMENT_SYSTEM, text, 500));
     } catch (err) {
@@ -708,7 +785,7 @@ export async function assessSignal(input: {
     }
   }
 
-  if (await anthropicKey()) {
+  if (provider === "ANTHROPIC" || (await anthropicKey())) {
     try {
       const { default: Anthropic } = await import("@anthropic-ai/sdk");
       const client = new Anthropic({ apiKey: (await anthropicKey())! });
@@ -868,7 +945,10 @@ export async function answerBorrowerQuestion(input: BorrowerAnswerInput): Promis
     (input.priorContext ? `\n\nWhat's already been said across channels:\n${input.priorContext}` : "") +
     `\n\nTheir question: "${input.question}"`;
 
-  if (await anthropicKey()) {
+  // Structured: this talks to a consumer unsupervised and must reliably set
+  // needsHuman, so the schema guarantee matters more here than anywhere else.
+  const provider = await pickProvider(true);
+  if (provider === "ANTHROPIC") {
     try {
       const { default: Anthropic } = await import("@anthropic-ai/sdk");
       const client = new Anthropic({ apiKey: (await anthropicKey())! });

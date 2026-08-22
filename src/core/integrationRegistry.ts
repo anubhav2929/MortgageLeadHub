@@ -110,17 +110,25 @@ export const INTEGRATIONS: IntegrationDef[] = [
       "Create an API key under Settings → API Keys and paste it above.",
     ],
     docsUrl: "https://console.anthropic.com",
-    alternativeNote: "NVIDIA's free tier can cover message drafting instead, but conversation extraction needs Anthropic specifically.",
+    alternativeNote: "NVIDIA's free tier can cover every AI feature including transcript extraction. Anthropic is preferred by default for tasks whose output is written to the lead record, because its tool-calling constrains the model to a schema.",
   },
   {
     id: "nvidia",
     name: "NVIDIA NIM",
     category: "AI",
-    powers: "Free-tier alternative to Anthropic for drafting messages only. Used when no Anthropic key is set.",
+    powers: "Free-tier model for every AI feature — message drafting, borrower chat, transcript extraction, and lead-discovery scoring. Preferred for high-volume work when both providers are configured.",
     requiredKeys: ["NVIDIA_API_KEY"],
     fields: [
       { key: "NVIDIA_API_KEY", label: "API key", secret: true, placeholder: "nvapi-..." },
       { key: "NVIDIA_MODEL", label: "Model", secret: false, optional: true, placeholder: "meta/llama-3.1-8b-instruct" },
+      {
+        key: "AI_PROVIDER",
+        label: "Which provider to use app-wide",
+        secret: false,
+        optional: true,
+        placeholder: "AUTO",
+        help: "AUTO (default) uses whichever is configured, preferring the free tier for high-volume work. Set ANTHROPIC or NVIDIA to force one everywhere — chat, call scripts, extraction, and discovery scoring all follow it.",
+      },
     ],
     setupSteps: [
       "Sign in at build.nvidia.com.",

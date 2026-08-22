@@ -37,6 +37,37 @@ export default function PrivacyPage() {
               sell your information.
             </p>
           </section>
+          {/* Required for 10DLC campaign approval. Carriers review this page
+              directly, and the single most common rejection reason is the
+              absence of an explicit statement that mobile opt-in data is not
+              shared or sold — a general "we do not sell your information"
+              elsewhere on the page is not accepted as covering it. */}
+          <section>
+            <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Text messaging (SMS)</h2>
+            <p className="mt-2">
+              If you consent to text messages, Equity Flow Group sends you messages about the mortgage inquiry you
+              submitted — follow-ups from your loan officer, updates on your file, and replies to questions you ask
+              us. This is a conversational programme, not a marketing list: message frequency varies with your
+              inquiry, and is typically a small number of messages per week.
+            </p>
+            <p className="mt-2">
+              <strong className="text-[var(--mkt-ink)]">
+                We do not sell, rent, or share mobile opt-in information or phone numbers with third parties or
+                affiliates for their own marketing purposes.
+              </strong>{" "}
+              Your number is used only to contact you about your own inquiry, and is shared with service providers
+              (such as our telephony carrier) solely to deliver those messages on our behalf.
+            </p>
+            <p className="mt-2">
+              Reply <strong className="text-[var(--mkt-ink)]">STOP</strong> to any message to opt out; we will send
+              one confirmation and then stop contacting you on every channel, not only SMS. Reply{" "}
+              <strong className="text-[var(--mkt-ink)]">HELP</strong> for assistance, or email{" "}
+              <a href="mailto:inquiry@equityflowgroup.com" className="font-medium text-[var(--mkt-primary)] hover:underline">
+                inquiry@equityflowgroup.com
+              </a>
+              . Message and data rates may apply. Carriers are not liable for delayed or undelivered messages.
+            </p>
+          </section>
           <section>
             <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Your choices</h2>
             <p className="mt-2">

@@ -55,6 +55,16 @@ async function resolveChannel(db: Database, lead: Lead, fallback: Channel, autoR
   }
   if (allowed.length === 0) return { channel: fallback };
 
+  // Deliberately WITHOUT the intake summary, unlike every AI-facing caller
+  // (see domain/leadContext.ts). This thread feeds channel routing, which asks
+  // "which channel does this borrower actually answer on?" — and scores
+  // `repliedHere` higher than any other signal.
+  //
+  // The intake message is an INBOUND borrower message on PORTAL, so including
+  // it would make every lead look like they had replied on the portal before
+  // anyone contacted them. Harmless today because PORTAL is not a routable
+  // channel, but it is the wrong input to this question and would misfire the
+  // moment portal messaging became routable.
   const thread = buildLeadThread({
     attempts: db.attempts.filter((a) => a.leadId === lead.id),
     conversations: Array.from(db.conversations.values()).filter((c) => c.leadId === lead.id),

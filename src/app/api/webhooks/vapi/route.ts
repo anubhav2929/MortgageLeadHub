@@ -148,13 +148,30 @@ export async function POST(request: Request) {
 
     case "transcript": {
       if (message.transcriptType === "final" && message.transcript) {
-        conversation.transcript.push({
-          turn: conversation.transcript.length + 1,
-          role: message.role === "assistant" ? "AGENT" : "BORROWER",
-          text: message.transcript,
-          at: nowIso(),
-        });
-        saveDb();
+        const role = message.role === "assistant" ? "AGENT" : "BORROWER";
+        const text = message.transcript;
+        const last = conversation.transcript[conversation.transcript.length - 1];
+
+        // Vapi delivers at-least-once, and a duplicated utterance does more
+        // damage than it looks: the AI brief for the NEXT call is built from
+        // this transcript, so a stutter here becomes context the agent reads
+        // back to the borrower.
+        //
+        // Keyed on the previous turn rather than the whole transcript because
+        // a person genuinely can repeat themselves later in a call ("yes" …
+        // "yes"), and dropping that would be worse than the duplicate. Only an
+        // immediate, identical repeat from the same speaker is treated as a
+        // redelivery.
+        const isImmediateRepeat = last?.role === role && last?.text === text;
+        if (!isImmediateRepeat) {
+          conversation.transcript.push({
+            turn: conversation.transcript.length + 1,
+            role,
+            text,
+            at: nowIso(),
+          });
+          saveDb();
+        }
       }
       break;
     }

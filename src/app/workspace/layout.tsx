@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { FloatingCallMonitor } from "@/components/workspace/floating-call-monitor";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
 import { MobileNavProvider } from "@/components/layout/mobile-nav-context";
@@ -24,6 +25,10 @@ export default async function WorkspaceLayout({ children }: { children: React.Re
           </main>
         </div>
       </div>
+      {/* Outside <main> so it stays put while the page scrolls, and lives in
+          the layout so a call in flight remains visible wherever the officer
+          navigates. Renders nothing when no call is live. */}
+      <FloatingCallMonitor />
     </MobileNavProvider>
   );
 }

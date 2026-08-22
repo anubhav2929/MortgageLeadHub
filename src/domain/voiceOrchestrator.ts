@@ -20,10 +20,10 @@ import { placeCall } from "@/adapters/voice";
 import { generateOutreachContent } from "@/adapters/llm";
 import { producesConversation, selectVoiceStrategy, type VoiceStrategy } from "@/core/callStrategy";
 import { evaluateCallPreflight } from "@/core/callPreflight";
-import { buildConversationBrief, buildLeadThread } from "@/core/conversationThread";
+import { buildBriefForLead } from "@/domain/leadContext";
 import type { DeliveryFailure } from "@/core/deliveryStatus";
 import { getCapabilities } from "@/lib/runtimeConfig";
-import { newId, nowIso, type Database } from "@/domain/store";
+import { newId, nowIso, saveDb, type Database } from "@/domain/store";
 import type { Lead, Person } from "@/domain/types";
 
 export interface PlaceCallOutcome {
@@ -117,12 +117,9 @@ export async function placeOutboundCall(
 
   // One thread, all channels. This is what makes a call a continuation of the
   // text conversation rather than a fresh cold call.
-  const thread = buildLeadThread({
-    attempts: db.attempts.filter((a) => a.leadId === lead.id),
-    conversations: Array.from(db.conversations.values()).filter((c) => c.leadId === lead.id),
-    notes: db.notes.filter((n) => n.leadId === lead.id),
-  });
-  const priorContext = buildConversationBrief(thread);
+  // Includes the intake form. Assembling this by hand here is what left the
+  // phone agent unaware of what the borrower had filled in.
+  const priorContext = buildBriefForLead(db, lead);
 
   if (strategy.mechanism === "ANNOUNCEMENT") {
     // Degraded path: a recorded message. Still generate the copy through the
@@ -167,8 +164,61 @@ export async function placeOutboundCall(
     };
   }
 
+  // ---------------------------------------------------------------------
   // Preferred path: a real conversation.
+  //
+  // WRITE-AHEAD. The attempt and session are recorded BEFORE the provider is
+  // contacted, then updated with the result.
+  //
+  // Previously both were written after `await placeVoiceAgentCall(...)`
+  // returned. For the one-to-three seconds that call takes there was no record
+  // anywhere: the lead's history showed nothing, and the call board — polling
+  // every three seconds — saw no live calls and rendered "No calls in
+  // progress". That is the blanking, and it got worse the slower the provider
+  // was.
+  //
+  // It is also a durability problem, not only a display one. If the function
+  // timed out or the instance died mid-request, we kept no evidence the call
+  // had been placed — while the provider may well have placed it and the
+  // borrower's phone was ringing. A record written first can be reconciled
+  // later; a record never written cannot.
+  // ---------------------------------------------------------------------
   const conversationId = newId("conv");
+  const placedAt = nowIso();
+
+  db.attempts.push({
+    id: attemptId,
+    leadId: lead.id,
+    channel: "VOICE",
+    direction: "OUTBOUND",
+    idempotencyKey,
+    outcome: "QUEUED",
+    attemptNumber: lead.attemptsTotal + 1,
+    scheduledFor: placedAt,
+    startedAt: placedAt,
+    loggedById: actor?.id,
+    loggedByName: actor?.name,
+  });
+
+  if (producesConversation(strategy.mechanism)) {
+    db.conversations.set(conversationId, {
+      id: conversationId,
+      leadId: lead.id,
+      contactAttemptId: attemptId,
+      promptVersionId: "prompt_qualify_v4",
+      channel: "VOICE",
+      status: "IN_PROGRESS",
+      startedAt: placedAt,
+      escalated: false,
+      transcript: [],
+      redactionApplied: false,
+      callStatus: "QUEUED",
+    });
+  }
+  // Flushed now so a concurrent read — the board polling — sees the call
+  // immediately rather than after the provider replies.
+  saveDb();
+
   const result = await placeVoiceAgentCall({
     leadId: lead.id,
     conversationId,
@@ -179,45 +229,35 @@ export async function placeOutboundCall(
     priorContext: priorContext || undefined,
   });
 
-  db.attempts.push({
-    id: attemptId,
-    leadId: lead.id,
-    channel: "VOICE",
-    direction: "OUTBOUND",
-    idempotencyKey,
-    providerMessageId: result.ok ? result.providerCallId : undefined,
-    outcome: result.ok ? "QUEUED" : "FAILED",
-    failureClass: result.ok ? undefined : result.failure.class,
-    failureMessage: result.ok ? undefined : result.failure.message,
-    attemptNumber: lead.attemptsTotal + 1,
-    scheduledFor: nowIso(),
-    startedAt: nowIso(),
-    loggedById: actor?.id,
-    loggedByName: actor?.name,
-  });
+  const attempt = db.attempts.find((a) => a.id === attemptId);
+  const conversation = db.conversations.get(conversationId);
 
-  // Only open a session when a transcript is genuinely coming. Opening one
-  // for a failed call leaves it IN_PROGRESS forever, waiting on a webhook
-  // that will never arrive.
-  if (result.ok && producesConversation(strategy.mechanism)) {
-    db.conversations.set(conversationId, {
-      id: conversationId,
-      leadId: lead.id,
-      contactAttemptId: attemptId,
-      promptVersionId: "prompt_qualify_v4",
-      channel: "VOICE",
-      status: "IN_PROGRESS",
-      startedAt: nowIso(),
-      escalated: false,
-      transcript: [],
-      redactionApplied: false,
-      listenUrl: result.listenUrl,
-      controlUrl: result.controlUrl,
-      // The provider has accepted the request; nothing has rung yet. Anything
-      // beyond this is asserted only by a webhook.
-      callStatus: "QUEUED",
-    });
+  if (result.ok) {
+    if (attempt) attempt.providerMessageId = result.providerCallId;
+    if (conversation) {
+      conversation.listenUrl = result.listenUrl;
+      conversation.controlUrl = result.controlUrl;
+    }
+  } else {
+    // The provider refused. Settle both records rather than leaving the
+    // session open — an unsettled session would sit on the board until the
+    // reaper caught it, and would block the next call to this lead via
+    // pre-flight's "already on a call" check.
+    if (attempt) {
+      attempt.outcome = "FAILED";
+      attempt.failureClass = result.failure.class;
+      attempt.failureMessage = result.failure.message;
+      attempt.endedAt = nowIso();
+    }
+    if (conversation) {
+      conversation.status = "COMPLETED";
+      conversation.callStatus = "ENDED";
+      conversation.endedAt = nowIso();
+      conversation.endedReason = "provider-refused-at-placement";
+      conversation.settledBySystem = true;
+    }
   }
+  saveDb();
 
   return {
     ok: result.ok,

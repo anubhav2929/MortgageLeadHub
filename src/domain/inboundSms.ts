@@ -9,6 +9,7 @@
 // conversation thread, so the AI agent and the officer both saw a half
 // conversation.
 
+import { alreadyProcessed } from "@/core/idempotency";
 import {
   classifyInboundMessage,
   looksLikeOptOutPhrase,
@@ -30,7 +31,7 @@ export interface InboundSmsInput {
 
 export type InboundSmsOutcome =
   | { handled: true; intent: string; leadsAffected: number }
-  | { handled: false; reason: "unparseable" | "unknown_number" };
+  | { handled: false; reason: "unparseable" | "unknown_number" | "duplicate" };
 
 /** Every lead whose primary contact uses this number. One person can have
  *  several inquiries over time, and an opt-out applies to all of them. */
@@ -48,6 +49,13 @@ function leadsForPhone(
 }
 
 export async function ingestInboundSms(input: InboundSmsInput): Promise<InboundSmsOutcome> {
+  // Telnyx delivers at-least-once. Without this a retried delivery becomes a
+  // second borrower message in the thread — and, for a STOP, a second
+  // confirmation SMS to someone who has just asked us to stop texting them.
+  if (input.providerMessageId && alreadyProcessed(`sms-in:${input.providerMessageId}`)) {
+    return { handled: false, reason: "duplicate" };
+  }
+
   const phone = normalizePhone(input.from);
   if (!phone || !input.body?.trim()) return { handled: false, reason: "unparseable" };
 

@@ -25,7 +25,7 @@ import { generateToken } from "@/core/auth";
 import { intakeInputSchema } from "@/core/intakeValidation";
 import { classifyReferral, normalizePhone } from "@/core/intakeNormalization";
 import { recordCreditConsent, runGatedSoftPull } from "@/domain/creditActions";
-import { buildConversationBrief, buildLeadThread } from "@/core/conversationThread";
+import { buildBriefForLead } from "@/domain/leadContext";
 import { type VoiceMechanism } from "@/core/callStrategy";
 import { placeOutboundCall } from "@/domain/voiceOrchestrator";
 import { countsAgainstAttemptCap, decideRetry, describeFailure, shouldSuppressChannel, type DeliveryFailure } from "@/core/deliveryStatus";
@@ -2353,14 +2353,9 @@ export async function submitBorrowerMessageAction(publicRef: string, message: st
     goal: lead.goal,
     stateCode: lead.stateCode,
     officerFirstName: officer?.name.split(" ")[0],
-    priorContext:
-      buildConversationBrief(
-        buildLeadThread({
-          attempts: db.attempts.filter((a) => a.leadId === lead.id),
-          conversations: Array.from(db.conversations.values()).filter((c) => c.leadId === lead.id),
-          notes: db.notes.filter((n) => n.leadId === lead.id),
-        })
-      ) || undefined,
+    // Same context the phone agent gets, including the intake form — the
+    // borrower must not have to repeat on chat what they said on a call.
+    priorContext: buildBriefForLead(db, lead) || undefined,
   });
 
   if (!answer.simulated) {
@@ -2472,13 +2467,7 @@ async function deliverOutreachLocked(
   // Everything already said to this borrower, on every channel — so the
   // fourth touch doesn't re-introduce us or contradict what they told us on
   // a different channel. See core/conversationThread.ts.
-  const priorContext = buildConversationBrief(
-    buildLeadThread({
-      attempts: db.attempts.filter((a) => a.leadId === lead.id),
-      conversations: Array.from(db.conversations.values()).filter((c) => c.leadId === lead.id),
-      notes: db.notes.filter((n) => n.leadId === lead.id),
-    })
-  );
+  const priorContext = buildBriefForLead(db, lead);
 
   // VOICE goes through the orchestrator so an automated call is the same
   // conversational agent an officer would get from the Call button — not the

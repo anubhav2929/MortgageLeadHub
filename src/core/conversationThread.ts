@@ -118,6 +118,14 @@ export function describeIntake(intake: IntakeSummary): string {
   return parts.join(" ");
 }
 
+/**
+ * NOTE FOR DOMAIN CALLERS: prefer `buildThreadForLead` / `buildBriefForLead`
+ * in domain/leadContext.ts. `intake` here is optional, and every caller that
+ * forgot it produced an AI surface that opened cold — unaware of what the
+ * borrower had filled in — while looking correct on screen. The helpers
+ * assemble it for you. Use this directly only when you deliberately want the
+ * channel history WITHOUT the intake, as the cadence router does.
+ */
 export function buildLeadThread(input: {
   attempts: ContactAttempt[];
   conversations: ConversationSession[];

@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, ExternalLink, Loader2, Lock, Plug, ShieldAlert, Sparkles } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input, Label } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
-import { INTEGRATIONS, type IntegrationCategory } from "@/core/integrationRegistry";
+import { INTEGRATIONS, isSecretKey, type IntegrationCategory } from "@/core/integrationRegistry";
 import { saveIntegrationKeysAction, testIntegrationAction, type IntegrationStatus } from "@/domain/integrationActions";
 import { formatDateTime } from "@/lib/utils";
 import type { FailedAttemptItem } from "@/domain/queries";
@@ -126,6 +127,7 @@ function IntegrationRow({
   canEdit: boolean;
 }) {
   const { push } = useToast();
+  const router = useRouter();
   const [isSaving, startSave] = useTransition();
   const [testing, setTesting] = useState(false);
   const [values, setValues] = useState<Record<string, string>>(() => {
@@ -149,6 +151,7 @@ function IntegrationRow({
     const result = await testIntegrationAction(def.id);
     setTesting(false);
     push({ title: result.message, tone: result.ok ? "success" : "danger" });
+    router.refresh();
   }
 
   return (
@@ -207,6 +210,7 @@ function IntegrationRow({
                       </Label>
                       <Input
                         id={`int-${f.key}`}
+                        type={isSecretKey(f.key) ? "password" : "text"}
                         value={values[f.key] ?? ""}
                         onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}
                         placeholder={f.placeholder}
@@ -250,6 +254,12 @@ function IntegrationRow({
                   </a>
                 )}
               </div>
+
+              {status?.lastVerified && (
+                <p className={`mt-2 text-xs ${status.lastVerified.ok ? "text-[var(--success)]" : "text-[var(--danger)]"}`}>
+                  Last verified {formatDateTime(status.lastVerified.verifiedAt)} by {status.lastVerified.verifiedByName}: {status.lastVerified.message}
+                </p>
+              )}
 
               {!canEdit && (
                 <p className="mt-2.5 text-[11.5px] text-[var(--muted-foreground)]">

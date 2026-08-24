@@ -38,6 +38,9 @@ export async function MktFooter() {
                 <Link href="/tools" className="text-[13px] text-[var(--mkt-body)] hover:text-[var(--mkt-ink)]">
                   Free calculators
                 </Link>
+                <Link href="/mortgage-refinance" className="text-[13px] text-[var(--mkt-body)] hover:text-[var(--mkt-ink)]">Mortgage refinance guide</Link>
+                <Link href="/cash-out-refinance" className="text-[13px] text-[var(--mkt-body)] hover:text-[var(--mkt-ink)]">Cash-out refinance guide</Link>
+                <Link href="/home-equity-options" className="text-[13px] text-[var(--mkt-body)] hover:text-[var(--mkt-ink)]">Home equity options</Link>
                 <Link href="/#faq" className="text-[13px] text-[var(--mkt-body)] hover:text-[var(--mkt-ink)]">
                   FAQ
                 </Link>

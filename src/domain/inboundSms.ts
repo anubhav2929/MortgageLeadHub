@@ -99,7 +99,7 @@ export async function ingestInboundSms(input: InboundSmsInput): Promise<InboundS
     // refuse it — the suppression we just wrote is what it would refuse on.
     await sendSms({ to: phone, body: OPT_OUT_CONFIRMATION_TEXT, idempotencyKey: newId("idem") });
 
-    saveDb();
+    await saveDb();
     return { handled: true, intent, leadsAffected: matches.length };
   }
 
@@ -121,14 +121,14 @@ export async function ingestInboundSms(input: InboundSmsInput): Promise<InboundS
         });
       }
     }
-    saveDb();
+    await saveDb();
     return { handled: true, intent, leadsAffected: matches.length };
   }
 
   // ---- HELP -----------------------------------------------------------
   if (intent === "HELP") {
     await sendSms({ to: phone, body: HELP_REPLY_TEXT, idempotencyKey: newId("idem") });
-    saveDb();
+    await saveDb();
     return { handled: true, intent, leadsAffected: matches.length };
   }
 
@@ -179,6 +179,6 @@ export async function ingestInboundSms(input: InboundSmsInput): Promise<InboundS
     });
   }
 
-  saveDb();
+  await saveDb();
   return { handled: true, intent, leadsAffected: matches.length };
 }

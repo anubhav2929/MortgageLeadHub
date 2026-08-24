@@ -4,7 +4,7 @@ import { useState } from "react";
 import { CheckCircle2, Send } from "lucide-react";
 import { submitBorrowerMessageAction } from "@/domain/actions";
 
-export function StatusMessageForm({ publicRef }: { publicRef: string }) {
+export function StatusMessageForm({ publicRef, statusToken }: { publicRef: string; statusToken: string }) {
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [sent, setSent] = useState(false);
@@ -15,7 +15,7 @@ export function StatusMessageForm({ publicRef }: { publicRef: string }) {
     if (!trimmed || submitting) return;
     setSubmitting(true);
     setError(null);
-    submitBorrowerMessageAction(publicRef, trimmed).then((result) => {
+    submitBorrowerMessageAction(publicRef, statusToken, trimmed).then((result) => {
       setSubmitting(false);
       if (!result.ok) {
         setError(result.message);

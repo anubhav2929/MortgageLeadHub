@@ -31,7 +31,7 @@ function rootKey(): Buffer {
   const secret = process.env.CREDENTIAL_SECRET;
   if (!secret || secret.length < 16) {
     throw new Error(
-      "CREDENTIAL_SECRET is not set (or is under 16 characters). Set it before saving provider keys — see Admin → Integrations."
+      "CREDENTIAL_SECRET is not set (or is under 16 characters). Use a generated 32-byte value for new installations — see Admin → Integrations."
     );
   }
   return scryptSync(secret, KEY_SALT, 32);
@@ -70,4 +70,19 @@ export function decryptSecret(payload: string): string | null {
 export function maskSecret(plain: string): string {
   if (plain.length <= 8) return "••••••••";
   return `${plain.slice(0, 3)}••••••••${plain.slice(-4)}`;
+}
+
+/** Bearer URLs (live-call controls/listen streams) are credentials too. New
+ * records are encrypted; if secret storage is unavailable they are not
+ * retained at all. Plain HTTPS values remain readable only for migration of
+ * pre-hardening sessions and expire when the provider call ends. */
+export function protectBearerUrl(value?: string): string | undefined {
+  if (!value || !isSecretStorageEnabled()) return undefined;
+  return encryptSecret(value);
+}
+
+export function revealBearerUrl(value?: string): string | undefined {
+  if (!value) return undefined;
+  if (value.startsWith("v1:")) return decryptSecret(value) ?? undefined;
+  return /^https:\/\//.test(value) ? value : undefined;
 }

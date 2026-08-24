@@ -23,7 +23,7 @@ const STATUS_TONE: Record<Task["status"], "neutral" | "success" | "warning"> = {
 
 const TASK_TYPES: TaskType[] = ["FOLLOW_UP", "REVIEW_MISSING_FIELDS", "ACKNOWLEDGE_HANDOFF", "COMPLAINT"];
 
-export function TasksTab({ publicRef, tasks }: { publicRef: string; tasks: Task[] }) {
+export function TasksTab({ publicRef, tasks, canManage }: { publicRef: string; tasks: Task[]; canManage: boolean }) {
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [type, setType] = useState<TaskType>("FOLLOW_UP");
@@ -54,11 +54,13 @@ export function TasksTab({ publicRef, tasks }: { publicRef: string; tasks: Task[
 
   return (
     <div>
-      <div className="mb-4 flex justify-end">
-        <Button size="sm" onClick={() => setOpen(true)}>
-          <Plus className="h-3.5 w-3.5" /> Add task
-        </Button>
-      </div>
+      {canManage && (
+        <div className="mb-4 flex justify-end">
+          <Button size="sm" onClick={() => setOpen(true)}>
+            <Plus className="h-3.5 w-3.5" /> Add task
+          </Button>
+        </div>
+      )}
 
       {tasks.length === 0 ? (
         <Card>
@@ -71,7 +73,7 @@ export function TasksTab({ publicRef, tasks }: { publicRef: string; tasks: Task[
               <div key={t.id} className="flex items-center justify-between gap-3 px-5 py-3.5">
                 <button
                   className="flex items-center gap-2.5 text-left disabled:cursor-default"
-                  disabled={t.status !== "OPEN" || isPending}
+                  disabled={!canManage || t.status !== "OPEN" || isPending}
                   onClick={() => complete(t.id)}
                 >
                   {t.status === "COMPLETED" ? (
@@ -87,7 +89,7 @@ export function TasksTab({ publicRef, tasks }: { publicRef: string; tasks: Task[
                   </div>
                 </button>
                 <div className="flex shrink-0 items-center gap-2">
-                  {t.status === "OPEN" && <SnoozeSelect publicRef={publicRef} taskId={t.id} onDone={() => router.refresh()} />}
+                  {canManage && t.status === "OPEN" && <SnoozeSelect publicRef={publicRef} taskId={t.id} onDone={() => router.refresh()} />}
                   <Badge tone={STATUS_TONE[t.status]}>{t.status}</Badge>
                 </div>
               </div>

@@ -27,8 +27,8 @@ Use these exact URLs in the provider portals:
 
 | Purpose | URL |
 | --- | --- |
-| Telnyx inbound SMS / STOP | `https://www.equityflowgroup.com/api/webhooks/inbound/telnyx?secret=<DELIVERY_WEBHOOK_SECRET>` |
-| Telnyx delivery receipts | `https://www.equityflowgroup.com/api/webhooks/delivery/telnyx?secret=<DELIVERY_WEBHOOK_SECRET>` |
+| Telnyx primary messaging webhook | `https://www.equityflowgroup.com/api/webhooks/telnyx` |
+| Telnyx failover messaging webhook | `https://www.equityflowgroup.com/api/webhooks/telnyx/failover` |
 | Cadence scheduler | `https://www.equityflowgroup.com/api/cron/cadence` |
 
 Vapi needs no URL configured — the app attaches its own callback per call.
@@ -70,9 +70,7 @@ openssl rand -hex 24    # run three times
 | Delivery webhook secret | first generated value |
 | Cron secret | second generated value |
 
-`DELIVERY_WEBHOOK_SECRET` does more than it sounds like: it authenticates
-delivery receipts, **inbound SMS including STOP**, and Telnyx's fetch of call
-audio. Without it, texts send but nothing ever comes back.
+Telnyx TeXML announcement fetches use a generated, short-lived token unique to each call. Messaging callbacks use Telnyx Ed25519 signatures, and Twilio callbacks use `X-Twilio-Signature`; never put reusable secrets in provider callback URLs.
 
 ---
 
@@ -95,10 +93,10 @@ SMS is now live. Everything below is for calls and replies.
 
 ### A4. Inbound replies and STOP
 Portal → **Messaging → your Messaging Profile → Inbound Settings**.
-Set the webhook URL to:
+Set the signed primary webhook URL to:
 
 ```
-https://www.equityflowgroup.com/api/webhooks/inbound/telnyx?secret=<DELIVERY_WEBHOOK_SECRET>
+https://www.equityflowgroup.com/api/webhooks/telnyx
 ```
 
 Without this, a borrower's STOP reaches the carrier but never reaches us — the
@@ -106,10 +104,10 @@ carrier blocks its own channel while the cadence keeps calling and emailing.
 That is the TCPA exposure ADR-0007 exists to close.
 
 ### A5. Delivery receipts
-Same profile, the **delivery/status** webhook:
+Set the profile **failover** webhook to:
 
 ```
-https://www.equityflowgroup.com/api/webhooks/delivery/telnyx?secret=<DELIVERY_WEBHOOK_SECRET>
+https://www.equityflowgroup.com/api/webhooks/telnyx/failover
 ```
 
 Without it every text stays "sent" forever, and a number that silently rejects
@@ -300,8 +298,10 @@ ephemeral file storage.
 | `TELNYX_API_KEY`, `TELNYX_PHONE_NUMBER` | real SMS |
 | `VAPI_API_KEY`, `VAPI_PHONE_NUMBER_ID`, `VAPI_WEBHOOK_SECRET` | real AI calls |
 | `APP_URL` | callbacks can reach you |
-| `DELIVERY_WEBHOOK_SECRET` | receipts **and** inbound STOP |
+| `DELIVERY_WEBHOOK_SECRET` | legacy callback compatibility only; new provider routes use native signatures |
 | `CRON_SECRET` + a scheduler | anything automatic at all |
+
+The linked Vercel project is currently on the Hobby plan, which permits only daily cron schedules. Keep `vercel.json` free of sub-daily schedules on that plan and configure an external scheduler to call `/api/cron/process-webhooks` every minute and `/api/cron/cadence` every five minutes with `Authorization: Bearer <CRON_SECRET>`. A Vercel Pro project may register those schedules directly instead.
 
 Add `NVIDIA_API_KEY` (free) so messages are written for the borrower rather
 than from a template, and `RESEND_API_KEY` for email.

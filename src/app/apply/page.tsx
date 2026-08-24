@@ -1,6 +1,9 @@
 import { LogoMark } from "@/components/brand/logo";
 import { IntakeWizard } from "@/components/intake/intake-wizard";
 import type { LoanIntent } from "@/domain/types";
+import { seoMetadata } from "@/lib/seo";
+
+export const metadata = seoMetadata({ title: "Mortgage Refinance & Home Equity Inquiry", description: "Tell Equity Flow Group what you want to accomplish and choose how a licensed loan officer may contact you. This is an inquiry, not a loan application.", path: "/apply" });
 
 interface PageProps {
   searchParams: Promise<{ intent?: string; stateCode?: string; estimatedValue?: string }>;

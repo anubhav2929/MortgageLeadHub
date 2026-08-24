@@ -6,9 +6,12 @@ import { ReadMore } from "@/components/ui/read-more";
 import { EmptyState } from "@/components/ui/empty-state";
 import { RunDiscoveryButton } from "@/components/discovery/run-discovery-button";
 import { SignalActions } from "@/components/discovery/signal-actions";
+import { RedditConnectionControls } from "@/components/discovery/reddit-connection-controls";
 import { can } from "@/core/rbac";
 import { listSignals } from "@/domain/queries";
 import { getCurrentUser } from "@/domain/session";
+import { getDb } from "@/domain/store";
+import { getConfigValue } from "@/lib/runtimeConfig";
 import { formatRelative } from "@/lib/utils";
 import type { DiscoveredSignal } from "@/domain/types";
 
@@ -42,6 +45,10 @@ export default async function DiscoveryPage() {
   }
 
   const signals = await listSignals();
+  const db = await getDb();
+  const commercialApproved = (await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) === "true";
+  const redditConnection = Array.from(db.redditConnections.values()).find((item) => !item.revokedAt);
+  const canPublish = commercialApproved && Boolean(redditConnection) && db.config.featureFlags?.redditPosting === true;
   // Highest intent first. A reviewer works top-down and rarely reaches the
   // bottom of a 50-item queue, so insertion order silently decides which
   // leads get seen — it should be the score that decides.
@@ -53,11 +60,12 @@ export default async function DiscoveryPage() {
       <PageHeader
         title="Lead Discovery"
         description="Public posts expressing refinance or equity-buyout intent, classified and queued for review — never auto-contacted."
-        actions={<RunDiscoveryButton />}
+        actions={<div className="flex gap-2"><RedditConnectionControls accountName={redditConnection?.accountName} approved={commercialApproved} /><RunDiscoveryButton /></div>}
       />
 
       <div className="mb-5 flex items-center gap-2">
-        <Badge tone="success">Live — public Reddit archive</Badge>
+        <Badge tone={commercialApproved ? "success" : "warning"}>{commercialApproved ? "Commercial approval recorded" : "Demo only — approval pending"}</Badge>
+        {redditConnection && <Badge tone="neutral">Connected u/{redditConnection.accountName}</Badge>}
         <Badge tone="neutral">Last 14 days</Badge>
         <Badge tone="neutral">{newSignals.length} awaiting review</Badge>
       </div>
@@ -147,7 +155,7 @@ export default async function DiscoveryPage() {
                     )}
                   </div>
                   {signal.status === "NEW" && (
-                    <SignalActions signalId={signal.id} canPromote={user.role === "ADMIN"} />
+                    <SignalActions signalId={signal.id} canPromote={user.role === "ADMIN"} canPublish={canPublish} />
                   )}
                 </div>
               </CardContent>

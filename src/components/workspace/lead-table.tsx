@@ -4,13 +4,13 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState, useTransition } from "react";
 import { motion } from "framer-motion";
-import { AlertCircle, ArrowDown, ArrowUp, Flame, Trash2, X } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, Flame, ListPlus, PhoneCall, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Select } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
-import { assignOfficerAction, deleteLeadAction } from "@/domain/actions";
+import { assignOfficerAction, createDialingSessionAction, deleteLeadAction } from "@/domain/actions";
 import { STATE_LABELS, STATE_TONE } from "@/core/stateMachine";
 import { formatRelative } from "@/lib/utils";
 import type { LeadListItem } from "@/domain/queries";
@@ -62,17 +62,24 @@ function BulkActionBar({
   selectedIds,
   officers,
   canDelete,
+  canAssign,
+  canCall,
+  canAutomateCalls,
   onDone,
 }: {
   selectedIds: string[];
   officers: Officer[];
   canDelete: boolean;
+  canAssign: boolean;
+  canCall: boolean;
+  canAutomateCalls: boolean;
   onDone: () => void;
 }) {
   const [officerId, setOfficerId] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isPending, startTransition] = useTransition();
   const { push } = useToast();
+  const router = useRouter();
 
   function removeSelected() {
     startTransition(async () => {
@@ -103,20 +110,37 @@ function BulkActionBar({
     });
   }
 
+  function createCallList(mode: "MANUAL_NEXT" | "AUTO_SEQUENTIAL") {
+    startTransition(async () => {
+      const result = await createDialingSessionAction({ publicRefs: selectedIds, mode });
+      push({ title: result.message, tone: result.ok ? "success" : "danger" });
+      if (result.ok) {
+        onDone();
+        router.push("/workspace/calls");
+      }
+    });
+  }
+
   return (
     <div className="mb-3 flex flex-wrap items-center gap-2.5 rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--primary-tint)] px-3.5 py-2.5">
       <span className="text-[13px] font-medium text-[var(--foreground)]">{selectedIds.length} selected</span>
-      <Select value={officerId} onChange={(e) => setOfficerId(e.target.value)} className="h-8 w-auto min-w-40 text-[13px]">
-        <option value="">Assign to officer…</option>
-        {officers.map((o) => (
-          <option key={o.id} value={o.id}>
-            {o.name}
-          </option>
-        ))}
-      </Select>
-      <Button size="sm" className="h-8" loading={isPending} disabled={!officerId} onClick={assign}>
-        Assign
-      </Button>
+      {canAssign && <>
+        <Select value={officerId} onChange={(e) => setOfficerId(e.target.value)} className="h-8 w-auto min-w-40 text-[13px]">
+          <option value="">Assign to officer…</option>
+          {officers.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+        </Select>
+        <Button size="sm" className="h-8" loading={isPending} disabled={!officerId} onClick={assign}>Assign</Button>
+      </>}
+      {canCall && (
+        <Button size="sm" className="h-8" loading={isPending} onClick={() => createCallList("MANUAL_NEXT")}>
+          <ListPlus className="h-3.5 w-3.5" /> Create back-to-back call list
+        </Button>
+      )}
+      {canAutomateCalls && (
+        <Button size="sm" variant="secondary" className="h-8" loading={isPending} onClick={() => createCallList("AUTO_SEQUENTIAL")}>
+          <PhoneCall className="h-3.5 w-3.5" /> Start automatic list
+        </Button>
+      )}
       {canDelete &&
         (confirmDelete ? (
           <span className="flex items-center gap-2 rounded-[var(--radius-sm)] bg-[var(--danger-tint)] px-2 py-1">
@@ -142,10 +166,11 @@ function BulkActionBar({
   );
 }
 
-export function LeadTable({ leads, isAdmin, officers }: { leads: LeadListItem[]; isAdmin?: boolean; officers?: Officer[] }) {
+export function LeadTable({ leads, isAdmin, officers, canCall }: { leads: LeadListItem[]; isAdmin?: boolean; officers?: Officer[]; canCall?: boolean }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const router = useRouter();
   const canBulkAssign = isAdmin && officers && officers.length > 0;
+  const canSelect = Boolean(canBulkAssign || canCall);
 
   function toggle(publicRef: string) {
     setSelected((prev) => {
@@ -167,11 +192,14 @@ export function LeadTable({ leads, isAdmin, officers }: { leads: LeadListItem[];
 
   return (
     <div>
-      {canBulkAssign && selected.size > 0 && (
+      {canSelect && selected.size > 0 && (
         <BulkActionBar
           selectedIds={Array.from(selected)}
-          officers={officers}
+          officers={officers ?? []}
           canDelete={Boolean(isAdmin)}
+          canAssign={Boolean(canBulkAssign)}
+          canCall={Boolean(canCall)}
+          canAutomateCalls={Boolean(isAdmin && canCall)}
           onDone={clearSelection}
         />
       )}
@@ -179,9 +207,9 @@ export function LeadTable({ leads, isAdmin, officers }: { leads: LeadListItem[];
         {/* Desktop / tablet: full grid table */}
         <div className="hidden sm:block">
           <div
-            className={`grid ${canBulkAssign ? "grid-cols-[auto_1.5fr_0.9fr_0.7fr_1fr_0.9fr_1fr]" : "grid-cols-[1.5fr_0.9fr_0.7fr_1fr_0.9fr_1fr]"} gap-3 border-b border-[var(--border)] bg-[var(--background)] px-4 py-2.5 text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]`}
+            className={`grid ${canSelect ? "grid-cols-[auto_1.5fr_0.9fr_0.7fr_1fr_0.9fr_1fr]" : "grid-cols-[1.5fr_0.9fr_0.7fr_1fr_0.9fr_1fr]"} gap-3 border-b border-[var(--border)] bg-[var(--background)] px-4 py-2.5 text-[11px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]`}
           >
-            {canBulkAssign && (
+            {canSelect && (
               <input
                 type="checkbox"
                 checked={selected.size === leads.length && leads.length > 0}
@@ -201,9 +229,9 @@ export function LeadTable({ leads, isAdmin, officers }: { leads: LeadListItem[];
             {leads.map((lead, i) => (
               <motion.div key={lead.id} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, delay: Math.min(i * 0.025, 0.3) }}>
                 <div
-                  className={`grid ${canBulkAssign ? "grid-cols-[auto_1.5fr_0.9fr_0.7fr_1fr_0.9fr_1fr]" : "grid-cols-[1.5fr_0.9fr_0.7fr_1fr_0.9fr_1fr]"} items-center gap-3 border-b border-[var(--border)] px-4 py-3 text-sm transition-colors last:border-b-0 hover:bg-[var(--background)]`}
+                  className={`grid ${canSelect ? "grid-cols-[auto_1.5fr_0.9fr_0.7fr_1fr_0.9fr_1fr]" : "grid-cols-[1.5fr_0.9fr_0.7fr_1fr_0.9fr_1fr]"} items-center gap-3 border-b border-[var(--border)] px-4 py-3 text-sm transition-colors last:border-b-0 hover:bg-[var(--background)]`}
                 >
-                  {canBulkAssign && (
+                  {canSelect && (
                     <input
                       type="checkbox"
                       checked={selected.has(lead.publicRef)}
@@ -248,7 +276,9 @@ export function LeadTable({ leads, isAdmin, officers }: { leads: LeadListItem[];
         <div className="divide-y divide-[var(--border)] sm:hidden">
           {leads.map((lead, i) => (
             <motion.div key={lead.id} initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2, delay: Math.min(i * 0.025, 0.3) }}>
-              <Link href={`/workspace/leads/${lead.publicRef}`} className="block px-4 py-3.5 transition-colors hover:bg-[var(--background)]">
+              <div className="flex items-start gap-3 px-4 py-3.5 transition-colors hover:bg-[var(--background)]">
+                {canSelect && <input type="checkbox" checked={selected.has(lead.publicRef)} onChange={() => toggle(lead.publicRef)} aria-label={`Select ${lead.fullName}`} className="mt-1 h-4 w-4 shrink-0" />}
+                <Link href={`/workspace/leads/${lead.publicRef}`} className="min-w-0 flex-1">
                 <div className="flex items-start justify-between gap-2">
                   <span className="flex min-w-0 items-center gap-1.5">
                     {lead.slaBreached && <AlertCircle className="h-3.5 w-3.5 shrink-0 text-[var(--danger)]" />}
@@ -274,7 +304,8 @@ export function LeadTable({ leads, isAdmin, officers }: { leads: LeadListItem[];
                   </div>
                   <SlaCell lead={lead} />
                 </div>
-              </Link>
+                </Link>
+              </div>
             </motion.div>
           ))}
         </div>

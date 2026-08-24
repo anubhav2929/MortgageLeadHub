@@ -8,6 +8,7 @@ import { LogoMark } from "@/components/brand/logo";
 const LINKS = [
   { href: "/#how-it-works", label: "How it works" },
   { href: "/tools", label: "Calculators" },
+  { href: "/mortgage-resources", label: "Resources" },
   { href: "/#faq", label: "FAQ" },
 ];
 

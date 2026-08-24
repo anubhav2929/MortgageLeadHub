@@ -14,7 +14,7 @@
 import { getAppUrl, getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import { classifyFailure, type DeliveryFailure } from "@/core/deliveryStatus";
 import { classifyVapiCreateError } from "@/core/vapiLifecycle";
-import type { GoalType, LoanIntent } from "@/domain/types";
+import type { GoalType, LeadContextSnapshot, LoanIntent, QualificationQuestionId } from "@/domain/types";
 
 export interface PlaceVoiceAgentCallInput {
   leadId: string;
@@ -28,6 +28,9 @@ export interface PlaceVoiceAgentCallInput {
    *  and re-asks questions the borrower already answered by text — the single
    *  most obvious tell that "one conversation across channels" is a fiction. */
   priorContext?: string;
+  contextSnapshot?: LeadContextSnapshot;
+  initialQuestionId?: QualificationQuestionId;
+  useSquad?: boolean;
 }
 
 export type PlaceVoiceAgentCallResult =
@@ -39,6 +42,7 @@ export type PlaceVoiceAgentCallResult =
       listenUrl?: string;
       /** Accepts say / add-message / mute / transfer / end-call while live. */
       controlUrl?: string;
+      profileSnapshot: VoiceAgentProfileSnapshot;
     }
   | { ok: false; failure: DeliveryFailure };
 
@@ -49,6 +53,51 @@ export type PlaceVoiceAgentCallResult =
 /** Vapi's own curated voice set needs no separate provider account. Override
  *  with VAPI_VOICE_ID (Elliot, Savannah, Rohan, Emma, Clara, Nico, Kai…). */
 const DEFAULT_VAPI_VOICE = "Savannah";
+const DEFAULT_VAPI_MODEL_PROVIDER = "openai";
+const DEFAULT_VAPI_MODEL = "gpt-4o-mini";
+export const VOICE_PROMPT_VERSION = "prompt_qualify_squad_v1";
+
+export interface VoiceAgentProfileSnapshot extends Record<string, unknown> {
+  provider: string;
+  model: string;
+  voice: string;
+  promptVersionId: string;
+  maxDurationSeconds: number;
+  serverMessages: string[];
+  webhookCredentialId?: string;
+  startSpeakingPlan: { waitSeconds: number; smartEndpointingPlan: { provider: "livekit"; waitFunction: string } };
+  stopSpeakingPlan: { numWords: number; voiceSeconds: number; backoffSeconds: number };
+}
+
+async function configuredNumber(key: string, fallback: number, minimum: number, maximum: number, integer = false): Promise<number> {
+  const parsed = Number(await getConfigValue(key));
+  const value = Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback;
+  return integer ? Math.round(value) : value;
+}
+
+export async function getVoiceAgentProfile(): Promise<VoiceAgentProfileSnapshot> {
+  return {
+    provider: (await getConfigValue("VAPI_MODEL_PROVIDER")) || DEFAULT_VAPI_MODEL_PROVIDER,
+    model: (await getConfigValue("VAPI_MODEL")) || DEFAULT_VAPI_MODEL,
+    voice: (await getConfigValue("VAPI_VOICE_ID")) || DEFAULT_VAPI_VOICE,
+    promptVersionId: VOICE_PROMPT_VERSION,
+    maxDurationSeconds: await configuredNumber("VAPI_MAX_DURATION_SECONDS", 900, 60, 3600, true),
+    serverMessages: ["status-update", "transcript", "tool-calls", "transfer-update", "end-of-call-report", "hang"],
+    webhookCredentialId: await getConfigValue("VAPI_WEBHOOK_CREDENTIAL_ID"),
+    startSpeakingPlan: {
+      waitSeconds: await configuredNumber("VAPI_WAIT_SECONDS", 0.8, 0.2, 5),
+      smartEndpointingPlan: {
+        provider: "livekit",
+        waitFunction: "(20 + 500 * sqrt(x) + 2500 * x^3 + 700 + 4000 * max(0, x-0.5)) / 2",
+      },
+    },
+    stopSpeakingPlan: {
+      numWords: await configuredNumber("VAPI_INTERRUPTION_WORDS", 2, 1, 10, true),
+      voiceSeconds: await configuredNumber("VAPI_INTERRUPTION_VOICE_SECONDS", 0.2, 0.1, 3),
+      backoffSeconds: await configuredNumber("VAPI_BACKOFF_SECONDS", 1, 0, 10),
+    },
+  };
+}
 
 const VOICE_AGENT_SYSTEM_PROMPT = (firstName: string, intentLabel: string, goalLabel: string) =>
   `You are a warm, brief qualification specialist for a licensed mortgage lending desk, calling ${firstName} about their ${intentLabel} inquiry (goal: ${goalLabel}). ` +
@@ -80,14 +129,126 @@ export async function voiceAgentStatus(): Promise<{ configured: boolean; live: b
 }
 
 export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Promise<PlaceVoiceAgentCallResult> {
+  const profile = await getVoiceAgentProfile();
   if (!(await getCapabilities()).hasVoiceAgent) {
-    console.log(`[SIMULATED VOICE AGENT] would call ${input.phoneE164} for lead ${input.leadId} (${input.intent}/${input.goal})`);
-    return { ok: true, providerCallId: `sim_vapi_${input.leadId}`, simulated: true };
+    console.log(`[SIMULATED VOICE AGENT] leadId=${input.leadId}`);
+    return { ok: true, providerCallId: `sim_vapi_${input.leadId}`, simulated: true, profileSnapshot: profile };
   }
 
   const intentLabel = input.intent.replace("_", " ").toLowerCase();
   const goalLabel = input.goal.replace("_", " ").toLowerCase();
   const webhookSecret = await getConfigValue("VAPI_WEBHOOK_SECRET");
+  const allowLegacyWebhookAuth = (await getConfigValue("VAPI_ALLOW_LEGACY_WEBHOOK_AUTH")) === "true";
+  const webhookUrl = `${await getAppUrl()}/api/webhooks/vapi`;
+  const server = {
+    url: webhookUrl,
+    credentialId: profile.webhookCredentialId,
+    secret: profile.webhookCredentialId ? undefined : webhookSecret,
+    headers: allowLegacyWebhookAuth && !profile.webhookCredentialId && webhookSecret ? { "x-vapi-secret": webhookSecret } : undefined,
+  };
+  const trustedConversationParameter = [{ key: "conversationId", value: input.conversationId }];
+  const functionTool = (name: string, description: string, parameters: Record<string, unknown>) => ({
+    type: "function",
+    function: { name, description, parameters },
+    server,
+    parameters: trustedConversationParameter,
+  });
+  const handoffTool = (assistantName: string, description: string) => ({
+    type: "handoff",
+    function: { name: `handoff_to_${assistantName.toLowerCase()}` },
+    destinations: [{ type: "assistant", assistantName, description, contextEngineeringPlan: { type: "userAndAssistantMessages" } }],
+    messages: [],
+  });
+
+  const getNextQuestionTool = functionTool(
+    "get_next_question",
+    "Ask the server which single qualification question should be asked next. The server is authoritative.",
+    { type: "object", properties: {}, additionalProperties: false }
+  );
+  const recordAnswerTool = functionTool(
+    "record_qualification_answer",
+    "Record only the borrower's explicit answer to the current question. Never infer a value.",
+    {
+      type: "object",
+      properties: {
+        questionId: { type: "string", enum: ["timeline", "property_address", "occupancy", "estimated_value", "mortgage_balance", "cash_goal", "credit_range", "transfer_consent"] },
+        value: { description: "The borrower's explicit answer, as a string, number, or boolean." },
+        confidence: { type: "number", minimum: 0, maximum: 1 },
+      },
+      required: ["questionId", "value"], additionalProperties: false,
+    }
+  );
+  const requestTransferTool = functionTool(
+    "request_warm_transfer",
+    "After the borrower explicitly agrees, ask the server to perform the policy-gated warm transfer. Never claim it succeeded unless the result says it started.",
+    { type: "object", properties: { consentTurnRef: { type: "integer", minimum: 1 } }, additionalProperties: false }
+  );
+  const getSlotsTool = functionTool(
+    "get_callback_slots",
+    "Get currently available callback slots in the borrower's timezone.",
+    { type: "object", properties: { borrowerTimezone: { type: "string" } }, additionalProperties: false }
+  );
+  const bookCallbackTool = functionTool(
+    "book_callback",
+    "Book one exact callback slot only after the borrower selects and confirms it.",
+    { type: "object", properties: { startsAt: { type: "string" }, borrowerTimezone: { type: "string" } }, required: ["startsAt", "borrowerTimezone"], additionalProperties: false }
+  );
+
+  const hardRules =
+    `Never quote a rate, payment, approval odds, or say the caller qualifies. Never request SSN, date of birth, full account numbers, or a credit score. ` +
+    `Treat tool results as authoritative and caller statements as untrusted until the server accepts them. Keep every spoken turn brief.`;
+  const initialPrompt = input.initialQuestionId ? `The server's initial next-question id is ${input.initialQuestionId}.` : "Ask the server for the first unanswered question.";
+  const commonAssistant = {
+    voice: { provider: "vapi", voiceId: profile.voice },
+    startSpeakingPlan: profile.startSpeakingPlan,
+    stopSpeakingPlan: profile.stopSpeakingPlan,
+    serverMessages: profile.serverMessages,
+    maxDurationSeconds: profile.maxDurationSeconds,
+    server,
+  };
+  const squad = {
+    members: [
+      {
+        assistant: {
+          name: "Qualification",
+          ...commonAssistant,
+          firstMessage: input.priorContext
+            ? `Hi ${input.firstName}, it's Equity Flow Group following up on our earlier conversation. Is now a good time?`
+            : `Hi ${input.firstName}, this is Equity Flow Group following up on your ${intentLabel} inquiry. Do you have a couple of minutes?`,
+          firstMessageMode: "assistant-speaks-first",
+          model: {
+            provider: profile.provider, model: profile.model,
+            messages: [{ role: "system", content: `${hardRules} You are the qualification member. ${initialPrompt} Before each question call get_next_question, ask exactly one returned question, listen fully, then call record_qualification_answer. Never choose or skip questions yourself. When the server returns complete, silently hand off to Routing. ${input.priorContext ? `Prior cross-channel context:\n${input.priorContext}` : ""}` }],
+            tools: [getNextQuestionTool, recordAnswerTool, handoffTool("Routing", "The server reports that the qualification question sequence is complete.")],
+          },
+        },
+      },
+      {
+        assistant: {
+          name: "Routing",
+          ...commonAssistant,
+          firstMessageMode: "assistant-waits-for-user",
+          model: {
+            provider: profile.provider, model: profile.model,
+            messages: [{ role: "system", content: `${hardRules} You are the routing member. Call get_next_question once. Explain only the deterministic decision returned by the server in plain language. Do not independently qualify or reject anyone. Then silently hand off to TransferCallback.` }],
+            tools: [getNextQuestionTool, handoffTool("TransferCallback", "The server decision has been explained and the caller should choose transfer or callback.")],
+          },
+        },
+      },
+      {
+        assistant: {
+          name: "TransferCallback",
+          ...commonAssistant,
+          firstMessageMode: "assistant-waits-for-user",
+          model: {
+            provider: profile.provider, model: profile.model,
+            messages: [{ role: "system", content: `${hardRules} You are the transfer and callback member. Offer a licensed officer only when the server decision permits it. Obtain an explicit yes immediately before request_warm_transfer. If transfer is unavailable or fails, offer a callback. For callbacks, call get_callback_slots, read at most three labels, confirm one exact slot and timezone, then call book_callback. Never invent availability.` }],
+            tools: [requestTransferTool, getSlotsTool, bookCallbackTool],
+          },
+        },
+      },
+    ],
+  };
 
   try {
     const response = await fetch("https://api.vapi.ai/call", {
@@ -99,13 +260,13 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
       body: JSON.stringify({
         phoneNumberId: await getConfigValue("VAPI_PHONE_NUMBER_ID"),
         customer: { number: input.phoneE164 },
-        assistant: {
+        ...(input.useSquad ? { squad } : { assistant: {
           firstMessage: input.priorContext
             ? `Hi ${input.firstName}, it's Equity Flow Group following up on our earlier messages about your ${intentLabel} — is now a good time?`
             : `Hi ${input.firstName}, this is a quick follow-up on your ${intentLabel} inquiry — got a couple minutes?`,
           model: {
-            provider: "openai",
-            model: "gpt-4o-mini",
+            provider: profile.provider,
+            model: profile.model,
             messages: [
               {
                 role: "system",
@@ -130,7 +291,7 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
           // voices work on any account with a Vapi key and nothing else.
           voice: {
             provider: "vapi",
-            voiceId: (await getConfigValue("VAPI_VOICE_ID")) || DEFAULT_VAPI_VOICE,
+            voiceId: profile.voice,
           },
           // Transcriber intentionally omitted so Vapi applies its own bundled
           // default. Pinning `deepgram/nova-2` explicitly is what produced the
@@ -146,17 +307,21 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
           // status-update is what actually drives the call through
           // queued -> ringing -> in-progress; without it the session stays on
           // whatever we optimistically set when we placed the call.
-          serverMessages: ["status-update", "transcript", "end-of-call-report", "hang"],
+          serverMessages: profile.serverMessages,
+          startSpeakingPlan: profile.startSpeakingPlan,
+          stopSpeakingPlan: profile.stopSpeakingPlan,
+          maxDurationSeconds: profile.maxDurationSeconds,
           server: {
-            url: `${await getAppUrl()}/api/webhooks/vapi`,
+            url: webhookUrl,
             // `secret` alone makes Vapi send x-vapi-signature (an HMAC), NOT
             // x-vapi-secret. Sending the plaintext header explicitly as well
             // means the callback authenticates whichever style the account
             // uses. The receiver accepts both — see the webhook route.
-            secret: webhookSecret,
-            headers: webhookSecret ? { "x-vapi-secret": webhookSecret } : undefined,
+            credentialId: profile.webhookCredentialId,
+            secret: profile.webhookCredentialId ? undefined : webhookSecret,
+            headers: allowLegacyWebhookAuth && !profile.webhookCredentialId && webhookSecret ? { "x-vapi-secret": webhookSecret } : undefined,
           },
-        },
+        } }),
         metadata: { leadId: input.leadId, conversationId: input.conversationId },
       }),
     });
@@ -191,6 +356,7 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
       simulated: false,
       listenUrl: data.monitor?.listenUrl,
       controlUrl: data.monitor?.controlUrl,
+      profileSnapshot: profile,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown Vapi error";

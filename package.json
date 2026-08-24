@@ -4,14 +4,20 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/prebuild-production.mjs && next build",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "verify": "npm run typecheck && npm run lint && npm run test && npm run build"
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "db:migrate:check": "node scripts/db-migrate.mjs",
+    "db:migrate:apply": "node scripts/db-migrate.mjs --apply",
+    "db:backup": "node scripts/backup-database.mjs",
+    "db:backup:verify": "node scripts/backup-database.mjs --verify",
+    "db:snapshot:inspect": "node scripts/migrate-legacy-snapshot.mjs",
+    "db:snapshot:migrate": "node scripts/migrate-legacy-snapshot.mjs --apply"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
@@ -23,7 +29,7 @@
     "framer-motion": "^12.42.2",
     "lucide-react": "^1.27.0",
     "nanoid": "^6.0.0",
-    "next": "16.2.12",
+    "next": "^16.3.2",
     "pg": "^8.22.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
@@ -39,7 +45,7 @@
     "@types/react-dom": "^19",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9",
-    "eslint-config-next": "16.2.12",
+    "eslint-config-next": "^16.3.2",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.10"

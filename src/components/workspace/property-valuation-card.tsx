@@ -20,6 +20,20 @@ function Modeled({ valuation, field }: { valuation: PropertyValuationResult; fie
 
 export function PropertyValuationCard({ valuation }: { valuation: PropertyValuationResult }) {
   const modeledCount = Object.values(valuation.provenance).filter((p) => p === "MODELED").length;
+  if (valuation.method === "INSUFFICIENT_EVIDENCE") {
+    return (
+      <Card>
+        <CardHeader><CardTitle className="flex items-center gap-1.5"><Home className="h-3.5 w-3.5" /> Property valuation</CardTitle></CardHeader>
+        <CardContent className="space-y-2">
+          <p className="font-medium text-[var(--foreground)]">Insufficient evidence</p>
+          <p className="text-xs text-[var(--muted-foreground)]">
+            The approved public-record chain and RentCast fallback did not produce enough evidence. No simulated value was generated.
+          </p>
+          <p className="text-[11px] text-[var(--muted-foreground)]">{valuation.disclaimer}</p>
+        </CardContent>
+      </Card>
+    );
+  }
   return (
     <Card>
       <CardHeader>
@@ -77,10 +91,11 @@ export function PropertyValuationCard({ valuation }: { valuation: PropertyValuat
           </div>
         </div>
         <p className="pt-1 text-[11px] text-[var(--muted-foreground)]">
-          {valuation.simulated
-            ? "Every figure here is modelled — no street address on file yet, or no AVM vendor connected. Set PROPERTY_DATA_API_KEY (RentCast) and collect a street address to go live."
-            : `Valuation from RentCast. ${modeledCount} figure${modeledCount === 1 ? "" : "s"} marked "est" are modelled by us — no AVM vendor publishes outstanding mortgage balances, so balance, LTV, and equity are derived from an assumed LTV.`}
+          {valuation.method === "OPEN_EVIDENCE"
+            ? `Deterministically weighted approved evidence (${valuation.confidence?.toLowerCase()} confidence). ${modeledCount} field${modeledCount === 1 ? "" : "s"} marked "est" were derived rather than supplied by a source.`
+            : `Valuation from RentCast. ${modeledCount} field${modeledCount === 1 ? "" : "s"} marked "est" were derived rather than supplied by the provider.`}
         </p>
+        {valuation.disclaimer && <p className="text-[11px] text-[var(--muted-foreground)]">{valuation.disclaimer}</p>}
       </CardContent>
     </Card>
   );

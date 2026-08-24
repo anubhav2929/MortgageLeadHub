@@ -27,6 +27,7 @@
 // Credentials resolve per call, so a key saved in Admin → Integrations works
 // on the next call with no redeploy.
 
+import { createHash } from "node:crypto";
 import { nanoid } from "nanoid";
 import { getAppUrl, getConfigValue } from "@/lib/runtimeConfig";
 import { classifyFailure } from "@/core/deliveryStatus";
@@ -47,10 +48,8 @@ function escapeXml(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-async function statusCallbackUrl(provider: "twilio" | "telnyx"): Promise<string | undefined> {
-  const secret = await getConfigValue("DELIVERY_WEBHOOK_SECRET");
-  if (!secret) return undefined;
-  return `${await getAppUrl()}/api/webhooks/delivery/${provider}?secret=${encodeURIComponent(secret)}`;
+async function twilioStatusCallbackUrl(): Promise<string> {
+  return `${await getAppUrl()}/api/webhooks/delivery/twilio`;
 }
 
 /**
@@ -59,9 +58,6 @@ async function statusCallbackUrl(provider: "twilio" | "telnyx"): Promise<string 
  * once, so without a sweep it grows forever.
  */
 async function createAnnouncementUrl(text: string): Promise<string | null> {
-  const secret = await getConfigValue("DELIVERY_WEBHOOK_SECRET");
-  if (!secret) return null;
-
   const db = await getDb();
   const now = Date.now();
   for (const [key, a] of db.voiceAnnouncements) {
@@ -69,15 +65,17 @@ async function createAnnouncementUrl(text: string): Promise<string | null> {
   }
 
   const id = nanoid(24);
+  const accessToken = nanoid(40);
   db.voiceAnnouncements.set(id, {
     id,
     text,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + ANNOUNCEMENT_TTL_MS).toISOString(),
+    accessTokenHash: createHash("sha256").update(accessToken, "utf8").digest("hex"),
   });
-  saveDb();
+  await saveDb();
 
-  return `${await getAppUrl()}/api/texml/announcement/${id}?secret=${encodeURIComponent(secret)}`;
+  return `${await getAppUrl()}/api/texml/announcement/${id}?token=${encodeURIComponent(accessToken)}`;
 }
 
 async function placeViaTelnyx(
@@ -86,20 +84,8 @@ async function placeViaTelnyx(
 ): Promise<AdapterResult> {
   try {
     const url = await createAnnouncementUrl(input.message);
-    if (!url) {
-      // Without the shared secret the TeXML route cannot authenticate the
-      // carrier's fetch, so the call would connect to silence. Failing here
-      // with a nameable cause beats dialling someone and saying nothing.
-      return adapterFailure(
-        classifyFailure(
-          "telnyx",
-          "MISSING_WEBHOOK_SECRET",
-          "Set DELIVERY_WEBHOOK_SECRET — Telnyx voice needs it to fetch the call script."
-        )
-      );
-    }
+    if (!url) return adapterFailure(classifyFailure("telnyx", "ANNOUNCEMENT_UNAVAILABLE", "Could not create the single-use call script."));
 
-    const statusCallback = await statusCallbackUrl("telnyx");
     const res = await fetch(`https://api.telnyx.com/v2/texml/Accounts/${encodeURIComponent(cfg.accountSid)}/Calls`, {
       method: "POST",
       headers: { Authorization: `Bearer ${cfg.apiKey}`, "Content-Type": "application/json" },
@@ -108,14 +94,6 @@ async function placeViaTelnyx(
         From: cfg.from,
         ApplicationSid: cfg.appId,
         Url: url,
-        ...(statusCallback
-          ? {
-              StatusCallback: statusCallback,
-              // Space-separated, per Telnyx's TeXML spec — not an array.
-              StatusCallbackEvent: "initiated ringing answered completed",
-              StatusCallbackMethod: "POST",
-            }
-          : {}),
       }),
     });
 
@@ -143,7 +121,7 @@ async function placeViaTwilio(
     // resolves — we'd never learn whether it was answered, went to voicemail,
     // or hit a busy signal. statusCallbackEvent must be listed explicitly;
     // Twilio only sends "completed" by default.
-    const statusCallback = await statusCallbackUrl("twilio");
+    const statusCallback = await twilioStatusCallbackUrl();
     const call = await client.calls.create({
       to: input.to,
       from: cfg.from,
@@ -185,7 +163,7 @@ export async function placeCall(input: PlaceCallInput): Promise<AdapterResult> {
     return placeViaTelnyx(input, { apiKey: telnyxKey, from: telnyxFrom, accountSid, appId });
   }
 
-  console.log(`[SIMULATED CALL] to=${input.to} message="${input.message}"`);
+  console.log(`[SIMULATED CALL] idempotencyKey=${input.idempotencyKey}`);
   return adapterSuccess(`sim_call_${input.idempotencyKey}`, true);
 }
 
@@ -207,7 +185,7 @@ export async function voiceCarrierStatus(): Promise<{
   if (sid && token && twilioFrom) return { carrier: "twilio", missing: [] };
 
   const entries: [string, string | undefined][] = await Promise.all(
-    (["TELNYX_API_KEY", "TELNYX_PHONE_NUMBER", "TELNYX_ACCOUNT_SID", "TELNYX_TEXML_APP_ID", "DELIVERY_WEBHOOK_SECRET"] as const).map(
+    (["TELNYX_API_KEY", "TELNYX_PHONE_NUMBER", "TELNYX_ACCOUNT_SID", "TELNYX_TEXML_APP_ID"] as const).map(
       async (k) => [k, await getConfigValue(k)] as [string, string | undefined]
     )
   );

@@ -110,6 +110,6 @@ export async function applyDeliveryUpdate(
     });
   }
 
-  saveDb();
+  await saveDb();
   return { applied: true, outcome, leadId: attempt.leadId };
 }

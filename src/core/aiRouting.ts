@@ -12,13 +12,14 @@
 //
 // Pure and I/O-free so the routing table is testable without credentials.
 
-export type AiProvider = "ANTHROPIC" | "NVIDIA" | "NONE";
+export type AiProvider = "OPENAI" | "ANTHROPIC" | "NVIDIA" | "NONE";
 
 /** Operator preference. AUTO is the default and means "use whatever is
  *  configured", which is the right answer for almost everyone. */
-export type AiProviderPreference = "AUTO" | "ANTHROPIC" | "NVIDIA";
+export type AiProviderPreference = "AUTO" | "OPENAI" | "ANTHROPIC" | "NVIDIA";
 
 export interface AiRoutingInput {
+  hasOpenAi?: boolean;
   hasAnthropic: boolean;
   hasNvidia: boolean;
   preference?: AiProviderPreference;
@@ -40,13 +41,15 @@ export interface AiRoutingInput {
  * mismatch; the runtime keeps working.
  */
 export function resolveAiProvider(input: AiRoutingInput): AiProvider {
-  const { hasAnthropic, hasNvidia, preference = "AUTO", needsStructuredOutput = false } = input;
+  const { hasOpenAi = false, hasAnthropic, hasNvidia, preference = "AUTO", needsStructuredOutput = false } = input;
 
+  if (preference === "OPENAI" && hasOpenAi) return "OPENAI";
   if (preference === "ANTHROPIC" && hasAnthropic) return "ANTHROPIC";
   if (preference === "NVIDIA" && hasNvidia) return "NVIDIA";
 
   // AUTO, or a preference whose provider is not configured.
   if (needsStructuredOutput) {
+    if (hasOpenAi) return "OPENAI";
     if (hasAnthropic) return "ANTHROPIC";
     if (hasNvidia) return "NVIDIA";
     return "NONE";
@@ -56,6 +59,7 @@ export function resolveAiProvider(input: AiRoutingInput): AiProvider {
   // work — outreach copy, discovery assessment — is exactly what a free quota
   // is for, and spending metered credit on it by default is a cost surprise
   // the operator never asked for.
+  if (hasOpenAi) return "OPENAI";
   if (hasNvidia) return "NVIDIA";
   if (hasAnthropic) return "ANTHROPIC";
   return "NONE";
@@ -64,8 +68,26 @@ export function resolveAiProvider(input: AiRoutingInput): AiProvider {
 /** True when the operator asked for a provider they have not configured. The
  *  panel warns rather than the runtime failing. */
 export function preferenceIsUnavailable(input: AiRoutingInput): boolean {
-  const { hasAnthropic, hasNvidia, preference = "AUTO" } = input;
+  const { hasOpenAi = false, hasAnthropic, hasNvidia, preference = "AUTO" } = input;
+  if (preference === "OPENAI") return !hasOpenAi;
   if (preference === "ANTHROPIC") return !hasAnthropic;
   if (preference === "NVIDIA") return !hasNvidia;
   return false;
+}
+
+export const DEFAULT_AI_PRIORITY: Exclude<AiProvider, "NONE">[] = ["OPENAI", "ANTHROPIC", "NVIDIA"];
+
+export function parseAiPriority(value?: string): Exclude<AiProvider, "NONE">[] {
+  const parsed = (value ?? "")
+    .split(",")
+    .map((item) => item.trim().toUpperCase())
+    .filter((item): item is Exclude<AiProvider, "NONE"> => DEFAULT_AI_PRIORITY.includes(item as Exclude<AiProvider, "NONE">));
+  return [...new Set([...parsed, ...DEFAULT_AI_PRIORITY])];
+}
+
+export function resolveAiRouteOrder(input: {
+  priority?: string;
+  availability: Partial<Record<Exclude<AiProvider, "NONE">, boolean>>;
+}): Exclude<AiProvider, "NONE">[] {
+  return parseAiPriority(input.priority).filter((provider) => input.availability[provider]);
 }

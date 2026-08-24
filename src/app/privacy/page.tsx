@@ -1,11 +1,16 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 import { MktNav } from "@/components/marketing/mkt-nav";
 import { MktFooter } from "@/components/marketing/mkt-footer";
 import { LegalBody } from "@/components/marketing/legal-body";
 import { getLegalPage } from "@/domain/queries";
+import { seoMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = { title: "Privacy Policy — Equity Flow Group" };
+export async function generateMetadata() {
+  const reviewed = await getLegalPage("privacy");
+  return reviewed
+    ? seoMetadata({ title: "Privacy Policy | Equity Flow Group", description: "How Equity Flow Group collects, uses, protects, and retains information provided through mortgage inquiries and communications.", path: "/privacy" })
+    : { title: "Privacy Policy | Equity Flow Group", robots: { index: false, follow: true } };
+}
 
 export default async function PrivacyPage() {
   // Admin override wins; absent means serve the built-in copy below, so a

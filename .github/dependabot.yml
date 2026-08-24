@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      next-runtime:
+        patterns: ["next", "eslint-config-next", "react", "react-dom"]
+      production-dependencies:
+        dependency-type: production

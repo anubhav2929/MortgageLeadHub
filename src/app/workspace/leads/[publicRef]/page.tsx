@@ -15,7 +15,7 @@ import { CallsTab } from "@/components/workspace/tabs/calls-tab";
 import { can } from "@/core/rbac";
 import { buildLeadThread } from "@/core/conversationThread";
 import { deriveCallInsights } from "@/core/callInsights";
-import { computeLeadCompleteness, getLeadByRef, listLeadDocuments, listOfficers, listReferralPartners } from "@/domain/queries";
+import { computeLeadCompleteness, getLeadByRef, listLeadDocuments, listOfficers, listReferralPartners, redactLeadDetail } from "@/domain/queries";
 import { getCurrentUser } from "@/domain/session";
 import { currentVoiceStrategy } from "@/domain/voiceOrchestrator";
 import { getConfigValue } from "@/lib/runtimeConfig";
@@ -26,13 +26,15 @@ interface PageProps {
 
 export default async function LeadDetailPage({ params }: PageProps) {
   const { publicRef } = await params;
-  const detail = await getLeadByRef(publicRef);
-  if (!detail) notFound();
-
   const user = await getCurrentUser();
-  const subject = { role: user.role, officerId: user.officerId };
-  const canViewPii = can(subject, "VIEW_LEAD_PII", detail.lead);
-  const canTakeOver = user.role === "ADMIN" || user.role === "OFFICER";
+  const rawDetail = await getLeadByRef(publicRef);
+  if (!rawDetail) notFound();
+  const userOfficer = user.officerId ? (await listOfficers()).find((officer) => officer.id === user.officerId) : undefined;
+  const subject = { role: user.role, officerId: user.officerId, licensedStates: userOfficer?.licensedStates ?? [] };
+  const canViewPii = can(subject, "VIEW_LEAD_PII", rawDetail.lead);
+  if (user.role === "OFFICER" && !canViewPii) notFound();
+  const detail = canViewPii ? rawDetail : redactLeadDetail(rawDetail);
+  const canTakeOver = can(subject, "TAKE_OVER_LEAD", rawDetail.lead);
   const canCallNow = can(subject, "CALL_NOW", detail.lead);
   const canMarkWonLost = can(subject, "MARK_WON_LOST", detail.lead);
   const canAcknowledge = detail.lead.state === "ASSIGNED" && (user.role === "ADMIN" || user.officerId === detail.lead.assignedOfficerId);
@@ -65,13 +67,15 @@ export default async function LeadDetailPage({ params }: PageProps) {
   // page load — no redeploy, no restart.
   // Extraction writes to db.leadFields; the Lead record is only written by a
   // manual edit. This is the difference between the two.
-  const callInsights = deriveCallInsights(detail.lead, detail.leadFields, detail.fieldCandidates);
+  const callInsights = canViewPii ? deriveCallInsights(detail.lead, detail.leadFields, detail.fieldCandidates) : [];
   const voiceStrategy = await currentVoiceStrategy();
   const inboundNumber = (await getConfigValue("INBOUND_PHONE_NUMBER")) ?? null;
-  const documents = await listLeadDocuments(detail.lead.id);
+  const documents = canViewPii ? await listLeadDocuments(detail.lead.id) : [];
   // Whether the officer can actually route a disclosure for signature, rather
   // than only store it. Resolved per request like every other credential.
-  const eSignConfigured = Boolean(await getConfigValue("DOCUSIGN_ACCOUNT_ID"));
+  // E-signature routing is not implemented yet. A credential alone must not
+  // make the CRM promise an envelope workflow that does not exist.
+  const eSignConfigured = false;
   const calls = detail.attempts
     .filter((a) => a.channel === "VOICE")
     .sort((a, b) => new Date(b.startedAt ?? b.scheduledFor).getTime() - new Date(a.startedAt ?? a.scheduledFor).getTime());
@@ -104,7 +108,7 @@ export default async function LeadDetailPage({ params }: PageProps) {
         canAcknowledge={canAcknowledge}
         assignedOfficerName={detail.officer?.name}
         canEdit={can(subject, "EDIT_FIELDS", detail.lead)}
-        canDelete={user.role === "ADMIN"}
+        canDelete={false}
         editable={{
           firstName: detail.person?.firstName ?? "",
           lastName: detail.person?.lastName ?? "",
@@ -209,6 +213,7 @@ export default async function LeadDetailPage({ params }: PageProps) {
               outboundReady={voiceStrategy.mechanism === "VAPI_AGENT"}
               outboundNote={`${voiceStrategy.reason}${voiceStrategy.remedy ? ` ${voiceStrategy.remedy}` : ""}`}
               calls={calls}
+              conversations={detail.conversations}
               liveStage={liveStage}
             />
           </TabsContent>
@@ -219,14 +224,14 @@ export default async function LeadDetailPage({ params }: PageProps) {
             <ConsentTab consents={detail.consents} policyDecisions={detail.policyDecisions} />
           </TabsContent>
           <TabsContent value="tasks">
-            <TasksTab publicRef={publicRef} tasks={detail.tasks} />
+            <TasksTab publicRef={publicRef} tasks={detail.tasks} canManage={can(subject, "MANAGE_TASK", detail.lead)} />
           </TabsContent>
           <TabsContent value="notes">
             <NotesTab
               publicRef={publicRef}
               notes={detail.notes}
               documents={documents}
-              canEdit={can(subject, "EDIT_FIELDS")}
+              canEdit={can(subject, "ADD_NOTE", detail.lead)}
               eSignConfigured={eSignConfigured}
             />
           </TabsContent>

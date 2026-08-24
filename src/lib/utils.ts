@@ -1,22 +1,25 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { DEFAULT_ADMIN_TIMEZONE, isValidIanaTimezone } from "@/core/timezone";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatDate(d: Date | string) {
+export function formatDate(d: Date | string, timeZone = DEFAULT_ADMIN_TIMEZONE) {
   const date = typeof d === "string" ? new Date(d) : d;
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: isValidIanaTimezone(timeZone) ? timeZone : DEFAULT_ADMIN_TIMEZONE });
 }
 
-export function formatDateTime(d: Date | string) {
+export function formatDateTime(d: Date | string, timeZone = DEFAULT_ADMIN_TIMEZONE) {
   const date = typeof d === "string" ? new Date(d) : d;
   return date.toLocaleString("en-US", {
     month: "short",
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
+    timeZone: isValidIanaTimezone(timeZone) ? timeZone : DEFAULT_ADMIN_TIMEZONE,
+    timeZoneName: "short",
   });
 }
 

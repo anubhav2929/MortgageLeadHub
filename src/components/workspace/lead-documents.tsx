@@ -161,10 +161,9 @@ export function LeadDocuments({
                     e-sign {d.signature.status.toLowerCase()}
                   </Badge>
                 )}
-                {d.inlineContent && (
+                {d.storageRef && (
                   <a
-                    href={d.inlineContent}
-                    download={d.filename}
+                    href={`/api/documents/${encodeURIComponent(d.id)}`}
                     className="focus-ring rounded-[var(--radius-sm)] p-1.5 text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
                     aria-label={`Download ${d.filename}`}
                   >

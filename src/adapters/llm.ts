@@ -9,6 +9,7 @@
 import { getConfigValue } from "@/lib/runtimeConfig";
 import type { ConversationTurn, GoalType, LoanIntent } from "@/domain/types";
 import { resolveAiProvider, type AiProvider, type AiProviderPreference } from "@/core/aiRouting";
+import { runAiJson } from "@/adapters/aiGateway";
 
 // ---------------------------------------------------------------------------
 // NVIDIA NIM (build.nvidia.com) — free-tier, OpenAI-compatible chat completion
@@ -103,6 +104,18 @@ const FIELD_ENUMS: Record<string, string[] | "boolean"> = {
 const MODEL = "claude-sonnet-5";
 
 export async function extractFieldsFromTranscript(transcript: ConversationTurn[]): Promise<ExtractionResult> {
+  const transcriptText = transcript.map((t) => `[turn ${t.turn}] ${t.role}: ${t.text}`).join("\n");
+  const gateway = await runAiJson({
+    operation: "transcript_extraction",
+    system:
+      "Extract mortgage qualification facts stated explicitly by the borrower. Never infer. " +
+      "Return an object whose keys are field paths and values are {value,confidence,turnRefs}.",
+    user: `Allowed fields: ${JSON.stringify(FIELD_ENUMS)}\nTranscript:\n${transcriptText}`,
+    maxOutputTokens: 1000,
+    validate: (value) => normaliseGatewayExtraction(value),
+  });
+  if (gateway.ok) return { fields: gateway.value, simulated: false };
+
   // Structured: every extracted field is written to the lead record with a
   // provenance reference, so schema-constrained output is worth preferring.
   const provider = await pickProvider(true);
@@ -124,6 +137,25 @@ export async function extractFieldsFromTranscript(transcript: ConversationTurn[]
   }
 
   return { fields: simulateExtraction(transcript), simulated: true };
+}
+
+function normaliseGatewayExtraction(value: unknown): ExtractedField[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Extraction must be an object");
+  const raw = value as Record<string, { value?: unknown; confidence?: unknown; turnRefs?: unknown }>;
+  const fields: ExtractedField[] = [];
+  for (const [fieldPath, domain] of Object.entries(FIELD_ENUMS)) {
+    const item = raw[fieldPath] ?? {};
+    const rawValue = typeof item.value === "boolean" ? String(item.value) : typeof item.value === "string" ? item.value : "UNKNOWN";
+    const valid = domain === "boolean" ? ["true", "false", "UNKNOWN"] : [...domain, "UNKNOWN"];
+    const accepted = valid.includes(rawValue) ? rawValue : "UNKNOWN";
+    fields.push({
+      fieldPath,
+      value: domain === "boolean" ? accepted === "true" : accepted,
+      confidence: accepted === "UNKNOWN" || typeof item.confidence !== "number" ? 0 : Math.max(0, Math.min(1, item.confidence)),
+      transcriptTurnRefs: Array.isArray(item.turnRefs) ? item.turnRefs.filter((turn): turn is number => Number.isInteger(turn)) : [],
+    });
+  }
+  return fields;
 }
 
 /**
@@ -355,6 +387,25 @@ export async function validateIntakeIdentity(input: IdentityValidationInput): Pr
     simulated: true,
   };
 
+  const gateway = await runAiJson({
+    operation: "intake_identity_validation",
+    system:
+      "Normalize human names while preserving legitimate non-English names, hyphens, and apostrophes. " +
+      "Flag only clear placeholder, test, or gibberish values.",
+    user: `Return {"firstName":"...","lastName":"...","flags":["..."]}.\nfirstName=${JSON.stringify(input.firstName)}\nlastName=${JSON.stringify(input.lastName)}`,
+    maxOutputTokens: 220,
+    validate: (value) => {
+      if (!value || typeof value !== "object") throw new Error("Identity result must be an object");
+      const item = value as Record<string, unknown>;
+      return {
+        firstName: typeof item.firstName === "string" ? item.firstName.slice(0, 100) : heuristic.firstName,
+        lastName: typeof item.lastName === "string" ? item.lastName.slice(0, 100) : heuristic.lastName,
+        flags: Array.isArray(item.flags) ? item.flags.filter((flag): flag is string => typeof flag === "string").slice(0, 8) : [],
+      };
+    },
+  });
+  if (gateway.ok) return { ...gateway.value, simulated: false };
+
   const provider = await pickProvider();
   if (provider === "NONE") return heuristic;
 
@@ -463,6 +514,26 @@ const CHANNEL_ARTEFACT: Record<OutreachContentInput["channel"], string> = {
 };
 
 export async function generateOutreachContent(input: OutreachContentInput): Promise<OutreachContentResult> {
+  const intentLabel = input.intent.replace("_", " ").toLowerCase();
+  const goalLabel = input.goal.replace("_", " ").toLowerCase();
+  const gateway = await runAiJson({
+    operation: `outreach_${input.channel.toLowerCase()}`,
+    system: OUTREACH_SYSTEM_PROMPT,
+    user:
+      `Write a ${CHANNEL_ARTEFACT[input.channel]} from loan officer ${input.officerFirstName} to ${input.firstName} ` +
+      `about a ${intentLabel} inquiry with goal ${goalLabel}. This is ${input.isFirstContact ? "first contact" : "a follow-up"}.` +
+      (input.priorContext ? `\nExisting context; do not repeat or contradict it:\n${input.priorContext}` : "") +
+      (input.channel === "EMAIL" ? '\nReturn {"subject":"...","body":"..."}.' : '\nReturn {"body":"..."}.'),
+    maxOutputTokens: 400,
+    validate: (value) => {
+      if (!value || typeof value !== "object") throw new Error("Outreach result must be an object");
+      const item = value as Record<string, unknown>;
+      if (typeof item.body !== "string" || !item.body.trim()) throw new Error("Outreach body is missing");
+      return { subject: typeof item.subject === "string" ? item.subject.slice(0, 200) : undefined, body: item.body.trim() };
+    },
+  });
+  if (gateway.ok) return { ...gateway.value, simulated: false };
+
   const provider = await pickProvider();
   if (provider === "ANTHROPIC") {
     try {
@@ -590,6 +661,19 @@ const SIGNAL_REPLY_SYSTEM_PROMPT =
   "sound like a knowledgeable person adding value to the thread, not an ad; one soft, low-pressure mention that the company can help them compare options if they want, with no link or contact info (that goes in a profile, not the reply body); keep it under 80 words.";
 
 export async function generateSignalReply(input: SignalReplyInput): Promise<{ body: string; simulated: boolean }> {
+  const gateway = await runAiJson({
+    operation: "signal_reply",
+    system: SIGNAL_REPLY_SYSTEM_PROMPT,
+    user: `Post in r/${input.subreddit} titled ${JSON.stringify(input.title)}:\n${input.snippet}\nReturn {"body":"..."}.`,
+    maxOutputTokens: 250,
+    validate: (value) => {
+      const body = value && typeof value === "object" ? (value as Record<string, unknown>).body : undefined;
+      if (typeof body !== "string" || !body.trim()) throw new Error("Reply body is missing");
+      return { body: body.trim() };
+    },
+  });
+  if (gateway.ok) return { body: gateway.value.body, simulated: false };
+
   const provider = await pickProvider();
   if (provider === "ANTHROPIC") {
     try {
@@ -661,6 +745,24 @@ export interface IntentClassification {
 const INTENT_VALUES: LoanIntent[] = ["REFINANCE", "HOME_EQUITY", "CASH_OUT", "UNKNOWN"];
 
 export async function classifySignalIntent(text: string): Promise<IntentClassification> {
+  const gateway = await runAiJson({
+    operation: "signal_intent_classification",
+    system: "Classify genuine US mortgage refinance, cash-out, or home-equity intent. Use UNKNOWN for unrelated or vague text.",
+    user: `Return {"intent":"REFINANCE|HOME_EQUITY|CASH_OUT|UNKNOWN","confidence":0,"matchedKeywords":["..."]}.\n${text}`,
+    maxOutputTokens: 250,
+    validate: (value) => {
+      if (!value || typeof value !== "object") throw new Error("Classification must be an object");
+      const item = value as Record<string, unknown>;
+      const intent = INTENT_VALUES.includes(item.intent as LoanIntent) ? item.intent as LoanIntent : "UNKNOWN";
+      return {
+        intent,
+        confidence: typeof item.confidence === "number" ? Math.max(0, Math.min(1, item.confidence)) : 0,
+        matchedKeywords: Array.isArray(item.matchedKeywords) ? item.matchedKeywords.filter((keyword): keyword is string => typeof keyword === "string").slice(0, 12) : [],
+      };
+    },
+  });
+  if (gateway.ok) return { ...gateway.value, simulated: false };
+
   // Anthropic first (tool-calling gives a schema guarantee), then NVIDIA NIM,
   // then keyword simulation. The NVIDIA rung used to be missing entirely: a
   // deployment with only NVIDIA_API_KEY set fell straight through to the
@@ -775,6 +877,15 @@ export async function assessSignal(input: {
   subreddit: string;
 }): Promise<SignalAssessment> {
   const text = `Subreddit: r/${input.subreddit}\nTitle: ${input.title}\n\nPost:\n${input.body.slice(0, 3000)}`;
+
+  const gateway = await runAiJson({
+    operation: "signal_assessment",
+    system: ASSESSMENT_SYSTEM,
+    user: text,
+    maxOutputTokens: 500,
+    validate: (value) => normaliseAssessment(value as Record<string, unknown>),
+  });
+  if (gateway.ok) return gateway.value;
 
   const provider = await pickProvider();
   if (provider === "NVIDIA") {
@@ -944,6 +1055,20 @@ export async function answerBorrowerQuestion(input: BorrowerAnswerInput): Promis
       .toLowerCase()}, property in ${input.stateCode}). Assigned officer: ${officer}.` +
     (input.priorContext ? `\n\nWhat's already been said across channels:\n${input.priorContext}` : "") +
     `\n\nTheir question: "${input.question}"`;
+
+  const gateway = await runAiJson({
+    operation: "borrower_chat",
+    system: BORROWER_CHAT_SYSTEM_PROMPT,
+    user: `${userPrompt}\nReturn {"reply":"...","needsHuman":true}.`,
+    maxOutputTokens: 300,
+    validate: (value) => {
+      if (!value || typeof value !== "object") throw new Error("Borrower response must be an object");
+      const item = value as Record<string, unknown>;
+      if (typeof item.reply !== "string" || !item.reply.trim()) throw new Error("Borrower reply is missing");
+      return { reply: item.reply.trim().slice(0, 1200), needsHuman: item.needsHuman !== false };
+    },
+  });
+  if (gateway.ok) return { ...gateway.value, simulated: false };
 
   // Structured: this talks to a consumer unsupervised and must reliably set
   // needsHuman, so the schema guarantee matters more here than anywhere else.

@@ -144,7 +144,7 @@ export function PayoffCalculator() {
         </p>
         <Link
           href="/apply"
-          onClick={() => trackEvent("calculator_used", { savings: result ? Math.round(result.interestSaved) : 0 })}
+          onClick={() => trackEvent("calculator_used")}
           className="flex w-full shrink-0 items-center justify-center gap-2 rounded-lg bg-[var(--mkt-primary)] px-5 py-3 text-[14px] font-semibold text-white transition-colors hover:bg-[var(--mkt-primary-hover)] sm:w-auto"
         >
           Talk to a loan officer

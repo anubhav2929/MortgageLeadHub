@@ -18,7 +18,7 @@ export interface SendEmailInput {
 export async function sendEmail(input: SendEmailInput): Promise<AdapterResult> {
   const apiKey = await getConfigValue("RESEND_API_KEY");
   if (!apiKey) {
-    console.log(`[SIMULATED EMAIL] from=${input.from ?? "n/a"} to=${input.to} subject="${input.subject}"`);
+    console.log(`[SIMULATED EMAIL] idempotencyKey=${input.idempotencyKey}`);
     return adapterSuccess(`sim_email_${input.idempotencyKey}`, true);
   }
 
@@ -33,12 +33,10 @@ export async function sendEmail(input: SendEmailInput): Promise<AdapterResult> {
 
     const { Resend } = await import("resend");
     const resend = new Resend(apiKey);
-    const { data, error } = await resend.emails.send({
-      from,
-      to: input.to,
-      subject: input.subject,
-      text: input.text,
-    });
+    const { data, error } = await resend.emails.send(
+      { from, to: input.to, subject: input.subject, text: input.text },
+      { idempotencyKey: input.idempotencyKey }
+    );
     if (error) throw new Error(error.message);
     return adapterSuccess(data?.id ?? `email_${input.idempotencyKey}`);
   } catch (err) {

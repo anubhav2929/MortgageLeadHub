@@ -25,20 +25,19 @@ import { evaluateForLead } from "@/domain/gateHelpers";
 import { buildLeadThread } from "@/core/conversationThread";
 import { selectBestChannel, describeRoute } from "@/core/channelRouter";
 import { computeLeadQualityScore } from "@/core/leadScoring";
-import { STATE_TIMEZONE } from "@/domain/stateTimezone";
 import type { Channel, Lead } from "@/domain/types";
 
 const ROUTABLE_CHANNELS: Channel[] = ["SMS", "VOICE", "EMAIL"];
 
 /** Borrower's local hour, for preferring async channels late in their day.
- *  Falls back to server-local if the state has no mapped timezone. */
-function borrowerLocalHour(stateCode: string): number {
-  const tz = STATE_TIMEZONE[stateCode];
-  if (!tz) return new Date().getHours();
+ * Unknown zones use a neutral routing score; PolicyGate independently
+ * defers automated voice/SMS instead of guessing from property state. */
+function borrowerLocalHour(timezone: string): number {
+  if (!timezone || timezone === "UNKNOWN") return 12;
   try {
-    return Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false }).format(new Date()));
+    return Number(new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "numeric", hourCycle: "h23" }).format(new Date()));
   } catch {
-    return new Date().getHours();
+    return 12;
   }
 }
 
@@ -89,7 +88,9 @@ async function resolveChannel(db: Database, lead: Lead, fallback: Channel, autoR
   const route = selectBestChannel({
     allowedChannels: allowed,
     thread,
-    localHour: borrowerLocalHour(lead.stateCode),
+    localHour: borrowerLocalHour(
+      Array.from(db.people.values()).find((person) => person.leadId === lead.id && person.role === "PRIMARY")?.timezone ?? "UNKNOWN"
+    ),
     leadScore: score.total,
     hotLeadThreshold: db.config.hotLeadThreshold,
   });
@@ -285,6 +286,6 @@ export async function runCadenceTick(): Promise<CadenceTickSummary> {
     }
   }
 
-  saveDb();
+  await saveDb();
   return summary;
 }

@@ -133,7 +133,169 @@ export type LeadEventType =
   /** The FCRA gate refused an inquiry — no consent, low intent, or duplicate. */
   | "CREDIT_PULL_BLOCKED"
   /** The bureau returned no match, or the provider errored. */
-  | "CREDIT_PULL_FAILED";
+  | "CREDIT_PULL_FAILED"
+  | "CALLBACK_BOOKED"
+  | "CALLBACK_MESSAGE_QUEUED"
+  | "CALLBACK_MESSAGE_SENT"
+  | "CALLBACK_MESSAGE_SUPPRESSED"
+  | "TRANSFER_STATUS_CHANGED";
+
+export type QualificationQuestionId =
+  | "timeline"
+  | "property_address"
+  | "occupancy"
+  | "estimated_value"
+  | "mortgage_balance"
+  | "cash_goal"
+  | "credit_range"
+  | "transfer_consent";
+
+export interface LeadContextSnapshot {
+  id: string;
+  leadId: string;
+  conversationId: string;
+  createdAt: string;
+  promptVersionId: string;
+  profileVersionId: string;
+  borrower: { firstName: string; timezone: string | "UNKNOWN" };
+  intake: {
+    intent: LoanIntent;
+    goal: GoalType;
+    timeline?: Timeline;
+    stateCode: string;
+    occupancy?: Occupancy;
+    addressLine1?: string;
+    city?: string;
+    postalCode?: string;
+    estimatedValue?: number;
+    currentBalance?: number;
+    creditRange?: CreditRange;
+  };
+  verifiedFields: Record<string, unknown>;
+  conversationBrief?: string;
+  excludedSensitiveFields: string[];
+}
+
+export interface QualificationAnswer {
+  id: string;
+  leadId: string;
+  conversationId: string;
+  questionId: QualificationQuestionId;
+  fieldPath: string;
+  value: unknown;
+  confidence: number;
+  source: "FORM" | "VERIFIED_FIELD" | "BORROWER_STATED";
+  transcriptTurnRefs: number[];
+  conflict: boolean;
+  capturedAt: string;
+}
+
+export interface QualificationProgress {
+  leadId: string;
+  conversationId: string;
+  snapshotId: string;
+  answers: QualificationAnswer[];
+  requiredQuestionIds: QualificationQuestionId[];
+  nextQuestionId?: QualificationQuestionId;
+  completedAt?: string;
+  updatedAt: string;
+}
+
+export interface QualificationDecision {
+  leadId: string;
+  conversationId: string;
+  outcome: "READY_FOR_TRANSFER" | "NEEDS_REVIEW" | "REFERRAL";
+  reasonCodes: string[];
+  decidedAt: string;
+}
+
+export type TransferAttemptStatus =
+  | "REQUESTED"
+  | "DIALING"
+  | "OFFICER_ANSWERED"
+  | "SUMMARY_DELIVERED"
+  | "BRIDGED"
+  | "FAILED"
+  | "DECLINED"
+  | "CALLBACK_OFFERED";
+
+export interface TransferAttempt {
+  id: string;
+  leadId: string;
+  conversationId: string;
+  officerId?: string;
+  destinationMasked: string;
+  status: TransferAttemptStatus;
+  requestedAt: string;
+  updatedAt: string;
+  providerCallId?: string;
+  providerTransferId?: string;
+  consentTurnRef?: number;
+  failureReason?: string;
+}
+
+export type CallbackStatus = "BOOKED" | "CONFIRMED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED" | "MISSED";
+
+export interface CallbackReminderPolicy {
+  slotDurationMinutes: number;
+  bufferMinutes: number;
+  minimumLeadMinutes: number;
+  bookingHorizonDays: number;
+  reminderMinutesBefore: number;
+  confirmationTemplate: string;
+  reminderTemplate: string;
+}
+
+export interface CallbackAppointment {
+  id: string;
+  leadId: string;
+  officerId?: string;
+  sourceConversationId?: string;
+  transferAttemptId?: string;
+  startsAt: string;
+  endsAt: string;
+  borrowerTimezone: string;
+  status: CallbackStatus;
+  consentRecordId?: string;
+  createdAt: string;
+  updatedAt: string;
+  cancelledAt?: string;
+  cancellationReason?: string;
+  providerCorrelationIds: string[];
+  confirmationAttemptId?: string;
+  reminderAttemptId?: string;
+}
+
+export type DialingSessionMode = "MANUAL_NEXT" | "AUTO_SEQUENTIAL";
+export type DialingSessionStatus = "ACTIVE" | "PAUSED" | "COMPLETED" | "CANCELLED";
+export type DialingQueueItemStatus = "PENDING" | "CALLING" | "COMPLETED" | "BLOCKED" | "FAILED" | "SKIPPED";
+
+export interface DialingSession {
+  id: string;
+  name: string;
+  mode: DialingSessionMode;
+  status: DialingSessionStatus;
+  createdById: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+  currentItemId?: string;
+  completedAt?: string;
+  cancelledAt?: string;
+}
+
+export interface DialingQueueItem {
+  id: string;
+  sessionId: string;
+  leadId: string;
+  position: number;
+  status: DialingQueueItemStatus;
+  attemptId?: string;
+  conversationId?: string;
+  reason?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
 
 export interface Person {
   id: string;
@@ -257,6 +419,9 @@ export interface IntegrationCredential {
 }
 
 export interface SystemConfig {
+  /** Operational display/report timezone. Timestamps remain UTC at rest. */
+  adminTimezone?: string;
+  timezoneConfirmed?: boolean;
   firstContactSlaMinutes: number;
   dailyAttemptCap: number;
   minSpacingHours: number;
@@ -285,6 +450,17 @@ export interface SystemConfig {
     ignoreQuietHours?: boolean;
     ignoreAttemptCaps?: boolean;
     ignoreMinSpacing?: boolean;
+  };
+  callbackReminderPolicy?: CallbackReminderPolicy;
+  featureFlags?: {
+    vapiSquads?: boolean;
+    automaticWarmTransfer?: boolean;
+    callbackScheduling?: boolean;
+    normalizedReads?: boolean;
+    redditPosting?: boolean;
+    freePropertyValuation?: boolean;
+    metaCapi?: boolean;
+    automatedPowerDialer?: boolean;
   };
 }
 
@@ -383,6 +559,10 @@ export interface ConversationSession {
   escalationReason?: string;
   transcript: ConversationTurn[];
   summary?: string;
+  actionItems?: string[];
+  profileSnapshot?: Record<string, unknown>;
+  contextSnapshot?: Record<string, unknown>;
+  providerCallId?: string;
   redactionApplied: boolean;
   /** Live-call handles from the provider, captured when the call is placed.
    *  Per-call and short-lived — they cannot be rebuilt from the call id, so
@@ -413,6 +593,20 @@ export interface ConversationSession {
   settledBySystem?: boolean;
 }
 
+export interface InboundCallTriage {
+  id: string;
+  provider: "VAPI";
+  providerCallId: string;
+  fromPhone?: string;
+  reason: "UNKNOWN_CALLER" | "AMBIGUOUS_CALLER";
+  candidateLeadIds: string[];
+  status: "OPEN" | "LINKED" | "DISMISSED";
+  receivedAt: string;
+  linkedLeadId?: string;
+  resolvedAt?: string;
+  resolvedById?: string;
+}
+
 export interface FieldCandidate {
   id: string;
   leadId: string;
@@ -424,6 +618,9 @@ export interface FieldCandidate {
   transcriptTurnRefs: number[];
   createdAt: string;
   promoted: boolean;
+  reviewStatus?: "PENDING" | "ACCEPTED" | "REJECTED";
+  reviewedById?: string;
+  reviewedAt?: string;
   promotionRuleCode?: string;
 }
 
@@ -511,6 +708,10 @@ export interface Note {
 export interface Lead {
   id: string;
   publicRef: string;
+  /** Only the SHA-256 digest is stored. The raw high-entropy token exists in
+   * borrower links and can be revoked by issuing a replacement. */
+  statusTokenHash?: string;
+  statusTokenIssuedAt?: string;
   state: LeadState;
   intent: LoanIntent;
   goal: GoalType;
@@ -580,6 +781,25 @@ export interface PropertyValuationResult {
    *  quote to a borrower. MEASURED = returned by the vendor;
    *  MODELED = derived by us from an assumption. */
   provenance: Record<PropertyValuationField, "MEASURED" | "MODELED">;
+  /** The estimate is informational and must not be represented as an appraisal. */
+  disclaimer?: string;
+  method?: "OPEN_EVIDENCE" | "RENTCAST" | "INSUFFICIENT_EVIDENCE" | "SIMULATED";
+  confidence?: "HIGH" | "MEDIUM" | "LOW" | "INSUFFICIENT";
+  evidence?: PropertyValuationEvidence[];
+  freshnessAt?: string;
+  providerCostUsd?: number;
+}
+
+export interface PropertyValuationEvidence {
+  id: string;
+  kind: "BORROWER_ESTIMATE" | "RECORDED_SALE" | "PUBLIC_RECORD" | "FHFA_HPI" | "ASSESSOR" | "RENTCAST";
+  value?: number;
+  observedAt?: string;
+  retrievedAt: string;
+  sourceUrl?: string;
+  sourceLabel: string;
+  reliability: number;
+  notes?: string;
 }
 
 export type PropertyValuationField =
@@ -607,6 +827,12 @@ export interface User {
   failedLoginAttempts?: number;
   /** ISO timestamp; login is refused while now < lockedUntil. */
   lockedUntil?: string;
+  mfa?: {
+    encryptedSecret: string;
+    pendingCreatedAt?: string;
+    enabledAt?: string;
+    recoveryCodeHashes?: string[];
+  };
 }
 
 export interface Session {
@@ -614,6 +840,8 @@ export interface Session {
   userId: string;
   createdAt: string;
   expiresAt: string;
+  lastSeenAt?: string;
+  idleExpiresAt?: string;
 }
 
 /** One-time links for account setup ("invite") and forgot-password ("reset"). */
@@ -677,6 +905,42 @@ export interface DiscoveredSignal {
   reviewNote?: string;
   reviewedAt?: string;
   promotedLeadId?: string;
+  redditPublicationId?: string;
+}
+
+export interface RedditConnection {
+  id: string;
+  accountName: string;
+  encryptedRefreshToken: string;
+  scopes: string[];
+  connectedAt: string;
+  connectedById: string;
+  revokedAt?: string;
+}
+
+export interface RedditPublication {
+  id: string;
+  signalId: string;
+  finalText: string;
+  approvedById: string;
+  approvedByName: string;
+  subredditRulesConfirmed: boolean;
+  idempotencyKey: string;
+  status: "PENDING" | "PUBLISHED" | "FAILED";
+  redditCommentId?: string;
+  permalink?: string;
+  providerResponse?: Record<string, unknown>;
+  createdAt: string;
+  publishedAt?: string;
+}
+
+export interface IntegrationHealthCheck {
+  integrationId: string;
+  ok: boolean;
+  message: string;
+  verifiedAt: string;
+  verifiedById: string;
+  verifiedByName: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -763,6 +1027,8 @@ export interface VoiceAnnouncement {
   text: string;
   createdAt: string;
   expiresAt: string;
+  /** Hash of the single-use capability carried by the provider URL. */
+  accessTokenHash?: string;
   /** Set once Telnyx has fetched it, so a leaked URL can't be replayed. */
   consumedAt?: string;
 }

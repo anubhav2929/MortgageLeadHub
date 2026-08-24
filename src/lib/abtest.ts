@@ -18,6 +18,7 @@
 // perfectly reasonable default in case JS is slow or disabled.
 
 import { useEffect, useSyncExternalStore } from "react";
+import { trackEvent } from "@/lib/analytics";
 
 const VISITOR_ID_KEY = "mlh_ab_visitor_id";
 
@@ -71,8 +72,7 @@ export function useABVariant<T extends string>(testKey: string, variantKeys: rea
   );
 
   useEffect(() => {
-    const gtag = (window as unknown as { gtag?: (...args: unknown[]) => void }).gtag;
-    if (typeof gtag === "function") gtag("event", "ab_test_exposure", { test_key: testKey, variant });
+    trackEvent("ab_test_exposure");
   }, [testKey, variant]);
 
   return variant;

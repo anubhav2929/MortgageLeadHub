@@ -19,9 +19,10 @@
 // delivered — that would let anyone forge a contact history.
 
 import { NextResponse } from "next/server";
-import { safeCompare, verifySvixSignature } from "@/core/auth";
+import { verifySvixSignature } from "@/core/auth";
 import { applyDeliveryUpdate, type DeliveryProvider, type DeliveryUpdate } from "@/domain/deliveryUpdates";
-import { getConfigValue } from "@/lib/runtimeConfig";
+import { getAppUrl, getConfigValue } from "@/lib/runtimeConfig";
+import { formParams, verifyTwilioWebhook } from "@/adapters/twilioWebhookAuth";
 
 const SUPPORTED: DeliveryProvider[] = ["twilio", "telnyx", "resend"];
 
@@ -31,50 +32,30 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
   if (!SUPPORTED.includes(provider)) {
     return NextResponse.json({ ok: false, error: "Unknown provider" }, { status: 404 });
   }
+  if (provider === "telnyx") {
+    return NextResponse.json({ ok: false, error: "Retired. Configure the signed /api/webhooks/telnyx primary or failover endpoint." }, { status: 410 });
+  }
 
   const rawBody = await request.text();
 
   let update: DeliveryUpdate | null = null;
 
   if (provider === "twilio") {
-    // Twilio signs with X-Twilio-Signature over the URL + sorted params. We
-    // additionally require a shared secret in the callback URL query string,
-    // which is simpler to verify and sufficient here because the URL itself
-    // is only ever known to Twilio. Reject if the secret isn't configured —
-    // failing open would leave the endpoint forgeable.
-    const expected = await getConfigValue("DELIVERY_WEBHOOK_SECRET");
-    const supplied = new URL(request.url).searchParams.get("secret");
-    if (!expected || !supplied || !safeCompare(supplied, expected)) {
-      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    const requestUrl = new URL(request.url);
+    const publicUrl = `${await getAppUrl()}${requestUrl.pathname}${requestUrl.search}`;
+    const authToken = await getConfigValue("TWILIO_AUTH_TOKEN");
+    if (!authToken || !verifyTwilioWebhook({ authToken, signature: request.headers.get("x-twilio-signature"), publicUrl, rawBody })) {
+      return NextResponse.json({ ok: false, error: "Invalid Twilio signature" }, { status: 401 });
     }
-    const form = new URLSearchParams(rawBody);
-    const sid = form.get("MessageSid") ?? form.get("CallSid");
-    const status = form.get("MessageStatus") ?? form.get("CallStatus");
+    const form = formParams(rawBody);
+    const sid = form.MessageSid ?? form.CallSid;
+    const status = form.MessageStatus ?? form.CallStatus;
     if (sid && status) {
       update = {
         providerMessageId: sid,
         status,
-        errorCode: form.get("ErrorCode") ?? undefined,
-        errorMessage: form.get("ErrorMessage") ?? undefined,
-      };
-    }
-  } else if (provider === "telnyx") {
-    const expected = await getConfigValue("DELIVERY_WEBHOOK_SECRET");
-    const supplied = new URL(request.url).searchParams.get("secret");
-    if (!expected || !supplied || !safeCompare(supplied, expected)) {
-      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-    }
-    const body = JSON.parse(rawBody) as {
-      data?: { payload?: { id?: string; to?: { status?: string }[]; errors?: { code?: string; detail?: string }[] } };
-    };
-    const payload = body.data?.payload;
-    const status = payload?.to?.[0]?.status;
-    if (payload?.id && status) {
-      update = {
-        providerMessageId: payload.id,
-        status,
-        errorCode: payload.errors?.[0]?.code,
-        errorMessage: payload.errors?.[0]?.detail,
+        errorCode: form.ErrorCode,
+        errorMessage: form.ErrorMessage,
       };
     }
   } else {

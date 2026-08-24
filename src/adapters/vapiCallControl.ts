@@ -20,7 +20,7 @@ export type CallControlAction =
   | { type: "ADD_CONTEXT"; content: string }
   | { type: "MUTE_AGENT" }
   | { type: "UNMUTE_AGENT" }
-  | { type: "TRANSFER"; toNumberE164: string; sayFirst?: string }
+  | { type: "TRANSFER"; toNumberE164: string; sayFirst?: string; operatorMessage?: string }
   | { type: "END_CALL" };
 
 export type CallControlResult = { ok: true } | { ok: false; failure: DeliveryFailure };
@@ -50,7 +50,19 @@ export function toVapiControlPayload(action: CallControlAction): Record<string, 
     case "TRANSFER":
       return {
         type: "transfer",
-        destination: { type: "number", number: action.toNumberE164 },
+        destination: {
+          type: "number",
+          number: action.toNumberE164,
+          ...(action.operatorMessage
+            ? {
+                transferPlan: {
+                  mode: "warm-transfer-wait-for-operator-to-speak-first-and-then-say-message",
+                  message: action.operatorMessage,
+                  timeout: 20,
+                },
+              }
+            : {}),
+        },
         ...(action.sayFirst ? { content: action.sayFirst } : {}),
       };
     case "END_CALL":

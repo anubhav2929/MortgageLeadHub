@@ -15,16 +15,19 @@
 // borrower's SMS/email history is loaded and handed to the agent, so a call
 // continues the thread instead of restarting it.
 
-import { placeVoiceAgentCall } from "@/adapters/voiceAgent";
+import { getVoiceAgentProfile, placeVoiceAgentCall, VOICE_PROMPT_VERSION } from "@/adapters/voiceAgent";
 import { placeCall } from "@/adapters/voice";
 import { generateOutreachContent } from "@/adapters/llm";
 import { producesConversation, selectVoiceStrategy, type VoiceStrategy } from "@/core/callStrategy";
 import { evaluateCallPreflight } from "@/core/callPreflight";
 import { buildBriefForLead } from "@/domain/leadContext";
+import { buildLeadContextSnapshot, initializeQualification } from "@/domain/voiceWorkflow";
 import type { DeliveryFailure } from "@/core/deliveryStatus";
 import { getCapabilities } from "@/lib/runtimeConfig";
 import { newId, nowIso, saveDb, type Database } from "@/domain/store";
 import type { Lead, Person } from "@/domain/types";
+import { protectBearerUrl } from "@/core/secretBox";
+import { redactRestrictedText } from "@/core/sensitiveText";
 
 export interface PlaceCallOutcome {
   ok: boolean;
@@ -119,7 +122,7 @@ export async function placeOutboundCall(
   // text conversation rather than a fresh cold call.
   // Includes the intake form. Assembling this by hand here is what left the
   // phone agent unaware of what the borrower had filled in.
-  const priorContext = buildBriefForLead(db, lead);
+  const priorContext = redactRestrictedText(buildBriefForLead(db, lead)).text;
 
   if (strategy.mechanism === "ANNOUNCEMENT") {
     // Degraded path: a recorded message. Still generate the copy through the
@@ -185,6 +188,16 @@ export async function placeOutboundCall(
   // ---------------------------------------------------------------------
   const conversationId = newId("conv");
   const placedAt = nowIso();
+  const voiceProfile = await getVoiceAgentProfile();
+  const contextSnapshot = buildLeadContextSnapshot({
+    db,
+    lead,
+    person,
+    conversationId,
+    promptVersionId: VOICE_PROMPT_VERSION,
+    profileVersionId: voiceProfile.promptVersionId,
+  });
+  const qualification = initializeQualification(db, contextSnapshot);
 
   db.attempts.push({
     id: attemptId,
@@ -205,7 +218,7 @@ export async function placeOutboundCall(
       id: conversationId,
       leadId: lead.id,
       contactAttemptId: attemptId,
-      promptVersionId: "prompt_qualify_v4",
+      promptVersionId: VOICE_PROMPT_VERSION,
       channel: "VOICE",
       status: "IN_PROGRESS",
       startedAt: placedAt,
@@ -213,11 +226,16 @@ export async function placeOutboundCall(
       transcript: [],
       redactionApplied: false,
       callStatus: "QUEUED",
+      profileSnapshot: voiceProfile,
+      // Store only an immutable reference and a short approved summary here.
+      // The typed snapshot itself is server-owned and deliberately excludes
+      // restricted identity/credit data.
+      contextSnapshot: { snapshotId: contextSnapshot.id, priorContext: priorContext || undefined },
     });
   }
   // Flushed now so a concurrent read — the board polling — sees the call
   // immediately rather than after the provider replies.
-  saveDb();
+  await saveDb();
 
   const result = await placeVoiceAgentCall({
     leadId: lead.id,
@@ -227,6 +245,9 @@ export async function placeOutboundCall(
     goal: lead.goal,
     phoneE164: person?.phoneE164 ?? "",
     priorContext: priorContext || undefined,
+    contextSnapshot,
+    initialQuestionId: qualification.nextQuestionId,
+    useSquad: db.config.featureFlags?.vapiSquads === true,
   });
 
   const attempt = db.attempts.find((a) => a.id === attemptId);
@@ -235,8 +256,9 @@ export async function placeOutboundCall(
   if (result.ok) {
     if (attempt) attempt.providerMessageId = result.providerCallId;
     if (conversation) {
-      conversation.listenUrl = result.listenUrl;
-      conversation.controlUrl = result.controlUrl;
+      conversation.listenUrl = protectBearerUrl(result.listenUrl);
+      conversation.controlUrl = protectBearerUrl(result.controlUrl);
+      conversation.profileSnapshot = result.profileSnapshot;
     }
   } else {
     // The provider refused. Settle both records rather than leaving the
@@ -257,7 +279,7 @@ export async function placeOutboundCall(
       conversation.settledBySystem = true;
     }
   }
-  saveDb();
+  await saveDb();
 
   return {
     ok: result.ok,

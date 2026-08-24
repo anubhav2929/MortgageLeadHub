@@ -88,10 +88,10 @@ Out-of-order and duplicate callbacks are rejected: a delayed "sent" arriving
 after "delivered" cannot walk an attempt backwards, and a settled outcome is
 never overwritten by a second terminal one.
 
-> **This requires `DELIVERY_WEBHOOK_SECRET`.** Until it is set, the app does not
-> request delivery receipts at all, and messages stay SENT indefinitely. This is
-> deliberate — exposing an unauthenticated callback endpoint would let anyone
-> forge a delivery history.
+> **This requires provider-native webhook authentication.** Twilio validates
+> `X-Twilio-Signature` with the account auth token; Telnyx validates Ed25519
+> signatures with `TELNYX_PUBLIC_KEY`; Resend validates Svix signatures. Do not
+> put a shared secret in a callback URL.
 
 ### Live but failing — per-lead (PERMANENT)
 Invalid number, landline, disconnected handset, hard-bounced mailbox, or a
@@ -217,7 +217,7 @@ officer quoting a borrower's equity from a modelled number is a real problem.
 home pages, with a visible warning on the discovery page. These are illustrative
 of the workflow, not leads. Do not act on them.
 
-**Live:** real Reddit search results. Note that discovery surfaces *signals*, not
+**Live only after written commercial approval and OAuth:** approved Reddit API results. Note that discovery surfaces *signals*, not
 contactable leads — nothing here is auto-contacted, and it must not be. Cold
 outreach to someone who posted publicly is a different consent posture than a
 borrower who submitted an intake form.
@@ -231,36 +231,28 @@ borrower who submitted an intake form.
 2. **Start 10DLC registration on Telnyx and/or Twilio immediately.** It takes
    1–3 business days and is the binding constraint on launch date. Register on
    both if you intend to keep both (ADR-0004).
-3. **`DELIVERY_WEBHOOK_SECRET`**, then point each provider's status callback at
-   `/api/webhooks/delivery/{provider}`. Skipping this leaves the CRM blind to
-   every delivery failure.
+3. **Signed provider webhooks** — configure Twilio inbound/delivery routes,
+   Telnyx signed primary/failover routes, and the Resend Svix webhook. Skipping
+   this leaves the CRM blind to delivery failures and STOP events.
 4. **LLM key** (Anthropic, or NVIDIA for the free tier) — without it the AI
    features are templates.
 5. **Resend**, including the delivery-events webhook, not just the API key.
 6. **Vapi** — needs all three of API key, phone number id, and webhook secret.
    With only the key entered, the panel now names the missing fields.
-7. **Verify with a real send to your own phone**, then check the attempt
-   actually reaches DELIVERED. If it stays SENT, step 3 is not finished.
+7. **Verify with an approved test number**, then check the attempt actually
+   reaches DELIVERED. If it stays SENT, step 3 is not finished.
 
 ---
 
-## Known gaps
+## Controlled rollout boundaries
 
-Honest list of what is still prototype-grade:
-
-- **Inbound SMS is not captured.** There is no inbound SMS webhook, so the
-  conversation thread shows outbound texts without borrower replies. Email and
-  voice replies are captured; SMS is the hole.
-- **Persistence is a single JSON blob** read/modified/written as one row, with
-  fire-and-forget writes and per-instance caching. Concurrent server instances
-  can overwrite each other, and a successful UI response can precede a failed
-  write. This is acceptable at current volume and is the first thing to
-  normalise before real load — start with `leads` and `contactAttempts`.
-- **No job queue.** Cadence is a cron sweep over all leads, not a work queue
-  with per-item retry and dead-lettering.
-- **Seeded demo data and a shared demo password** ship in the default database.
-  Both must be removed before the system holds real borrower data.
-- **Voice calls are one-way TwiML**, not a connected officer leg. The dialer
-  reflects this: it shows "handed to the carrier" and asks the officer to log
-  the outcome, because we genuinely do not know whether anyone answered until
-  they tell us or a status callback arrives.
+- Signed inbound SMS and STOP/START/HELP are implemented; they remain operationally
+  unavailable until the carrier signing key and primary/failover URLs are configured.
+- Snapshot compatibility writes are awaited and revision-merged. Normalized schemas,
+  queues, identity, and operational records are migrated; normalized authoritative
+  reads remain locked pending the comparison window.
+- Durable webhook and outbox queues provide retry/dead-letter state. A protected
+  scheduler must still invoke both workers at the required frequency.
+- Production does not seed shared demo credentials.
+- Manual announcement calls and Vapi conversational calls are distinct. Vapi warm
+  transfer success is based on bridge lifecycle events, not carrier acceptance alone.

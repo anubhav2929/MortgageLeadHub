@@ -9,11 +9,15 @@ import { Input, Label } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
 import { updateSystemConfigAction } from "@/domain/actions";
 import type { SystemConfig } from "@/domain/types";
+import { isValidIanaTimezone } from "@/core/timezone";
 
 // Mirrors updateSystemConfigAction's own checks — surfaced here so an admin
 // sees what's wrong (and Save is disabled) before round-tripping to the
 // server, instead of discovering it only after clicking Save.
 function validate(form: SystemConfig): string | null {
+  if (!form.adminTimezone || !isValidIanaTimezone(form.adminTimezone)) {
+    return "Enter a valid IANA timezone, such as America/New_York.";
+  }
   if (form.firstContactSlaMinutes < 1 || form.dailyAttemptCap < 1 || form.minSpacingHours < 0) {
     return "SLA, attempt cap, and spacing must be positive.";
   }
@@ -39,6 +43,19 @@ function validate(form: SystemConfig): string | null {
   const w2 = form.engagementWindowMinutes;
   if (w2 !== undefined && (Number.isNaN(w2) || w2 < 0 || w2 > 120)) {
     return "Live-chat hold must be between 0 and 120 minutes.";
+  }
+  const callback = form.callbackReminderPolicy;
+  if (
+    !callback ||
+    callback.slotDurationMinutes < 5 ||
+    callback.bufferMinutes < 0 ||
+    callback.minimumLeadMinutes < 0 ||
+    callback.bookingHorizonDays < 1 ||
+    callback.reminderMinutesBefore < 1 ||
+    !callback.confirmationTemplate.trim() ||
+    !callback.reminderTemplate.trim()
+  ) {
+    return "Callback timing and both SMS templates must contain valid values.";
   }
   return null;
 }
@@ -108,8 +125,110 @@ export function SettingsPanel({ config, canEdit }: { config: SystemConfig; canEd
     setForm((f) => ({ ...f, scoringWeights: { ...f.scoringWeights, [key]: value } }));
   }
 
+  function updateCallback<K extends keyof NonNullable<SystemConfig["callbackReminderPolicy"]>>(
+    key: K,
+    value: NonNullable<SystemConfig["callbackReminderPolicy"]>[K],
+  ) {
+    setForm((f) => ({ ...f, callbackReminderPolicy: { ...f.callbackReminderPolicy!, [key]: value } }));
+  }
+
+  function updateFeature(key: keyof NonNullable<SystemConfig["featureFlags"]>, value: boolean) {
+    setForm((f) => ({ ...f, featureFlags: { ...f.featureFlags, [key]: value } }));
+  }
+
   return (
     <div className="space-y-5">
+      <Card className={!form.timezoneConfirmed ? "border-[var(--warning)]" : undefined}>
+        <CardHeader>
+          <div>
+            <CardTitle>Operational timezone</CardTitle>
+            <CardDescription>
+              Controls dates, audit logs, reports, and daily counters. Borrower contact hours continue to use each borrower&apos;s timezone.
+            </CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="max-w-md">
+            <Label htmlFor="adminTimezone">IANA timezone</Label>
+            <Input
+              id="adminTimezone"
+              value={form.adminTimezone ?? "UTC"}
+              disabled={!canEdit}
+              onChange={(e) => update("adminTimezone", e.target.value)}
+              placeholder="America/New_York"
+            />
+            <p className="mt-1.5 text-xs text-[var(--muted-foreground)]">
+              Timestamps remain stored in UTC. Saving confirms this timezone for the deployment.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <div>
+            <CardTitle>Callback scheduling and SMS</CardTitle>
+            <CardDescription>
+              Controls the officer slot window and the two-message callback policy. The confirmation is queued after
+              booking commits; the reminder is rechecked against consent, STOP, quiet hours, and appointment status immediately before send.
+            </CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-5 sm:grid-cols-2">
+          {([
+            ["slotDurationMinutes", "Slot duration (minutes)", 5, 240],
+            ["bufferMinutes", "Officer buffer (minutes)", 0, 120],
+            ["minimumLeadMinutes", "Minimum booking lead (minutes)", 0, 1440],
+            ["bookingHorizonDays", "Booking horizon (days)", 1, 90],
+            ["reminderMinutesBefore", "Reminder before callback (minutes)", 1, 1440],
+          ] as const).map(([key, label, min, max]) => (
+            <div key={key}>
+              <Label>{label}</Label>
+              <Input type="number" min={min} max={max} disabled={!canEdit}
+                value={form.callbackReminderPolicy?.[key] ?? min}
+                onChange={(e) => updateCallback(key, Number(e.target.value))} />
+            </div>
+          ))}
+          <div className="sm:col-span-2">
+            <Label>Booking confirmation SMS</Label>
+            <Input disabled={!canEdit} value={form.callbackReminderPolicy?.confirmationTemplate ?? ""}
+              onChange={(e) => updateCallback("confirmationTemplate", e.target.value)} />
+          </div>
+          <div className="sm:col-span-2">
+            <Label>Reminder SMS</Label>
+            <Input disabled={!canEdit} value={form.callbackReminderPolicy?.reminderTemplate ?? ""}
+              onChange={(e) => updateCallback("reminderTemplate", e.target.value)} />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div>
+            <CardTitle>Production rollout flags</CardTitle>
+            <CardDescription>Advance each capability independently through internal testing, recorded UAT, and production.</CardDescription>
+          </div>
+        </CardHeader>
+        <CardContent className="grid gap-3 sm:grid-cols-2">
+          {([
+            ["vapiSquads", "Vapi transient squads"],
+            ["automaticWarmTransfer", "Automatic warm transfer"],
+            ["callbackScheduling", "In-call callback booking"],
+            ["normalizedReads", "Normalized authoritative reads"],
+            ["redditPosting", "Approved Reddit publishing"],
+            ["freePropertyValuation", "Free valuation evidence chain"],
+            ["metaCapi", "Meta Conversions API"],
+            ["automatedPowerDialer", "Automated sequential power dialer"],
+          ] as const).map(([key, label]) => (
+            <label key={key} className="flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3 text-[13px] font-medium">
+              <input type="checkbox" className="h-4 w-4 accent-[var(--primary)]" disabled={!canEdit || key === "normalizedReads"}
+                checked={Boolean(form.featureFlags?.[key])}
+                onChange={(e) => updateFeature(key, e.target.checked)} />
+              <span>{label}{key === "normalizedReads" ? " — locked until reconciliation is clean" : ""}</span>
+            </label>
+          ))}
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <div>

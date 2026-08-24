@@ -26,7 +26,7 @@ const SPECIALTY_TONE: Record<ReferralSpecialty, "danger" | "warning" | "neutral"
   BANKRUPTCY: "neutral",
 };
 
-export function ReferralPartnersPanel({ partners }: { partners: ReferralPartner[] }) {
+export function ReferralPartnersPanel({ partners, canManage }: { partners: ReferralPartner[]; canManage: boolean }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [specialty, setSpecialty] = useState<ReferralSpecialty>("LOAN_MODIFICATION");
@@ -74,9 +74,11 @@ export function ReferralPartnersPanel({ partners }: { partners: ReferralPartner[
         <p className="text-[13px] text-[var(--muted-foreground)]">
           Leads that can&apos;t qualify for refi/equity get routed here instead of discarded — {partners.length} partner{partners.length === 1 ? "" : "s"} on file.
         </p>
-        <Button size="sm" onClick={() => setOpen(true)}>
-          <Plus className="h-3.5 w-3.5" /> New partner
-        </Button>
+        {canManage && (
+          <Button size="sm" onClick={() => setOpen(true)}>
+            <Plus className="h-3.5 w-3.5" /> New partner
+          </Button>
+        )}
       </div>
 
       {partners.length === 0 ? (
@@ -99,16 +101,18 @@ export function ReferralPartnersPanel({ partners }: { partners: ReferralPartner[
                   </p>
                   {p.notes && <p className="mt-1 text-xs italic text-[var(--muted-foreground)]">{p.notes}</p>}
                 </div>
-                <Button variant="ghost" size="sm" loading={isPending} onClick={() => toggleActive(p.id, p.isActive)}>
-                  {p.isActive ? <ShieldOff className="h-3.5 w-3.5" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                </Button>
+                {canManage && (
+                  <Button variant="ghost" size="sm" loading={isPending} onClick={() => toggleActive(p.id, p.isActive)}>
+                    {p.isActive ? <ShieldOff className="h-3.5 w-3.5" /> : <ShieldCheck className="h-3.5 w-3.5" />}
+                  </Button>
+                )}
               </div>
             ))}
           </CardContent>
         </Card>
       )}
 
-      <Modal
+      {canManage && <Modal
         open={open}
         onClose={() => setOpen(false)}
         title="Add referral partner"
@@ -156,7 +160,7 @@ export function ReferralPartnersPanel({ partners }: { partners: ReferralPartner[
             <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="Fee arrangement, coverage area, etc." />
           </div>
         </div>
-      </Modal>
+      </Modal>}
     </div>
   );
 }

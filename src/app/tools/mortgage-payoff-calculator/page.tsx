@@ -1,12 +1,14 @@
-import type { Metadata } from "next";
 import { ToolPageShell } from "@/components/marketing/tool-page-shell";
 import { PayoffCalculator } from "@/components/marketing/tools/payoff-calculator";
+import { seoMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata = seoMetadata({
   title: "Mortgage Payoff Calculator — Extra Payment Savings | Equity Flow Group",
   description:
     "Free mortgage payoff calculator. See how much time and interest an extra monthly payment could save you over the life of your loan.",
-};
+  path: "/tools/mortgage-payoff-calculator",
+  keywords: ["mortgage payoff calculator", "extra mortgage payment calculator", "mortgage interest savings"],
+});
 
 export default function PayoffCalculatorPage() {
   return (

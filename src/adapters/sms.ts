@@ -18,15 +18,24 @@ export interface SendSmsInput {
   to: string;
   body: string;
   idempotencyKey: string;
+  /** Callback confirmations/reminders require a provider that honors an
+   * idempotency key at its network boundary. Twilio's Messages API does not
+   * provide that guarantee, so those durable jobs fail closed to Telnyx. */
+  requireIdempotentProvider?: boolean;
 }
 
-/** Where the carrier should report delivery. Returns null when the shared
- *  secret isn't set, in which case we simply don't ask for callbacks rather
- *  than exposing an unauthenticated endpoint. */
-async function deliveryCallbackUrl(provider: "twilio" | "telnyx"): Promise<string | null> {
-  const secret = await getConfigValue("DELIVERY_WEBHOOK_SECRET");
-  if (!secret) return null;
-  return `${await getAppUrl()}/api/webhooks/delivery/${provider}?secret=${encodeURIComponent(secret)}`;
+/** Twilio signs this exact public URL with the account auth token. */
+async function deliveryCallbackUrl(provider: "twilio"): Promise<string> {
+  return `${await getAppUrl()}/api/webhooks/delivery/${provider}`;
+}
+
+async function telnyxWebhookUrls(): Promise<{ primary: string; failover: string } | null> {
+  if (!(await getConfigValue("TELNYX_PUBLIC_KEY"))) return null;
+  const appUrl = await getAppUrl();
+  return {
+    primary: `${appUrl}/api/webhooks/telnyx`,
+    failover: `${appUrl}/api/webhooks/telnyx/failover`,
+  };
 }
 
 /** Twilio and Telnyx both surface an error code the caller needs in order to
@@ -42,22 +51,24 @@ function errorCodeOf(err: unknown): string | undefined {
 async function sendViaTelnyx(input: SendSmsInput, apiKey: string, from: string): Promise<AdapterResult> {
   try {
     const profileId = await getConfigValue("TELNYX_MESSAGING_PROFILE_ID");
-    const statusCallback = await deliveryCallbackUrl("telnyx");
+    const webhooks = await telnyxWebhookUrls();
     const res = await fetch("https://api.telnyx.com/v2/messages", {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "Idempotency-Key": input.idempotencyKey },
       body: JSON.stringify({
         from,
         to: input.to,
         text: input.body,
         ...(profileId ? { messaging_profile_id: profileId } : {}),
-        // Delivery is reported asynchronously; without this callback the
-        // attempt would stay SENT forever regardless of what the carrier did.
-        // use_profile_webhooks defaults to true, which makes Telnyx prefer the
-        // messaging profile's own webhook URL — so an unrelated URL configured
-        // in the portal would silently swallow our delivery receipts. Turning
-        // it off is what guarantees the callback lands here.
-        ...(statusCallback ? { webhook_url: statusCallback, use_profile_webhooks: false } : {}),
+        // A configured messaging profile is the source of truth for inbound
+        // and delivery webhooks. Without one, apply the same signed primary
+        // and failover endpoints per-message so callbacks are never sent to
+        // the legacy query-string-secret routes.
+        ...(profileId
+          ? { use_profile_webhooks: true }
+          : webhooks
+            ? { webhook_url: webhooks.primary, webhook_failover_url: webhooks.failover, use_profile_webhooks: false }
+            : {}),
       }),
     });
     if (!res.ok) throw new Error(`Telnyx API returned ${res.status}: ${await res.text()}`);
@@ -80,7 +91,7 @@ async function sendViaTwilio(input: SendSmsInput, sid: string, token: string, fr
       to: input.to,
       from,
       body: input.body,
-      ...(statusCallback ? { statusCallback } : {}),
+      statusCallback,
     });
     return adapterSuccess(message.sid);
   } catch (err) {
@@ -98,8 +109,13 @@ export async function sendSms(input: SendSmsInput): Promise<AdapterResult> {
   const sid = await getConfigValue("TWILIO_ACCOUNT_SID");
   const token = await getConfigValue("TWILIO_AUTH_TOKEN");
   const twilioFrom = await getConfigValue("TWILIO_PHONE_NUMBER");
-  if (sid && token && twilioFrom) return sendViaTwilio(input, sid, token, twilioFrom);
+  if (sid && token && twilioFrom) {
+    if (input.requireIdempotentProvider) {
+      return adapterFailure({ class: "PERMANENT", message: "Callback SMS requires Telnyx provider idempotency.", affectsAllLeads: true });
+    }
+    return sendViaTwilio(input, sid, token, twilioFrom);
+  }
 
-  console.log(`[SIMULATED SMS] to=${input.to} body="${input.body}"`);
+  console.log(`[SIMULATED SMS] idempotencyKey=${input.idempotencyKey}`);
   return adapterSuccess(`sim_sms_${input.idempotencyKey}`, true);
 }

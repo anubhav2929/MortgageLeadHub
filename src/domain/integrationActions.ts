@@ -15,9 +15,10 @@ import { revalidatePath } from "next/cache";
 import { getCurrentUser } from "@/domain/session";
 import { getDb, nowIso, saveDb } from "@/domain/store";
 import { audit } from "@/domain/audit";
-import { decryptSecret, encryptSecret, isSecretStorageEnabled, maskSecret } from "@/core/secretBox";
+import { encryptSecret, isSecretStorageEnabled } from "@/core/secretBox";
 import { ALL_INTEGRATION_KEYS, INTEGRATIONS, isSecretKey } from "@/core/integrationRegistry";
 import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
+import { getRedditAccessToken } from "@/adapters/reddit";
 
 export interface ActionResult {
   ok: boolean;
@@ -42,6 +43,7 @@ export interface IntegrationStatus {
   id: string;
   live: boolean;
   fields: CredentialStatus[];
+  lastVerified?: { ok: boolean; message: string; verifiedAt: string; verifiedByName: string };
 }
 
 async function requireAdmin() {
@@ -61,12 +63,15 @@ export async function getIntegrationStatusesAction(): Promise<{
   const liveById: Record<string, boolean> = {
     telnyx: caps.hasTelnyx,
     twilio: caps.hasTwilio,
+    openai: caps.hasOpenAi,
     anthropic: caps.hasAnthropic,
     nvidia: caps.hasNvidia,
     resend: caps.hasResend,
     vapi: caps.hasVoiceAgent,
     rentcast: caps.hasPropertyData,
+    isoftpull: caps.hasCredit,
     reddit: caps.hasLeadDiscovery,
+    analytics: Boolean(await getConfigValue("NEXT_PUBLIC_GA_MEASUREMENT_ID")),
     platform: true,
   };
 
@@ -79,7 +84,7 @@ export async function getIntegrationStatusesAction(): Promise<{
       const fromEnv = !stored && Boolean(resolved);
       let display = "";
       if (resolved) {
-        display = isSecretKey(f.key) ? maskSecret(resolved) : resolved;
+        display = isSecretKey(f.key) ? "••••••••" : resolved;
       }
       fields.push({
         key: f.key,
@@ -90,7 +95,8 @@ export async function getIntegrationStatusesAction(): Promise<{
         updatedByName: stored?.updatedByName,
       });
     }
-    integrations.push({ id: def.id, live: liveById[def.id] ?? false, fields });
+    const health = db.integrationHealth.get(def.id);
+    integrations.push({ id: def.id, live: liveById[def.id] ?? false, fields, lastVerified: health ? { ok: health.ok, message: health.message, verifiedAt: health.verifiedAt, verifiedByName: health.verifiedByName } : undefined });
   }
 
   return { storageEnabled: isSecretStorageEnabled(), integrations };
@@ -149,7 +155,7 @@ export async function saveIntegrationKeysAction(
     return { ok: true, message: "No changes to save." };
   }
 
-  saveDb();
+  await saveDb();
   await audit(
     user.id,
     user.name,
@@ -167,12 +173,15 @@ export async function saveIntegrationKeysAction(
     ({
       telnyx: caps.hasTelnyx,
       twilio: caps.hasTwilio,
+      openai: caps.hasOpenAi,
       anthropic: caps.hasAnthropic,
       nvidia: caps.hasNvidia,
       resend: caps.hasResend,
       vapi: caps.hasVoiceAgent,
       rentcast: caps.hasPropertyData,
+      isoftpull: caps.hasCredit,
       reddit: caps.hasLeadDiscovery,
+      analytics: Boolean(await getConfigValue("NEXT_PUBLIC_GA_MEASUREMENT_ID")),
     } as Record<string, boolean>)[def.id] ?? false;
 
   return {
@@ -191,9 +200,7 @@ export interface TestResult {
 /** Makes a real, cheap, read-only call to the provider so the admin finds out
  *  a key is wrong here — not later, silently, in the middle of a lead's
  *  cadence. Never sends a message or places a call. */
-export async function testIntegrationAction(integrationId: string): Promise<TestResult> {
-  await requireAdmin();
-
+async function runIntegrationTest(integrationId: string): Promise<TestResult> {
   try {
     switch (integrationId) {
       case "telnyx": {
@@ -201,6 +208,7 @@ export async function testIntegrationAction(integrationId: string): Promise<Test
         if (!key) return { ok: false, message: "No API key saved yet." };
         const res = await fetch("https://api.telnyx.com/v2/phone_numbers?page[size]=1", {
           headers: { Authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(10_000),
         });
         return res.ok
           ? { ok: true, message: "Connected to Telnyx." }
@@ -212,6 +220,7 @@ export async function testIntegrationAction(integrationId: string): Promise<Test
         if (!sid || !token) return { ok: false, message: "Account SID and auth token are both required." };
         const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}.json`, {
           headers: { Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString("base64")}` },
+          signal: AbortSignal.timeout(10_000),
         });
         return res.ok
           ? { ok: true, message: "Connected to Twilio." }
@@ -222,15 +231,27 @@ export async function testIntegrationAction(integrationId: string): Promise<Test
         if (!key) return { ok: false, message: "No API key saved yet." };
         const res = await fetch("https://api.anthropic.com/v1/models?limit=1", {
           headers: { "x-api-key": key, "anthropic-version": "2023-06-01" },
+          signal: AbortSignal.timeout(10_000),
         });
         return res.ok
           ? { ok: true, message: "Connected to Anthropic." }
           : { ok: false, message: `Anthropic rejected the key (HTTP ${res.status}).` };
       }
+      case "openai": {
+        const key = await getConfigValue("OPENAI_API_KEY");
+        if (!key) return { ok: false, message: "No API key saved yet." };
+        const res = await fetch("https://api.openai.com/v1/models", {
+          headers: { Authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(10_000),
+        });
+        return res.ok
+          ? { ok: true, message: "Connected to OpenAI." }
+          : { ok: false, message: `OpenAI rejected the key (HTTP ${res.status}).` };
+      }
       case "resend": {
         const key = await getConfigValue("RESEND_API_KEY");
         if (!key) return { ok: false, message: "No API key saved yet." };
-        const res = await fetch("https://api.resend.com/domains", { headers: { Authorization: `Bearer ${key}` } });
+        const res = await fetch("https://api.resend.com/domains", { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
         return res.ok
           ? { ok: true, message: "Connected to Resend." }
           : { ok: false, message: `Resend rejected the key (HTTP ${res.status}).` };
@@ -238,7 +259,7 @@ export async function testIntegrationAction(integrationId: string): Promise<Test
       case "vapi": {
         const key = await getConfigValue("VAPI_API_KEY");
         if (!key) return { ok: false, message: "No API key saved yet." };
-        const res = await fetch("https://api.vapi.ai/phone-number", { headers: { Authorization: `Bearer ${key}` } });
+        const res = await fetch("https://api.vapi.ai/phone-number", { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
         return res.ok
           ? { ok: true, message: "Connected to Vapi." }
           : { ok: false, message: `Vapi rejected the key (HTTP ${res.status}).` };
@@ -248,6 +269,7 @@ export async function testIntegrationAction(integrationId: string): Promise<Test
         if (!key) return { ok: false, message: "No API key saved yet." };
         const res = await fetch("https://api.rentcast.io/v1/avm/value?address=1600%20Pennsylvania%20Ave%20NW,%20Washington,%20DC", {
           headers: { "X-Api-Key": key },
+          signal: AbortSignal.timeout(10_000),
         });
         return res.ok || res.status === 404
           ? { ok: true, message: "Connected to RentCast." }
@@ -258,23 +280,31 @@ export async function testIntegrationAction(integrationId: string): Promise<Test
         if (!key) return { ok: false, message: "No API key saved yet." };
         const res = await fetch("https://integrate.api.nvidia.com/v1/models", {
           headers: { Authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(10_000),
         });
         return res.ok
           ? { ok: true, message: "Connected to NVIDIA NIM." }
           : { ok: false, message: `NVIDIA rejected the key (HTTP ${res.status}).` };
       }
       case "reddit": {
-        // No credentials to check — discovery reads a public archive (see
-        // ADR 0006). The useful test is therefore "is the archive answering
-        // right now", which is the thing that actually breaks.
-        const res = await fetch(
-          "https://arctic-shift.photon-reddit.com/api/posts/search?subreddit=Mortgages&limit=1&sort=desc",
-          { headers: { "User-Agent": "equityflowgroup-discovery/2.0" }, signal: AbortSignal.timeout(15_000) }
-        );
-        if (!res.ok) return { ok: false, message: `Discovery archive unavailable (HTTP ${res.status}).` };
-        const json = (await res.json()) as { data?: unknown[]; error?: string };
-        if (json.error) return { ok: false, message: `Discovery archive error: ${json.error}` };
-        return { ok: true, message: "Discovery archive is reachable — no credentials needed." };
+        if ((await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) !== "true") return { ok: false, message: "Written commercial approval has not been recorded." };
+        const db = await getDb();
+        const connection = Array.from(db.redditConnections.values()).find((item) => !item.revokedAt);
+        if (!connection) return { ok: false, message: "No Reddit OAuth account is connected." };
+        const token = await getRedditAccessToken(connection);
+        const res = await fetch("https://oauth.reddit.com/api/v1/me", { headers: { Authorization: `Bearer ${token}`, "User-Agent": "EquityFlowGroup/1.0" }, signal: AbortSignal.timeout(10_000) });
+        return res.ok ? { ok: true, message: `Connected to Reddit as u/${connection.accountName}.` } : { ok: false, message: `Reddit account verification failed (HTTP ${res.status}).` };
+      }
+      case "analytics": {
+        const ga = await getConfigValue("NEXT_PUBLIC_GA_MEASUREMENT_ID");
+        const meta = await getConfigValue("META_PIXEL_ID");
+        return ga || meta ? { ok: true, message: "Analytics configuration is present. Complete consent-denial and network-payload UAT before enabling Meta CAPI." } : { ok: false, message: "No GA4 or Meta identifiers are configured." };
+      }
+      case "isoftpull": {
+        const ready = (await getCapabilities()).hasCredit;
+        return ready
+          ? { ok: true, message: "iSoftpull credentials and the legal approval gate are present. Complete an approved sandbox pull before live activation." }
+          : { ok: false, message: "Add both iSoftpull credentials and set CREDIT_LIVE_APPROVED=true only after counsel approval." };
       }
       default:
         return { ok: false, message: "This integration has no connection test." };
@@ -284,19 +314,15 @@ export async function testIntegrationAction(integrationId: string): Promise<Test
   }
 }
 
-/** Reveals one secret in full, for an admin who needs to verify or copy it.
- *  Separate action so it's a deliberate click, audit-logged on its own. */
-export async function revealIntegrationKeyAction(key: string): Promise<{ ok: boolean; value?: string; message?: string }> {
+export async function testIntegrationAction(integrationId: string): Promise<TestResult> {
   const user = await requireAdmin();
-  if (!ALL_INTEGRATION_KEYS.includes(key)) return { ok: false, message: "Unknown key." };
-
+  const result = await runIntegrationTest(integrationId);
   const db = await getDb();
-  const stored = db.credentials.get(key);
-  if (!stored) return { ok: false, message: "That key is set by an environment variable, not here." };
-
-  const plain = decryptSecret(stored.value);
-  if (!plain) return { ok: false, message: "Could not decrypt — CREDENTIAL_SECRET may have changed since this was saved." };
-
-  await audit(user.id, user.name, "INTEGRATION_KEY_REVEALED", "Integration", key, "ALLOW");
-  return { ok: true, value: plain };
+  db.integrationHealth.set(integrationId, {
+    integrationId, ok: result.ok, message: result.message, verifiedAt: nowIso(), verifiedById: user.id, verifiedByName: user.name,
+  });
+  await audit(user.id, user.name, "INTEGRATION_VERIFIED", "Integration", integrationId, result.ok ? "ALLOW" : "DENY", { message: result.message });
+  await saveDb();
+  revalidatePath("/workspace/admin");
+  return result;
 }

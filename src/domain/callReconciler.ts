@@ -8,6 +8,8 @@ import { fetchVapiCallState } from "@/adapters/vapiCallStatus";
 import { advanceCallStatus, classifyEndedReason, mapVapiCallStatus } from "@/core/vapiLifecycle";
 import { mapWithConcurrency } from "@/core/concurrency";
 import { getDb, nowIso, saveDb } from "@/domain/store";
+import { protectBearerUrl } from "@/core/secretBox";
+import { getConfigValue } from "@/lib/runtimeConfig";
 
 /**
  * How quiet a call must be before we ask the provider about it.
@@ -129,7 +131,7 @@ export async function reconcileLiveCalls(now = new Date()): Promise<ReconcileSum
           attempt.failureClass = verdict.failureClass;
           attempt.failureMessage = verdict.detail;
         }
-        if (state.recordingUrl) attempt.recordingUrl = state.recordingUrl;
+        if (state.recordingUrl && (await getConfigValue("RETAIN_RECORDING_URLS")) === "true") attempt.recordingUrl = protectBearerUrl(state.recordingUrl);
         if (convo.startedAt) {
           attempt.durationSec = Math.max(
             0,
@@ -145,6 +147,6 @@ export async function reconcileLiveCalls(now = new Date()): Promise<ReconcileSum
     return null;
   });
 
-  if (summary.updated > 0 || summary.settled > 0) saveDb();
+  if (summary.updated > 0 || summary.settled > 0) await saveDb();
   return summary;
 }

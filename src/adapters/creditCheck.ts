@@ -41,29 +41,22 @@ export function scoreToBand(score: number): CreditBand {
   return "BELOW_620";
 }
 
-/** Deterministic per-person score for the simulated path, so the same test
- *  lead shows the same band on every reload instead of re-rolling. */
-function simulatedScore(input: SoftPullInput): number {
-  const seed = `${input.firstName}|${input.lastName}|${input.addressLine1}|${input.stateCode}`.toLowerCase();
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = (hash << 5) - hash + seed.charCodeAt(i);
-    hash |= 0;
-  }
-  // 580–800, the range that actually turns up in this market.
-  return 580 + (Math.abs(hash) % 221);
-}
-
 export async function runSoftCreditPull(input: SoftPullInput): Promise<SoftPullResult> {
   const apiKey = await getConfigValue("ISOFTPULL_API_KEY");
   const apiSecret = await getConfigValue("ISOFTPULL_API_SECRET");
+  const liveApproved = (await getConfigValue("CREDIT_LIVE_APPROVED")) === "true";
 
-  if (!apiKey || !apiSecret) {
-    const score = simulatedScore(input);
-    // Never log the name or address — this is the one adapter where the
-    // request payload is unambiguously regulated PII.
-    console.log(`[SIMULATED SOFT PULL] ref=${input.referenceId} → band ${scoreToBand(score)}`);
-    return { ok: true, score, band: scoreToBand(score), bureau: "SIMULATED", simulated: true };
+  if (!apiKey || !apiSecret || !liveApproved) {
+    return {
+      ok: false,
+      failure: {
+        class: "PERMANENT",
+        message: apiKey && apiSecret
+          ? "Live soft credit is held by the CREDIT_LIVE_APPROVED legal gate."
+          : "Soft credit provider is not configured.",
+        affectsAllLeads: true,
+      },
+    };
   }
 
   try {

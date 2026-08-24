@@ -7,15 +7,15 @@
 //
 // Setup (see docs/INTEGRATION-BEHAVIOR.md):
 //   Telnyx — messaging profile → inbound webhook URL →
-//            {APP_URL}/api/webhooks/inbound/telnyx?secret=...
+//            {APP_URL}/api/webhooks/telnyx
 //   Twilio — phone number → "A message comes in" →
-//            {APP_URL}/api/webhooks/inbound/twilio?secret=...
+//            {APP_URL}/api/webhooks/inbound/twilio
 
 import { NextResponse } from "next/server";
-import { safeCompare } from "@/core/auth";
 import { ingestInboundSms } from "@/domain/inboundSms";
-import { getConfigValue } from "@/lib/runtimeConfig";
+import { getAppUrl, getConfigValue } from "@/lib/runtimeConfig";
 import { applyDeliveryUpdate } from "@/domain/deliveryUpdates";
+import { formParams, verifyTwilioWebhook } from "@/adapters/twilioWebhookAuth";
 
 const SUPPORTED = ["twilio", "telnyx"] as const;
 type Provider = (typeof SUPPORTED)[number];
@@ -26,17 +26,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     return NextResponse.json({ ok: false, error: "Unknown provider" }, { status: 404 });
   }
   const provider = raw as Provider;
-
-  // Authenticate before doing anything. An unauthenticated caller here could
-  // forge an opt-out for an arbitrary number (denial of service against a real
-  // borrower) or, worse, forge a START to resurrect a suppressed one.
-  const expected = await getConfigValue("DELIVERY_WEBHOOK_SECRET");
-  const supplied = new URL(request.url).searchParams.get("secret");
-  if (!expected || !supplied || !safeCompare(supplied, expected)) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  if (provider === "telnyx") {
+    return NextResponse.json({ ok: false, error: "Retired. Configure the signed /api/webhooks/telnyx primary or failover endpoint." }, { status: 410 });
   }
 
   const rawBody = await request.text();
+  const requestUrl = new URL(request.url);
+  const appUrl = await getAppUrl();
+  const publicUrl = `${appUrl}${requestUrl.pathname}${requestUrl.search}`;
+  const authToken = await getConfigValue("TWILIO_AUTH_TOKEN");
+  if (!authToken || !verifyTwilioWebhook({ authToken, signature: request.headers.get("x-twilio-signature"), publicUrl, rawBody })) {
+    return NextResponse.json({ ok: false, error: "Invalid Twilio signature" }, { status: 401 });
+  }
   let from: string | null = null;
   let body: string | null = null;
   let providerMessageId: string | undefined;
@@ -44,10 +45,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
   try {
     if (provider === "twilio") {
       // Twilio posts form-encoded.
-      const form = new URLSearchParams(rawBody);
-      from = form.get("From");
-      body = form.get("Body");
-      providerMessageId = form.get("MessageSid") ?? undefined;
+      const form = formParams(rawBody);
+      from = form.From ?? null;
+      body = form.Body ?? null;
+      providerMessageId = form.MessageSid;
     } else {
       const parsed = JSON.parse(rawBody) as {
         data?: {

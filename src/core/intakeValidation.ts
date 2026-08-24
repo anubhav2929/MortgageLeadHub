@@ -16,6 +16,7 @@ export const intakeInputSchema = z.object({
   lastName: z.string().trim().min(1, "Required").max(NAME_MAX),
   phone: z.string().trim().min(1, "Required").max(30),
   email: z.string().trim().min(1, "Required").max(TEXT_MAX).email("Enter a valid email"),
+  borrowerTimezone: z.string().trim().max(100).optional(),
   stateCode: z.enum(Object.keys(STATE_NAMES) as [string, ...string[]], { message: "Select a state" }),
   city: z.string().trim().max(TEXT_MAX).optional(),
   addressLine1: z.string().trim().max(TEXT_MAX).optional(),

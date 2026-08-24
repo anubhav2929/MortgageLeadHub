@@ -14,11 +14,17 @@ export type Action =
   | "VIEW_AUDIT_LOG"
   | "TAKE_OVER_LEAD"
   | "CALL_NOW"
-  | "MARK_WON_LOST";
+  | "MARK_WON_LOST"
+  | "ADD_NOTE"
+  | "MANAGE_TASK"
+  | "REQUEST_COMPLIANCE_REVIEW"
+  | "VIEW_CALL_CENTER"
+  | "VIEW_MESSAGE_CENTER";
 
-interface Subject {
+export interface Subject {
   role: Role;
   officerId?: string;
+  licensedStates?: string[];
 }
 
 export function can(user: Subject, action: Action, lead?: Lead): boolean {
@@ -27,19 +33,35 @@ export function can(user: Subject, action: Action, lead?: Lead): boolean {
   switch (action) {
     case "VIEW_LEAD_PII":
       if (role === "ADMIN" || role === "COMPLIANCE") return true;
-      if (role === "OFFICER") return !!lead && (lead.assignedOfficerId === user.officerId || !lead.assignedOfficerId);
+      if (role === "OFFICER") {
+        if (!lead) return false;
+        if (lead.assignedOfficerId === user.officerId) return true;
+        return !lead.assignedOfficerId && Boolean(user.licensedStates?.includes(lead.stateCode));
+      }
       return false; // READ_ONLY sees masked PII, never raw
     case "EXPORT_LEAD":
       if (role === "ADMIN" || role === "COMPLIANCE") return true;
       if (role === "OFFICER") return !!lead && lead.assignedOfficerId === user.officerId;
       return false;
-    case "EDIT_FIELDS":
     case "TAKE_OVER_LEAD":
+      if (role === "ADMIN") return true;
+      return role === "OFFICER" && !!lead && !lead.assignedOfficerId && Boolean(user.licensedStates?.includes(lead.stateCode));
+    case "EDIT_FIELDS":
     case "CALL_NOW":
     case "MARK_WON_LOST":
       if (role === "ADMIN") return true;
       if (role === "OFFICER") return !!lead && lead.assignedOfficerId === user.officerId;
       return false;
+    case "ADD_NOTE":
+    case "MANAGE_TASK":
+      if (role === "ADMIN" || role === "COMPLIANCE") return true;
+      return role === "OFFICER" && !!lead && lead.assignedOfficerId === user.officerId;
+    case "REQUEST_COMPLIANCE_REVIEW":
+      if (role === "ADMIN") return true;
+      return role === "OFFICER" && !!lead && lead.assignedOfficerId === user.officerId;
+    case "VIEW_CALL_CENTER":
+    case "VIEW_MESSAGE_CENTER":
+      return role === "ADMIN" || role === "COMPLIANCE" || role === "OFFICER";
     case "MANAGE_SUPPRESSION":
     case "TOGGLE_KILL_SWITCH":
     case "VIEW_AUDIT_LOG":

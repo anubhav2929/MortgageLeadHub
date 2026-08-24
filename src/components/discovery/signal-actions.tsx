@@ -6,10 +6,11 @@ import { MessageSquareText, Sparkles, UserPlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { Textarea } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/components/ui/toast";
-import { dismissSignalAction, generateSignalReplyAction, promoteSignalToLeadAction } from "@/domain/actions";
+import { dismissSignalAction, generateSignalReplyAction, promoteSignalToLeadAction, publishRedditReplyAction } from "@/domain/actions";
 
-export function SignalActions({ signalId, canPromote }: { signalId: string; canPromote: boolean }) {
+export function SignalActions({ signalId, canPromote, canPublish }: { signalId: string; canPromote: boolean; canPublish: boolean }) {
   const [dismissOpen, setDismissOpen] = useState(false);
   const [promoteOpen, setPromoteOpen] = useState(false);
   const [replyOpen, setReplyOpen] = useState(false);
@@ -17,6 +18,7 @@ export function SignalActions({ signalId, canPromote }: { signalId: string; canP
   const [replyLoading, setReplyLoading] = useState(false);
   const [replySimulated, setReplySimulated] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [rulesConfirmed, setRulesConfirmed] = useState(false);
   const [note, setNote] = useState("");
   const [isPending, startTransition] = useTransition();
   const { push } = useToast();
@@ -52,6 +54,17 @@ export function SignalActions({ signalId, canPromote }: { signalId: string; canP
       push({ title: result.message, tone: result.ok ? "success" : "danger" });
       setPromoteOpen(false);
       router.refresh();
+    });
+  }
+
+  function publish() {
+    startTransition(async () => {
+      const result = await publishRedditReplyAction(signalId, replyDraft, rulesConfirmed);
+      push({ title: result.message, tone: result.ok ? "success" : "danger" });
+      if (result.ok) {
+        setReplyOpen(false);
+        router.refresh();
+      }
     });
   }
 
@@ -125,6 +138,11 @@ export function SignalActions({ signalId, canPromote }: { signalId: string; canP
             <Button size="sm" onClick={copyReply} disabled={replyLoading || !replyDraft}>
               {copied ? "Copied" : "Copy"}
             </Button>
+            {canPublish && (
+              <Button size="sm" loading={isPending} onClick={publish} disabled={replyLoading || !replyDraft || !rulesConfirmed}>
+                Publish
+              </Button>
+            )}
           </>
         }
       >
@@ -138,6 +156,12 @@ export function SignalActions({ signalId, canPromote }: { signalId: string; canP
             <p className="mt-1.5 text-xs text-[var(--muted-foreground)]">
               {replySimulated ? "Simulated draft — add an Anthropic or NVIDIA key under Admin → Integrations for a live AI draft." : "AI-drafted — review before posting."}
             </p>
+            {canPublish && (
+              <label className="mt-3 flex items-start gap-2 text-xs text-[var(--foreground)]">
+                <Checkbox checked={rulesConfirmed} onChange={(event) => setRulesConfirmed(event.target.checked)} />
+                <span>I reviewed this subreddit&apos;s current rules and explicitly approve this final text for publication.</span>
+              </label>
+            )}
           </div>
         )}
       </Modal>

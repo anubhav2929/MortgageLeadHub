@@ -7,14 +7,37 @@
 // extraction/promotion pipeline the manual "Run AI extraction" button uses.
 
 import { createHmac } from "node:crypto";
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { pushEvent, runExtractionForConversation } from "@/domain/actions";
-import { nowIso, refreshDb, saveDb } from "@/domain/store";
+import { newId, nowIso, refreshDb, saveDb } from "@/domain/store";
 import { safeCompare } from "@/core/auth";
 import { isAnsweredOutcome } from "@/core/deliveryStatus";
 import { advanceCallStatus, classifyEndedReason, mapVapiCallStatus } from "@/core/vapiLifecycle";
 import { transition, InvalidTransitionError } from "@/core/stateMachine";
 import { getConfigValue } from "@/lib/runtimeConfig";
+import { claimInlineWebhook, enqueueWebhook, stableWebhookId } from "@/domain/durableQueue";
+import { settleWebhook } from "@/domain/durableQueue";
+import { generateCallWrapUp } from "@/domain/callWrapUp";
+import { controlLiveCall } from "@/adapters/vapiCallControl";
+import {
+  bookCallbackForConversation,
+  createTransferAttempt,
+  getCallbackSlotsForConversation,
+  getNextQuestion,
+  recordQualificationAnswer,
+  resolveTransferDestination,
+} from "@/domain/voiceWorkflow";
+import type { QualificationQuestionId } from "@/domain/types";
+import { protectBearerUrl, revealBearerUrl } from "@/core/secretBox";
+import { redactRestrictedText } from "@/core/sensitiveText";
+
+interface VapiToolCall {
+  id?: string;
+  name?: string;
+  arguments?: unknown;
+  parameters?: unknown;
+  function?: { name?: string; arguments?: unknown; parameters?: unknown };
+}
 
 interface VapiServerMessage {
   type: string;
@@ -40,7 +63,130 @@ interface VapiServerMessage {
       mono?: { combinedUrl?: string; assistantUrl?: string; customerUrl?: string };
     };
   };
-  call?: { metadata?: { leadId?: string; conversationId?: string } };
+  toolCallList?: VapiToolCall[];
+  toolWithToolCallList?: VapiToolCall[];
+  destination?: { type?: string; number?: string };
+  transferStatus?: string;
+  call?: {
+    id?: string;
+    metadata?: { leadId?: string; conversationId?: string };
+    customer?: { number?: string };
+    monitor?: { controlUrl?: string };
+  };
+}
+
+const QUESTION_IDS = new Set<QualificationQuestionId>([
+  "timeline", "property_address", "occupancy", "estimated_value", "mortgage_balance", "cash_goal", "credit_range", "transfer_consent",
+]);
+
+function toolArguments(call: VapiToolCall): Record<string, unknown> {
+  const value = call.function?.arguments ?? call.function?.parameters ?? call.arguments ?? call.parameters ?? {};
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function toolName(call: VapiToolCall): string {
+  return call.function?.name ?? call.name ?? "";
+}
+
+async function processToolCalls(message: VapiServerMessage, conversationId: string) {
+  const db = await refreshDb();
+  const conversation = db.conversations.get(conversationId);
+  if (!conversation) throw new Error(`Unknown conversation ${conversationId}`);
+  conversation.lastSignalAt = nowIso();
+  const calls = message.toolCallList ?? message.toolWithToolCallList ?? [];
+  const results: Array<{ name: string; toolCallId: string; result: string }> = [];
+
+  for (const call of calls) {
+    const name = toolName(call);
+    const toolCallId = call.id ?? stableWebhookId("VAPI", JSON.stringify(call));
+    const args = toolArguments(call);
+    try {
+      let output: unknown;
+      if (name === "get_next_question") {
+        output = getNextQuestion(db, conversationId);
+      } else if (name === "record_qualification_answer") {
+        const questionId = String(args.questionId ?? "") as QualificationQuestionId;
+        if (!QUESTION_IDS.has(questionId)) throw new Error("Unknown qualification question.");
+        const latestBorrowerTurn = [...conversation.transcript].reverse().find((turn) => turn.role === "BORROWER")?.turn;
+        output = recordQualificationAnswer(db, {
+          conversationId,
+          questionId,
+          value: args.value,
+          confidence: typeof args.confidence === "number" ? args.confidence : undefined,
+          transcriptTurnRefs: latestBorrowerTurn ? [latestBorrowerTurn] : [],
+          idempotencyKey: toolCallId,
+        });
+      } else if (name === "request_warm_transfer") {
+        if (db.config.featureFlags?.automaticWarmTransfer !== true) throw new Error("Automatic warm transfer is not enabled; offer a callback or human follow-up.");
+        const fallbackNumber = await getConfigValue("WARM_TRANSFER_FALLBACK_NUMBER");
+        const transfer = createTransferAttempt(
+          db,
+          conversationId,
+          typeof args.consentTurnRef === "number" ? args.consentTurnRef : undefined,
+          toolCallId,
+          fallbackNumber
+        );
+        const lead = db.leads.get(conversation.leadId);
+        const destination = lead ? resolveTransferDestination(db, lead, fallbackNumber) : undefined;
+        const controlUrl = revealBearerUrl(conversation.controlUrl) ?? message.call?.monitor?.controlUrl;
+        if (!lead || !destination || !controlUrl) throw new Error("A live, licensed transfer destination is not available; offer a callback.");
+        if (transfer.status === "REQUESTED") {
+          const decision = db.qualificationDecisions.get(conversationId);
+          const summary = `Equity Flow Group qualification summary: required questions completed; outcome ${decision?.outcome ?? "needs review"}; property state ${lead.stateCode}; inquiry ${lead.intent.replaceAll("_", " ").toLowerCase()}.`;
+          const controlled = await controlLiveCall(controlUrl, {
+            type: "TRANSFER",
+            toNumberE164: destination.phone,
+            sayFirst: "Please hold while I connect you with a licensed loan officer. If we cannot connect, I will help schedule a callback.",
+            operatorMessage: summary,
+          });
+          transfer.status = controlled.ok ? "DIALING" : "FAILED";
+          transfer.failureReason = controlled.ok ? undefined : controlled.failure.message;
+          transfer.updatedAt = nowIso();
+        }
+        output = {
+          transferAttemptId: transfer.id,
+          status: transfer.status,
+          message: transfer.status === "DIALING" ? "Warm transfer started. Do not announce success until the bridge event arrives." : "Transfer unavailable; offer callback scheduling now.",
+        };
+      } else if (name === "get_callback_slots") {
+        if (db.config.featureFlags?.callbackScheduling !== true) throw new Error("Callback scheduling is not enabled.");
+        const latestTransfer = Array.from(db.transferAttempts.values()).filter((item) => item.conversationId === conversationId).sort((a, b) => b.requestedAt.localeCompare(a.requestedAt))[0];
+        if (latestTransfer && latestTransfer.status !== "BRIDGED") {
+          latestTransfer.status = "CALLBACK_OFFERED";
+          latestTransfer.updatedAt = nowIso();
+        }
+        output = getCallbackSlotsForConversation(db, conversationId, typeof args.borrowerTimezone === "string" ? args.borrowerTimezone : undefined).slice(0, 3);
+      } else if (name === "book_callback") {
+        if (db.config.featureFlags?.callbackScheduling !== true) throw new Error("Callback scheduling is not enabled.");
+        if (typeof args.startsAt !== "string" || typeof args.borrowerTimezone !== "string") throw new Error("An exact start time and borrower timezone are required.");
+        output = await bookCallbackForConversation({
+          conversationId,
+          startsAt: args.startsAt,
+          borrowerTimezone: args.borrowerTimezone,
+          idempotencyKey: toolCallId,
+        });
+      } else {
+        throw new Error("Unsupported server tool.");
+      }
+      results.push({ name, toolCallId, result: JSON.stringify({ ok: true, data: output }) });
+    } catch (error) {
+      results.push({
+        name,
+        toolCallId,
+        result: JSON.stringify({ ok: false, error: error instanceof Error ? error.message : "Tool execution failed." }),
+      });
+    }
+  }
+  await saveDb();
+  return { results };
 }
 
 /**
@@ -50,9 +196,14 @@ interface VapiServerMessage {
  * a webhook that can suppress a borrower or inject transcript text is worth
  * protecting from a timing oracle.
  */
-function isAuthenticVapiRequest(request: Request, rawBody: string, secret: string): boolean {
+function isAuthenticVapiRequest(request: Request, rawBody: string, secret: string, allowPlaintext: boolean): boolean {
+  const timestamp = request.headers.get("x-vapi-timestamp");
+  if (timestamp) {
+    const seconds = Number(timestamp);
+    if (!Number.isFinite(seconds) || Math.abs(Date.now() / 1000 - seconds) > 300) return false;
+  }
   const plaintext = request.headers.get("x-vapi-secret");
-  if (plaintext && safeCompare(plaintext, secret)) return true;
+  if (allowPlaintext && plaintext && safeCompare(plaintext, secret)) return true;
 
   const signature = request.headers.get("x-vapi-signature");
   if (!signature) return false;
@@ -65,6 +216,7 @@ function isAuthenticVapiRequest(request: Request, rawBody: string, secret: strin
 
 export async function POST(request: Request) {
   const vapiSecret = await getConfigValue("VAPI_WEBHOOK_SECRET");
+  const allowLegacy = (await getConfigValue("VAPI_ALLOW_LEGACY_WEBHOOK_AUTH")) === "true";
 
   // Read the body as text first: HMAC verification needs the exact bytes, and
   // re-serialising a parsed object would not reproduce them.
@@ -84,7 +236,7 @@ export async function POST(request: Request) {
   // (see adapters/voiceAgent.ts), so both paths work regardless of which
   // behaviour the account is on.
   // ---------------------------------------------------------------------
-  if (!vapiSecret || !isAuthenticVapiRequest(request, rawBody, vapiSecret)) {
+  if (!vapiSecret || !isAuthenticVapiRequest(request, rawBody, vapiSecret, allowLegacy)) {
     console.error(
       vapiSecret
         ? "[vapi-webhook] rejected: neither x-vapi-secret nor a valid x-vapi-signature matched VAPI_WEBHOOK_SECRET"
@@ -97,21 +249,116 @@ export async function POST(request: Request) {
   try {
     body = JSON.parse(rawBody);
   } catch {
-    // Malformed body — reply 200 rather than 500 so Vapi doesn't treat this
-    // as a transient failure and retry-storm the same bad payload.
-    return NextResponse.json({ ok: false, error: "Invalid JSON body" });
+    const queued = await enqueueWebhook({
+      provider: "VAPI",
+      providerEventId: stableWebhookId("VAPI", rawBody, request.headers.get("x-vapi-event-id")),
+      eventType: "invalid-json",
+      source: "primary",
+      payload: { rawBody },
+    });
+    await settleWebhook(queued.id, "QUARANTINED", "Invalid JSON body");
+    return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
   }
   const message = body.message;
-  const conversationId = message?.call?.metadata?.conversationId;
-  if (!message || !conversationId) return NextResponse.json({ ok: true });
+  let conversationId = message?.call?.metadata?.conversationId;
+  const queued = await enqueueWebhook({
+    provider: "VAPI",
+    providerEventId: stableWebhookId("VAPI", rawBody, request.headers.get("x-vapi-event-id")),
+    eventType: message?.type ?? "unknown",
+    source: "primary",
+    payload: body,
+  });
+  const claimed = await claimInlineWebhook(queued.id);
+  // Custom tools must receive the same response on provider redelivery. Each
+  // mutating tool has its own toolCallId idempotency guard, so replaying it is
+  // safe; returning only {duplicate:true} would leave Vapi waiting forever.
+  if (!claimed && message?.type !== "tool-calls") return NextResponse.json({ ok: true, duplicate: true });
+  if (!message) {
+    await settleWebhook(queued.id, "QUARANTINED", "Missing message");
+    return NextResponse.json({ ok: true, quarantined: true });
+  }
 
+  try {
   // Refresh before mutating. A webhook can land on any instance, and applying
   // a status update to a snapshot that predates the call itself would both
   // miss the conversation and, on save, overwrite whatever the instance that
   // placed the call had written.
   const db = await refreshDb();
-  const conversation = db.conversations.get(conversationId);
-  if (!conversation) return NextResponse.json({ ok: true });
+  if (!conversationId && message.call?.id) {
+    conversationId = Array.from(db.conversations.values()).find((item) => item.providerCallId === message.call?.id)?.id;
+  }
+  if (!conversationId && message.call?.id && message.call.customer?.number) {
+    const matches = Array.from(db.people.values()).filter((person) => person.role === "PRIMARY" && person.phoneE164 === message.call?.customer?.number);
+    if (matches.length === 1) {
+      const lead = db.leads.get(matches[0].leadId);
+      if (lead) {
+        const attemptId = `attempt_in_${message.call.id}`;
+        conversationId = `conv_in_${message.call.id}`;
+        if (!db.attempts.some((attempt) => attempt.id === attemptId)) {
+          db.attempts.push({
+            id: attemptId,
+            leadId: lead.id,
+            channel: "VOICE",
+            direction: "INBOUND",
+            idempotencyKey: `vapi-inbound:${message.call.id}`,
+            providerMessageId: message.call.id,
+            outcome: "QUEUED",
+            attemptNumber: lead.attemptsTotal + 1,
+            scheduledFor: nowIso(),
+            startedAt: nowIso(),
+          });
+          db.conversations.set(conversationId, {
+            id: conversationId,
+            leadId: lead.id,
+            contactAttemptId: attemptId,
+            promptVersionId: "prompt_inbound_v1",
+            channel: "VOICE",
+            status: "IN_PROGRESS",
+            startedAt: nowIso(),
+            escalated: false,
+            transcript: [],
+            redactionApplied: false,
+            callStatus: "QUEUED",
+            providerCallId: message.call.id,
+            contextSnapshot: { matchedBy: "exact_e164" },
+          });
+          await saveDb();
+        }
+      }
+    } else {
+      if (!db.inboundCallTriage.some((item) => item.providerCallId === message.call!.id)) {
+        db.inboundCallTriage.push({
+          id: `triage_${message.call.id}`,
+          provider: "VAPI",
+          providerCallId: message.call.id,
+          fromPhone: message.call.customer.number,
+          reason: matches.length === 0 ? "UNKNOWN_CALLER" : "AMBIGUOUS_CALLER",
+          candidateLeadIds: matches.map((person) => person.leadId),
+          status: "OPEN",
+          receivedAt: nowIso(),
+        });
+        await saveDb();
+      }
+      await settleWebhook(queued.id, "QUARANTINED", "Inbound call requires human matching");
+      return NextResponse.json({ ok: true, quarantined: true });
+    }
+  }
+  if (!conversationId) {
+    await settleWebhook(queued.id, "QUARANTINED", "Missing conversationId and caller match");
+    return NextResponse.json({ ok: true, quarantined: true });
+  }
+  const resolvedConversationId = conversationId;
+  const conversation = db.conversations.get(resolvedConversationId);
+  if (!conversation) {
+    await settleWebhook(queued.id, "QUARANTINED", `Unknown conversation ${conversationId}`);
+    return NextResponse.json({ ok: true, quarantined: true });
+  }
+
+  if (message.type === "tool-calls") {
+    const response = await processToolCalls(message, resolvedConversationId);
+    if (claimed) await settleWebhook(queued.id, "COMPLETED");
+    return NextResponse.json(response);
+  }
 
   // Any event at all proves the call is still alive. Staleness is measured
   // from this rather than from when the call started, so a genuinely long
@@ -127,7 +374,7 @@ export async function POST(request: Request) {
       const next = advanceCallStatus(conversation.callStatus, mapVapiCallStatus(message.status));
       if (next !== conversation.callStatus) {
         conversation.callStatus = next;
-        saveDb();
+        await saveDb();
       }
 
       if (message.status === "in-progress" && conversation.status !== "IN_PROGRESS") {
@@ -136,7 +383,7 @@ export async function POST(request: Request) {
         // rather than from when we queued it. Otherwise the live timer counts
         // ringing time as conversation time.
         conversation.startedAt = nowIso();
-        saveDb();
+        await saveDb();
       }
 
       // "ended" normally arrives just before end-of-call-report, which does the
@@ -145,7 +392,7 @@ export async function POST(request: Request) {
       // stuck IN_PROGRESS forever.
       if (message.status === "ended" && conversation.status === "IN_PROGRESS") {
         conversation.endedAt = nowIso();
-        saveDb();
+        await saveDb();
       }
       break;
     }
@@ -153,7 +400,9 @@ export async function POST(request: Request) {
     case "transcript": {
       if (message.transcriptType === "final" && message.transcript) {
         const role = message.role === "assistant" ? "AGENT" : "BORROWER";
-        const text = message.transcript;
+        const sanitized = redactRestrictedText(message.transcript);
+        const text = sanitized.text;
+        if (sanitized.redacted) conversation.redactionApplied = true;
         const last = conversation.transcript[conversation.transcript.length - 1];
 
         // Vapi delivers at-least-once, and a duplicated utterance does more
@@ -174,8 +423,39 @@ export async function POST(request: Request) {
             text,
             at: nowIso(),
           });
-          saveDb();
+          await saveDb();
         }
+      }
+      break;
+    }
+
+    case "transfer-update": {
+      const transfer = Array.from(db.transferAttempts.values())
+        .filter((item) => item.conversationId === resolvedConversationId)
+        .sort((a, b) => b.requestedAt.localeCompare(a.requestedAt))[0];
+      if (transfer) {
+        const providerStatus = (message.transferStatus ?? message.status ?? "").toLowerCase();
+        // A generic update proves only that the provider advanced the transfer;
+        // it is not by itself evidence that borrower and officer were bridged.
+        if (/failed|busy|timeout|no-answer|voicemail/.test(providerStatus)) {
+          transfer.status = "FAILED";
+          transfer.failureReason = providerStatus || "Provider transfer failure";
+        } else if (/summary-delivered/.test(providerStatus)) {
+          transfer.status = "SUMMARY_DELIVERED";
+        } else if (/bridged|completed|connected/.test(providerStatus)) {
+          transfer.status = "BRIDGED";
+        } else if (/operator-answered|answered/.test(providerStatus)) {
+          transfer.status = "OFFICER_ANSWERED";
+        } else {
+          transfer.status = "DIALING";
+        }
+        transfer.updatedAt = nowIso();
+        db.events.push({
+          id: newId("evt"), leadId: transfer.leadId, type: "TRANSFER_STATUS_CHANGED", actorType: "PROVIDER",
+          payload: { transferAttemptId: transfer.id, status: transfer.status, providerStatus: providerStatus || undefined },
+          occurredAt: nowIso(), recordedAt: nowIso(), correlationId: newId("corr"),
+        });
+        await saveDb();
       }
       break;
     }
@@ -186,7 +466,9 @@ export async function POST(request: Request) {
       // Fallback: if per-turn "transcript" events were missed for any
       // reason, Vapi's own concatenated transcript still gets us a result.
       if (conversation.transcript.length === 0 && message.artifact?.transcript) {
-        conversation.transcript.push({ turn: 1, role: "BORROWER", text: message.artifact.transcript, at: nowIso() });
+        const sanitized = redactRestrictedText(message.artifact.transcript);
+        conversation.transcript.push({ turn: 1, role: "BORROWER", text: sanitized.text, at: nowIso() });
+        if (sanitized.redacted) conversation.redactionApplied = true;
       }
 
       // Settle the ContactAttempt. Without this every AI call sits at QUEUED
@@ -212,7 +494,7 @@ export async function POST(request: Request) {
         const rec = message.artifact?.recording;
         const recordingUrl =
           rec?.stereoUrl ?? rec?.combinedUrl ?? rec?.url ?? rec?.mono?.combinedUrl ?? message.artifact?.recordingUrl;
-        if (recordingUrl) attempt.recordingUrl = recordingUrl;
+        if (recordingUrl && (await getConfigValue("RETAIN_RECORDING_URLS")) === "true") attempt.recordingUrl = protectBearerUrl(recordingUrl);
         if (conversation.startedAt) {
           attempt.durationSec = Math.max(
             0,
@@ -248,13 +530,43 @@ export async function POST(request: Request) {
 
         // Extraction only makes sense when somebody actually said something.
         if (isAnsweredOutcome(outcome) && conversation.transcript.length > 0) {
-          await runExtractionForConversation(db, lead, conversation, { actorType: "SYSTEM" });
+          const leadId = lead.id;
+          after(async () => {
+            try {
+              const freshDb = await refreshDb();
+              const freshLead = freshDb.leads.get(leadId);
+              const freshConversation = freshDb.conversations.get(resolvedConversationId);
+              if (!freshLead || !freshConversation) return;
+              await runExtractionForConversation(freshDb, freshLead, freshConversation, { actorType: "SYSTEM" });
+              const wrapUp = await generateCallWrapUp(freshConversation);
+              freshConversation.profileSnapshot = {
+                ...(freshConversation.profileSnapshot ?? {}),
+                ...(wrapUp.ok
+                  ? { wrapUpProvider: wrapUp.provider, wrapUpModel: wrapUp.model }
+                  : { wrapUpError: wrapUp.error }),
+              };
+              if (wrapUp.ok) {
+                freshConversation.summary = wrapUp.summary;
+                freshConversation.actionItems = wrapUp.actionItems;
+              }
+              await saveDb();
+            } catch (error) {
+              console.error("[vapi-webhook] deferred extraction/wrap-up failed:", error);
+            }
+          });
         }
       }
-      saveDb();
+      await saveDb();
       break;
     }
   }
 
+  await settleWebhook(queued.id, "COMPLETED");
   return NextResponse.json({ ok: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Vapi event processing failed";
+    await settleWebhook(queued.id, "RETRY", message);
+    console.error("[vapi-webhook] durable event processing failed:", message);
+    return NextResponse.json({ ok: false, error: "Event processing deferred" }, { status: 503 });
+  }
 }

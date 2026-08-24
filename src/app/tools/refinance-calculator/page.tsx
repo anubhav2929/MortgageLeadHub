@@ -1,12 +1,14 @@
-import type { Metadata } from "next";
 import { ToolPageShell } from "@/components/marketing/tool-page-shell";
 import { RateCalculator } from "@/components/marketing/rate-calculator";
+import { seoMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata = seoMetadata({
   title: "Refinance Calculator — Estimate Your New Monthly Payment | Equity Flow Group",
   description:
     "Free refinance calculator. Enter your current balance, rate, and remaining term to estimate what refinancing could save you per month.",
-};
+  path: "/tools/refinance-calculator",
+  keywords: ["refinance calculator", "mortgage refinance payment calculator", "refinance savings estimate"],
+});
 
 export default function RefinanceCalculatorPage() {
   return (

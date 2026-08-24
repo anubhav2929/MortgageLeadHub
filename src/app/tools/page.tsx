@@ -1,13 +1,15 @@
-import type { Metadata } from "next";
 import Link from "next/link";
 import { Percent, Wallet, Clock, Scale, ArrowRight } from "lucide-react";
 import { MktNav } from "@/components/marketing/mkt-nav";
 import { MktFooter } from "@/components/marketing/mkt-footer";
+import { seoMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata = seoMetadata({
   title: "Free Mortgage Calculators | Equity Flow Group",
   description: "Free calculators for refinancing, cash-out equity, mortgage payoff, and debt-to-income — no signup required.",
-};
+  path: "/tools",
+  keywords: ["mortgage calculators", "refinance calculator", "cash-out calculator", "DTI calculator", "mortgage payoff calculator"],
+});
 
 const TOOLS = [
   {

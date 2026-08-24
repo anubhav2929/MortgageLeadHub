@@ -59,26 +59,23 @@ and you operate in CA).
 already has `DRAFT_RETENTION_DAYS` — extend that pattern to leads and
 transcripts.
 
-### B3 — Single-blob persistence has no row-level access control or integrity ❌
+### B3 — Normalized authoritative-read cutover remains controlled ⚠️
 `CC6.1`, `A1.2`
 
-Everything is one JSONB row read and rewritten wholesale
-(`src/domain/persistence.ts`). Consequences an auditor will flag:
-- No least-privilege possible at the data layer — any DB credential reads all
-  borrower PII.
-- Concurrent instances overwrite each other (last-write-wins, no locking).
-- `persist()` is fire-and-forget: a UI success can precede a failed write.
-- No point-in-time recovery of individual records.
+The additive normalized schema, SQL identity repository, operational queues,
+revision locking, awaited persistence, conflict merge, backup, and snapshot
+reconciliation are implemented. Compatibility snapshot reads remain authoritative
+until normalized-read comparison evidence is clean.
 
-**Fix:** this is the normalisation work already noted in `ARCHITECTURE.md`.
-Start with `leads`, `people`, `contactAttempts`, `auditLogs`.
+**Close:** record a zero-difference observation window and rollback drill, then
+enable normalized authoritative reads in a dedicated release.
 
-### B4 — No backup, recovery, or availability evidence ❌
+### B4 — Backup exists; recurring recovery program still needs ownership ⚠️
 `A1.2`, `A1.3`
 
-Nothing documents backup frequency, retention, restore procedure, or RTO/RPO,
-and no restore has ever been tested. Auditors ask for evidence of a *tested*
-restore, not a backup configuration screenshot.
+The August 24 release produced and self-verified an encrypted repeatable-read
+logical backup before migration. Recurring backup retention, PITR ownership,
+RTO/RPO, and a customer-owned restore exercise still require operational evidence.
 
 **Fix:** enable Neon/Vercel Postgres PITR, document RTO/RPO, perform and
 record one restore test.

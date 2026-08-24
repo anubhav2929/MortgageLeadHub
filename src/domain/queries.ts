@@ -7,6 +7,9 @@ import { evaluateStaleCall, staleAttemptOutcome } from "@/core/staleCall";
 import { reconcileLiveCalls } from "@/domain/callReconciler";
 import { singleFlight } from "@/core/singleFlight";
 import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
+import { sameCalendarDay } from "@/core/timezone";
+import { maskEmail, maskPhone } from "@/core/rbac";
+import { findPublicStatusLead } from "@/domain/statusAccess";
 import type {
   AuditLog,
   CadencePlan,
@@ -30,6 +33,10 @@ import type {
   Suppression,
   CreditPullResult,
   Task,
+  DialingSession,
+  DialingQueueItem,
+  CallbackAppointment,
+  TransferAttempt,
 } from "@/domain/types";
 
 /** Reuses a lead's cached AVM lookup if one exists, else computes and
@@ -42,9 +49,11 @@ async function getOrCachePropertyValuation(db: Awaited<ReturnType<typeof getDb>>
     city: lead.city,
     stateCode: lead.stateCode,
     estimatedValue: lead.estimatedValue,
+    currentBalance: lead.currentBalance,
+    useFreeEvidence: db.config.featureFlags?.freePropertyValuation === true,
   });
   lead.propertyValuation = valuation;
-  saveDb();
+  await saveDb();
   return valuation;
 }
 
@@ -175,6 +184,69 @@ export interface LeadDetail {
   nextAttemptEta?: string;
 }
 
+/** Defense-in-depth DTO for roles that may inspect workflow state but not PII. */
+export function redactLeadDetail(detail: LeadDetail): LeadDetail {
+  return {
+    ...detail,
+    lead: {
+      ...detail.lead,
+      addressLine1: undefined,
+      city: undefined,
+      postalCode: undefined,
+      estimatedValue: undefined,
+      currentBalance: undefined,
+      propertyValuation: undefined,
+    },
+    person: detail.person ? {
+      ...detail.person,
+      firstName: "Restricted",
+      lastName: "Borrower",
+      phoneE164: maskPhone(detail.person.phoneE164),
+      email: maskEmail(detail.person.email),
+      dataQualityFlags: undefined,
+    } : undefined,
+    attempts: detail.attempts.map((attempt) => ({ ...attempt, subject: undefined, body: undefined, recordingUrl: undefined })),
+    conversations: detail.conversations.map((conversation) => ({
+      ...conversation,
+      transcript: [], summary: undefined, actionItems: undefined,
+      listenUrl: undefined, controlUrl: undefined, contextSnapshot: {},
+    })),
+    notes: detail.notes.map((note) => ({ ...note, body: "Restricted" })),
+    consents: detail.consents.map((consent) => ({ ...consent, exactTextSnapshot: "Restricted", ipAddress: "Restricted", userAgent: "Restricted" })),
+    fieldCandidates: [],
+    leadFields: [],
+    qualityScore: { total: 0, breakdown: { equity: 0, margin: 0, compliance: 0, behavior: 0 }, tier: "STANDARD", ltv: null },
+    propertyValuation: {
+      estimatedValue: 0,
+      confidenceLow: 0,
+      confidenceHigh: 0,
+      comparableCount: 0,
+      estimatedMortgageBalance: 0,
+      propertyType: "SINGLE_FAMILY",
+      yearBuilt: 0,
+      estimatedLTV: 0,
+      usableEquity: 0,
+      simulated: false,
+      provenance: {
+        estimatedValue: "MODELED",
+        confidenceRange: "MODELED",
+        comparableCount: "MODELED",
+        lastSale: "MODELED",
+        estimatedMortgageBalance: "MODELED",
+        estimatedLTV: "MODELED",
+        usableEquity: "MODELED",
+        propertyType: "MODELED",
+        yearBuilt: "MODELED",
+      },
+      method: "INSUFFICIENT_EVIDENCE",
+      confidence: "INSUFFICIENT",
+      evidence: [],
+      disclaimer: "Restricted",
+    },
+    creditPull: undefined,
+  };
+}
+
 // Mirrors cadenceEngine.runCadenceTick's own "is this lead due" math, but
 // read-only — used to show a borrower/officer an ETA, never to trigger a
 // send. Only NEW/ATTEMPTING_CONTACT leads are cadence-automation-eligible;
@@ -233,8 +305,7 @@ export async function getLeadByRef(publicRef: string): Promise<LeadDetail | null
     .sort((a, b) => new Date(b.pulledAt).getTime() - new Date(a.pulledAt).getTime())[0];
 
   const attempts = db.attempts.filter((a) => a.leadId === lead.id).sort((a, b) => new Date(b.scheduledFor).getTime() - new Date(a.scheduledFor).getTime());
-  const today = new Date().toDateString();
-  const attemptsToday = attempts.filter((a) => new Date(a.scheduledFor).toDateString() === today).length;
+  const attemptsToday = attempts.filter((a) => sameCalendarDay(a.scheduledFor, new Date(), db.config.adminTimezone)).length;
   const leadEvents = db.events.filter((e) => e.leadId === lead.id);
 
   return {
@@ -260,22 +331,53 @@ export async function getLeadByRef(publicRef: string): Promise<LeadDetail | null
   };
 }
 
+export interface PublicStatusDetail {
+  lead: Pick<Lead, "id" | "publicRef" | "state" | "createdAt" | "lastAttemptAt" | "attemptsTotal">;
+  person?: Pick<Person, "firstName">;
+  officer?: Pick<Officer, "name" | "nmlsId" | "phone" | "email">;
+  nextAttemptEta?: string;
+}
+
+export async function getPublicStatusByAccessKey(accessKey: string): Promise<PublicStatusDetail | null> {
+  const db = await getDb();
+  const lead = findPublicStatusLead(db, accessKey);
+  if (!lead) return null;
+  const person = Array.from(db.people.values()).find((item) => item.leadId === lead.id && item.role === "PRIMARY");
+  const officer = lead.assignedOfficerId ? db.officers.get(lead.assignedOfficerId) : undefined;
+  return {
+    lead: {
+      id: lead.id,
+      publicRef: lead.publicRef,
+      state: lead.state,
+      createdAt: lead.createdAt,
+      lastAttemptAt: lead.lastAttemptAt,
+      attemptsTotal: lead.attemptsTotal,
+    },
+    person: person ? { firstName: person.firstName } : undefined,
+    officer: officer ? { name: officer.name, nmlsId: officer.nmlsId, phone: officer.phone, email: officer.email } : undefined,
+    nextAttemptEta: computeNextAttemptEta(
+      lead,
+      db.cadencePlans.get(lead.cadencePlanVersionId),
+      db.events.filter((event) => event.leadId === lead.id)
+    ),
+  };
+}
+
 /** `officer.currentLoad` is a stored counter that's never reset — despite
  *  its name, "daily" capacity was actually being enforced as a lifetime cap.
  *  Computed fresh from today's OFFICER_ASSIGNED events instead, matching
  *  this app's own rule (per the dashboard's own copy: "never an ad-hoc
  *  counter that can drift from the record"). Exported so autoAssignOfficer
  *  (actions.ts) gates on the exact same number the admin UI displays. */
-export function computeOfficerLoadToday(events: { type: string; occurredAt: string; payload?: Record<string, unknown> }[], officerId: string): number {
-  const today = new Date().toDateString();
+export function computeOfficerLoadToday(events: { type: string; occurredAt: string; payload?: Record<string, unknown> }[], officerId: string, timeZone = "UTC"): number {
   return events.filter(
-    (e) => e.type === "OFFICER_ASSIGNED" && e.payload?.officerId === officerId && new Date(e.occurredAt).toDateString() === today
+    (e) => e.type === "OFFICER_ASSIGNED" && e.payload?.officerId === officerId && sameCalendarDay(e.occurredAt, new Date(), timeZone)
   ).length;
 }
 
 export async function listOfficers(): Promise<Officer[]> {
   const db = await getDb();
-  return Array.from(db.officers.values()).map((o) => ({ ...o, currentLoad: computeOfficerLoadToday(db.events, o.id) }));
+  return Array.from(db.officers.values()).map((o) => ({ ...o, currentLoad: computeOfficerLoadToday(db.events, o.id, db.config.adminTimezone) }));
 }
 
 export async function listCadencePlans(): Promise<CadencePlan[]> {
@@ -328,7 +430,7 @@ export async function purgeStaleIntakeDrafts(): Promise<number> {
       purged++;
     }
   }
-  if (purged > 0) saveDb();
+  if (purged > 0) await saveDb();
   return purged;
 }
 
@@ -564,10 +666,10 @@ export async function getGoLiveReadiness() {
   const items = evaluateGoLive({
     caps,
     hasCronSecret: await has("CRON_SECRET"),
-    hasDeliveryWebhookSecret: await has("DELIVERY_WEBHOOK_SECRET"),
-    hasInboundSmsSecret: await has("DELIVERY_WEBHOOK_SECRET"),
-    hasAppUrl: await has("APP_URL"),
-    hasCreditCheck: (await has("ISOFTPULL_API_KEY")) && (await has("ISOFTPULL_API_SECRET")),
+    hasDeliveryWebhookSecret: (await has("TELNYX_PUBLIC_KEY")) || caps.hasTwilio,
+    hasInboundSmsSecret: (await has("TELNYX_PUBLIC_KEY")) || caps.hasTwilio,
+    hasAppUrl: (await has("APP_URL")) || Boolean(process.env.VERCEL_URL),
+    hasCreditCheck: (await has("ISOFTPULL_API_KEY")) && (await has("ISOFTPULL_API_SECRET")) && (await getConfigValue("CREDIT_LIVE_APPROVED")) === "true",
     lastCadenceRunAt: db.lastCadenceRunAt,
     now: new Date(),
   });
@@ -612,9 +714,68 @@ export interface CallCentreEntry {
   leadPublicRef: string;
   borrowerName: string;
   stateCode: string;
+  leadAssignedOfficerId?: string;
   officerName?: string;
   /** Destination for a warm transfer, when the assigned officer has a number. */
   officerPhone?: string;
+}
+
+export interface DialingSessionView {
+  session: DialingSession;
+  items: Array<DialingQueueItem & { publicRef: string; borrowerName: string; stateCode: string }>;
+}
+
+export interface CallbackAppointmentView {
+  appointment: CallbackAppointment;
+  leadPublicRef: string;
+  borrowerName: string;
+  officerName?: string;
+  transferStatus?: TransferAttempt["status"];
+}
+
+export async function listCallbackAppointments(limit = 50): Promise<CallbackAppointmentView[]> {
+  const db = await refreshDb();
+  const primaryByLead = new Map(Array.from(db.people.values()).filter((person) => person.role === "PRIMARY").map((person) => [person.leadId, person]));
+  return Array.from(db.callbackAppointments.values())
+    .sort((a, b) => a.startsAt.localeCompare(b.startsAt))
+    .slice(0, limit)
+    .map((appointment) => {
+      const lead = db.leads.get(appointment.leadId);
+      const person = primaryByLead.get(appointment.leadId);
+      const transfer = appointment.transferAttemptId ? db.transferAttempts.get(appointment.transferAttemptId) : undefined;
+      return {
+        appointment,
+        leadPublicRef: lead?.publicRef ?? "",
+        borrowerName: person ? `${person.firstName} ${person.lastName}`.trim() : "Unknown borrower",
+        officerName: appointment.officerId ? db.officers.get(appointment.officerId)?.name : undefined,
+        transferStatus: transfer?.status,
+      };
+    })
+    .filter((item) => item.leadPublicRef);
+}
+
+export async function listDialingSessions(limit = 20): Promise<DialingSessionView[]> {
+  const db = await refreshDb();
+  const primaryByLead = new Map(Array.from(db.people.values()).filter((person) => person.role === "PRIMARY").map((person) => [person.leadId, person]));
+  return Array.from(db.dialingSessions.values())
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, limit)
+    .map((session) => ({
+      session,
+      items: Array.from(db.dialingQueueItems.values())
+        .filter((item) => item.sessionId === session.id)
+        .sort((a, b) => a.position - b.position)
+        .map((item) => {
+          const lead = db.leads.get(item.leadId);
+          const person = primaryByLead.get(item.leadId);
+          return {
+            ...item,
+            publicRef: lead?.publicRef ?? "",
+            borrowerName: person ? `${person.firstName} ${person.lastName}`.trim() : "Unknown borrower",
+            stateCode: lead?.stateCode ?? "",
+          };
+        }),
+    }));
 }
 
 /**
@@ -661,6 +822,7 @@ export async function listCallActivity(limit = 100): Promise<CallCentreEntry[]> 
         leadPublicRef: lead?.publicRef ?? "",
         borrowerName: person ? `${person.firstName} ${person.lastName}` : "Unknown borrower",
         stateCode: lead?.stateCode ?? "",
+        leadAssignedOfficerId: lead?.assignedOfficerId,
         officerName: officer?.name,
         officerPhone: officer?.phone,
       };
@@ -723,7 +885,7 @@ export async function reapStaleCalls(now = new Date(), providerReachable = true)
     settled += 1;
   }
 
-  if (settled > 0) saveDb();
+  if (settled > 0) await saveDb();
   return settled;
 }
 
@@ -777,6 +939,7 @@ export interface MessageThreadSummary {
   leadId: string;
   borrowerName: string;
   stateCode: string;
+  leadAssignedOfficerId?: string;
   phoneE164: string;
   officerName?: string;
   lastOutboundAt?: string;
@@ -876,6 +1039,7 @@ export async function listMessageThreads(limit = 60): Promise<MessageThreadSumma
       leadId,
       borrowerName: person ? `${person.firstName} ${person.lastName}` : "Unknown borrower",
       stateCode: lead.stateCode,
+      leadAssignedOfficerId: lead.assignedOfficerId,
       phoneE164: person?.phoneE164 ?? "",
       officerName: lead.assignedOfficerId ? db.officers.get(lead.assignedOfficerId)?.name : undefined,
       lastOutboundAt: lastOutAt,

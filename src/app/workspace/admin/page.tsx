@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ShieldX, Users, UserPlus, GitBranch, FileText, ShieldOff, Power, ScrollText, Plug, SlidersHorizontal, HeartHandshake, ShieldQuestion, FileClock, Rocket, Scale } from "lucide-react";
+import { ShieldX, Users, UserPlus, GitBranch, FileText, ShieldOff, Power, ScrollText, Plug, SlidersHorizontal, HeartHandshake, ShieldQuestion, FileClock, Rocket, Scale, Activity } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -15,6 +15,8 @@ import { IntegrationsPanel } from "@/components/admin/integrations-panel";
 import { GoLivePanel } from "@/components/admin/go-live-panel";
 import { UrlTabs } from "@/components/ui/url-tabs";
 import { LegalPagesPanel } from "@/components/admin/legal-pages-panel";
+import { OperationsPanel } from "@/components/admin/operations-panel";
+import { getOperationalDiagnostics } from "@/domain/operationalDiagnostics";
 
 /** Kept in sync with the TabsTrigger values below. An unknown ?tab= falls back
  *  to users rather than rendering an empty page. */
@@ -32,6 +34,7 @@ const ADMIN_TABS = [
   "golive",
   "audit",
   "drafts",
+  "operations",
 ] as const;
 import { getIntegrationStatusesAction } from "@/domain/integrationActions";
 import { ReferralPartnersPanel } from "@/components/admin/referral-partners-panel";
@@ -89,6 +92,7 @@ export default async function AdminPage() {
   // Admin-only; the tab itself is gated below.
   const integrationData = user.role === "ADMIN" ? await getIntegrationStatusesAction() : null;
   const goLive = user.role === "ADMIN" ? await getGoLiveReadiness() : null;
+  const operations = user.role === "ADMIN" ? await getOperationalDiagnostics() : null;
   const legalPages =
     user.role === "ADMIN"
       ? { privacy: await getLegalPage("privacy"), terms: await getLegalPage("terms") }
@@ -171,6 +175,9 @@ export default async function AdminPage() {
               <ScrollText className="h-3.5 w-3.5" /> Audit log
             </span>
           </TabsTrigger>
+          <TabsTrigger value="operations">
+            <span className="flex items-center gap-1.5"><Activity className="h-3.5 w-3.5" /> Operations</span>
+          </TabsTrigger>
           <TabsTrigger value="drafts">
             <span className="flex items-center gap-1.5">
               <FileClock className="h-3.5 w-3.5" /> Incomplete leads
@@ -183,7 +190,7 @@ export default async function AdminPage() {
 
         <div className="pt-5">
           <TabsContent value="users">
-            <UsersPanel users={users} currentUserId={user.id} />
+            <UsersPanel users={users} currentUserId={user.id} canManage={user.role === "ADMIN"} />
           </TabsContent>
           <TabsContent value="officers">
             <OfficersPanel officers={officers} canEdit={user.role === "ADMIN"} />
@@ -198,10 +205,10 @@ export default async function AdminPage() {
             <KillSwitchPanel state={killSwitch} canToggle={can(subject, "TOGGLE_KILL_SWITCH")} blockedItems={killSwitchBlocks} />
           </TabsContent>
           <TabsContent value="cadence">
-            <CadencePanel plans={cadencePlans} />
+            <CadencePanel plans={cadencePlans} canEdit={can(subject, "EDIT_CADENCE_PROMPTS_DISCLOSURES")} />
           </TabsContent>
           <TabsContent value="referrals">
-            <ReferralPartnersPanel partners={referralPartners} />
+            <ReferralPartnersPanel partners={referralPartners} canManage={user.role === "ADMIN"} />
           </TabsContent>
           <TabsContent value="disclosures">
             <DisclosuresPanel
@@ -238,6 +245,9 @@ export default async function AdminPage() {
           </TabsContent>
           <TabsContent value="audit">
             <AuditLogPanel logs={auditLogs} />
+          </TabsContent>
+          <TabsContent value="operations">
+            {operations ? <OperationsPanel diagnostics={operations} /> : <EmptyState icon={ShieldX} title="Admin only" description="Operational diagnostics can only be viewed by an Admin." />}
           </TabsContent>
           <TabsContent value="drafts">
             <IntakeDraftsPanel drafts={intakeDrafts} canManage={user.role === "ADMIN"} retentionDays={DRAFT_RETENTION_DAYS} />

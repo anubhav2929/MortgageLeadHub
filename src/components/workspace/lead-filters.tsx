@@ -35,25 +35,10 @@ export function LeadFilters({
 
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2">
-      {isOfficer && (
-        <div className="flex items-center gap-1 rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] p-0.5">
-          <button
-            onClick={() => setParam("mine", "")}
-            className={`h-8 rounded-[var(--radius-sm)] px-3 text-[13px] font-medium transition-colors ${
-              mine ? "bg-[var(--primary)] text-white" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            }`}
-          >
-            My queue
-          </button>
-          <button
-            onClick={() => setParam("mine", "false")}
-            className={`h-8 rounded-[var(--radius-sm)] px-3 text-[13px] font-medium transition-colors ${
-              !mine ? "bg-[var(--primary)] text-white" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            }`}
-          >
-            All leads
-          </button>
-        </div>
+      {isOfficer && mine && (
+        <span className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2 text-[13px] font-medium text-[var(--foreground)]">
+          Authorized queue
+        </span>
       )}
 
       <div className="relative min-w-[220px] flex-1">
@@ -82,15 +67,17 @@ export function LeadFilters({
         <option value="CASH_OUT">Cash out</option>
       </Select>
 
-      <Select value={searchParams.get("officer") ?? ""} onChange={(e) => setParam("officer", e.target.value)} className="w-auto min-w-36">
-        <option value="">All assignees</option>
-        <option value="unassigned">Unassigned</option>
-        {officerNames.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </Select>
+      {!isOfficer && (
+        <Select value={searchParams.get("officer") ?? ""} onChange={(e) => setParam("officer", e.target.value)} className="w-auto min-w-36">
+          <option value="">All assignees</option>
+          <option value="unassigned">Unassigned</option>
+          {officerNames.map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </Select>
+      )}
 
       <Select value={searchParams.get("stateCode") ?? ""} onChange={(e) => setParam("stateCode", e.target.value)} className="w-auto min-w-28">
         <option value="">All US states</option>

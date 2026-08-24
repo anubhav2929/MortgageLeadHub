@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { CheckCircle2, Clock, UserCheck, Phone, Mail } from "lucide-react";
 import { LogoMark } from "@/components/brand/logo";
-import { getLeadByRef } from "@/domain/queries";
+import { getPublicStatusByAccessKey } from "@/domain/queries";
 import { StatusMessageForm } from "@/components/status/status-message-form";
 import { formatDate, formatDateTime } from "@/lib/utils";
 import type { LeadState } from "@/domain/types";
@@ -48,7 +48,7 @@ const STEP_ORDER: Stage[] = ["submitted", "reaching_out", "in_conversation", "wi
 
 export default async function BorrowerStatusPage({ params }: PageProps) {
   const { publicRef } = await params;
-  const detail = await getLeadByRef(publicRef);
+  const detail = await getPublicStatusByAccessKey(publicRef);
   if (!detail) notFound();
 
   const { lead, person, officer } = detail;
@@ -170,7 +170,7 @@ export default async function BorrowerStatusPage({ params }: PageProps) {
             Questions in the meantime? Reply to any text or email you&apos;ve received from us, or call back the number that reached out.
           </p>
 
-          <StatusMessageForm publicRef={lead.publicRef} />
+          <StatusMessageForm publicRef={lead.publicRef} statusToken={publicRef} />
         </div>
       </div>
     </main>

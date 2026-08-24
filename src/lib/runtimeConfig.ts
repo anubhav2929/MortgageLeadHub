@@ -61,6 +61,7 @@ export interface RuntimeCapabilities {
   hasTelnyxVoice: boolean;
   hasSms: boolean;
   hasVoice: boolean;
+  hasOpenAi: boolean;
   hasAnthropic: boolean;
   hasNvidia: boolean;
   hasAnyLlm: boolean;
@@ -73,6 +74,7 @@ export interface RuntimeCapabilities {
   hasPartialVoiceAgent: boolean;
   hasLeadDiscovery: boolean;
   hasPropertyData: boolean;
+  hasCredit: boolean;
 }
 
 /** Freshly computed on every call. Cheap — the store is already in memory
@@ -80,17 +82,18 @@ export interface RuntimeCapabilities {
 export async function getCapabilities(): Promise<RuntimeCapabilities> {
   const hasTelnyx = await hasAll(["TELNYX_API_KEY", "TELNYX_PHONE_NUMBER"]);
   const hasTwilio = await hasAll(["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"]);
+  const hasOpenAi = await hasAll(["OPENAI_API_KEY"]);
   const hasAnthropic = await hasAll(["ANTHROPIC_API_KEY"]);
   const hasNvidia = await hasAll(["NVIDIA_API_KEY"]);
   const hasResend = await hasAll(["RESEND_API_KEY"]);
 
   // Telnyx voice needs strictly more than Telnyx SMS: TeXML fetches the call
   // script over HTTP rather than accepting it inline, which requires a TeXML
-  // Application, the account id, and the webhook secret that authenticates the
-  // fetch. Treating "Telnyx configured" as "Telnyx can call" was the original
+  // Application and the account id. Each announcement is protected by a
+  // short-lived, per-call capability token generated at placement time.
+  // Treating "Telnyx configured" as "Telnyx can call" was the original
   // bug — SMS worked, voice silently stayed simulated, and nothing said why.
-  const hasTelnyxVoice =
-    hasTelnyx && (await hasAll(["TELNYX_ACCOUNT_SID", "TELNYX_TEXML_APP_ID", "DELIVERY_WEBHOOK_SECRET"]));
+  const hasTelnyxVoice = hasTelnyx && (await hasAll(["TELNYX_ACCOUNT_SID", "TELNYX_TEXML_APP_ID"]));
 
   return {
     hasTelnyx,
@@ -98,17 +101,22 @@ export async function getCapabilities(): Promise<RuntimeCapabilities> {
     hasTelnyxVoice,
     hasSms: hasTelnyx || hasTwilio,
     hasVoice: hasTwilio || hasTelnyxVoice,
+    hasOpenAi,
     hasAnthropic,
     hasNvidia,
-    hasAnyLlm: hasAnthropic || hasNvidia,
+    hasAnyLlm: hasOpenAi || hasAnthropic || hasNvidia,
     hasResend,
     hasInboundEmail: hasResend && (await hasAll(["RESEND_INBOUND_WEBHOOK_SECRET"])),
     hasVoiceAgent: await hasAll(["VAPI_API_KEY", "VAPI_PHONE_NUMBER_ID", "VAPI_WEBHOOK_SECRET"]),
     hasPartialVoiceAgent:
       (await hasAll(["VAPI_API_KEY"])) && !(await hasAll(["VAPI_PHONE_NUMBER_ID", "VAPI_WEBHOOK_SECRET"])),
-    // Always live — the Arctic Shift archive needs no auth. See env.ts.
-    hasLeadDiscovery: true,
+    hasLeadDiscovery:
+      (await hasAll(["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"])) &&
+      (await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) === "true",
     hasPropertyData: await hasAll(["PROPERTY_DATA_API_KEY"]),
+    hasCredit:
+      (await hasAll(["ISOFTPULL_API_KEY", "ISOFTPULL_API_SECRET"])) &&
+      (await getConfigValue("CREDIT_LIVE_APPROVED")) === "true",
   };
 }
 

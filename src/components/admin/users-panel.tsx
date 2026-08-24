@@ -12,6 +12,7 @@ import { useToast } from "@/components/ui/toast";
 import { createUserAction, resendInviteAction, setUserActiveAction, type CreateUserInput } from "@/domain/actions";
 import { formatDate } from "@/lib/utils";
 import type { Role, User } from "@/domain/types";
+import { AccountSecurityCard } from "@/components/admin/account-security-card";
 
 const ROLE_TONE: Record<Role, "violet" | "info" | "primary" | "neutral"> = {
   ADMIN: "violet",
@@ -22,7 +23,7 @@ const ROLE_TONE: Record<Role, "violet" | "info" | "primary" | "neutral"> = {
 
 const US_STATES = ["AZ", "CA", "CO", "FL", "GA", "IL", "NC", "NY", "OH", "OR", "PA", "TX", "WA"];
 
-export function UsersPanel({ users, currentUserId }: { users: User[]; currentUserId: string }) {
+export function UsersPanel({ users, currentUserId, canManage }: { users: User[]; currentUserId: string; canManage: boolean }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -78,13 +79,16 @@ export function UsersPanel({ users, currentUserId }: { users: User[]; currentUse
 
   return (
     <div>
+      <AccountSecurityCard currentEmail={users.find((user) => user.id === currentUserId)?.email ?? ""} mfaEnabled={Boolean(users.find((user) => user.id === currentUserId)?.mfa?.enabledAt)} />
       <div className="mb-4 flex items-center justify-between">
         <p className="text-[13px] text-[var(--muted-foreground)]">
           {users.length} user{users.length === 1 ? "" : "s"} with portal access.
         </p>
-        <Button size="sm" onClick={() => setOpen(true)}>
-          <Plus className="h-3.5 w-3.5" /> New user
-        </Button>
+        {canManage && (
+          <Button size="sm" onClick={() => setOpen(true)}>
+            <Plus className="h-3.5 w-3.5" /> New user
+          </Button>
+        )}
       </div>
 
       <Card>
@@ -115,12 +119,12 @@ export function UsersPanel({ users, currentUserId }: { users: User[]; currentUse
                   ) : (
                     <Badge tone="warning">Invited</Badge>
                   )}
-                  {active && !activated && (
+                  {canManage && active && !activated && (
                     <Button variant="ghost" size="sm" loading={isPending} onClick={() => resendInvite(u.id)}>
                       <Send className="h-3.5 w-3.5" /> Resend invite
                     </Button>
                   )}
-                  {u.id !== currentUserId && (
+                  {canManage && u.id !== currentUserId && (
                     <Button variant="ghost" size="sm" loading={isPending} onClick={() => toggleActive(u.id, active)}>
                       {active ? <ShieldOff className="h-3.5 w-3.5" /> : <ShieldCheck className="h-3.5 w-3.5" />}
                     </Button>
@@ -132,7 +136,7 @@ export function UsersPanel({ users, currentUserId }: { users: User[]; currentUse
         </CardContent>
       </Card>
 
-      <Modal
+      {canManage && <Modal
         open={open}
         onClose={() => setOpen(false)}
         title="Create a new user"
@@ -199,7 +203,7 @@ export function UsersPanel({ users, currentUserId }: { users: User[]; currentUse
             </>
           )}
         </div>
-      </Modal>
+      </Modal>}
     </div>
   );
 }

@@ -1,10 +1,15 @@
-import type { Metadata } from "next";
 import { MktNav } from "@/components/marketing/mkt-nav";
 import { MktFooter } from "@/components/marketing/mkt-footer";
 import { LegalBody } from "@/components/marketing/legal-body";
 import { getLegalPage } from "@/domain/queries";
+import { seoMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = { title: "Terms of Service — Equity Flow Group" };
+export async function generateMetadata() {
+  const reviewed = await getLegalPage("terms");
+  return reviewed
+    ? seoMetadata({ title: "Terms of Service | Equity Flow Group", description: "Terms governing use of the Equity Flow Group mortgage education, inquiry, status, and communications services.", path: "/terms" })
+    : { title: "Terms of Service | Equity Flow Group", robots: { index: false, follow: true } };
+}
 
 export default async function TermsPage() {
   // Admin override wins; absent means serve the built-in copy below, so a

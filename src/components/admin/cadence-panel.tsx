@@ -81,7 +81,7 @@ function StepEditor({ steps, onChange }: { steps: CadenceStep[]; onChange: (step
   );
 }
 
-function PlanCard({ plan }: { plan: CadencePlan }) {
+function PlanCard({ plan, canEdit }: { plan: CadencePlan; canEdit: boolean }) {
   const [editing, setEditing] = useState(false);
   const [steps, setSteps] = useState<CadenceStep[]>(plan.steps);
   const [isPending, startTransition] = useTransition();
@@ -126,11 +126,11 @@ function PlanCard({ plan }: { plan: CadencePlan }) {
                 <Save className="h-3.5 w-3.5" /> Save
               </Button>
             </div>
-          ) : (
+          ) : canEdit ? (
             <Button variant="ghost" size="sm" className="shrink-0" onClick={() => setEditing(true)}>
               <Pencil className="h-3.5 w-3.5" /> Edit
             </Button>
-          )}
+          ) : null}
         </div>
       </CardHeader>
       <CardContent>
@@ -162,7 +162,7 @@ function PlanCard({ plan }: { plan: CadencePlan }) {
   );
 }
 
-export function CadencePanel({ plans }: { plans: CadencePlan[] }) {
+export function CadencePanel({ plans, canEdit }: { plans: CadencePlan[]; canEdit: boolean }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
   const [stateCode, setStateCode] = useState("");
@@ -189,17 +189,19 @@ export function CadencePanel({ plans }: { plans: CadencePlan[] }) {
     <div>
       <div className="mb-4 flex items-center justify-between">
         <p className="text-[13px] text-[var(--muted-foreground)]">{plans.length} cadence plan{plans.length === 1 ? "" : "s"}.</p>
-        <Button size="sm" onClick={() => setCreateOpen(true)}>
-          <Plus className="h-3.5 w-3.5" /> New plan
-        </Button>
+        {canEdit && (
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
+            <Plus className="h-3.5 w-3.5" /> New plan
+          </Button>
+        )}
       </div>
       <div className="space-y-4">
         {plans.map((plan) => (
-          <PlanCard key={plan.id} plan={plan} />
+          <PlanCard key={plan.id} plan={plan} canEdit={canEdit} />
         ))}
       </div>
 
-      <Modal
+      {canEdit && <Modal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         title="New cadence plan"
@@ -241,7 +243,7 @@ export function CadencePanel({ plans }: { plans: CadencePlan[] }) {
             </Select>
           </div>
         </div>
-      </Modal>
+      </Modal>}
     </div>
   );
 }

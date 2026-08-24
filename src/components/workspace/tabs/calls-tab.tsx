@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
 import { startDialerCallAction } from "@/domain/actions";
 import { formatDateTime } from "@/lib/utils";
-import type { ContactAttempt } from "@/domain/types";
+import type { ContactAttempt, ConversationSession } from "@/domain/types";
 
 /** Formats +12132892042 → +1 (213) 289 2042 for display only. */
 function prettyPhone(e164: string): string {
@@ -42,6 +42,7 @@ export function CallsTab({
   outboundReady,
   outboundNote,
   calls,
+  conversations,
   liveStage = {},
 }: {
   publicRef: string;
@@ -54,6 +55,7 @@ export function CallsTab({
   /** Why outbound isn't ready, when it isn't. */
   outboundNote: string;
   calls: ContactAttempt[];
+  conversations: ConversationSession[];
   /** attemptId → human stage label, for calls still in flight. */
   liveStage?: Record<string, string>;
 }) {
@@ -222,6 +224,55 @@ export function CallsTab({
           )}
         </CardContent>
       </Card>
+
+      {conversations
+        .filter((conversation) => conversation.channel === "VOICE")
+        .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+        .map((conversation) => (
+          <Card key={conversation.id}>
+            <CardHeader>
+              <div>
+                <CardTitle>Call wrap-up</CardTitle>
+                <CardDescription>
+                  {formatDateTime(conversation.startedAt)} · {conversation.promptVersionId}
+                </CardDescription>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {conversation.summary ? (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">Summary</p>
+                  <p className="mt-1 text-[13px] leading-relaxed text-[var(--foreground)]">{conversation.summary}</p>
+                </div>
+              ) : (
+                <p className="text-[13px] text-[var(--muted-foreground)]">
+                  {conversation.status === "IN_PROGRESS" ? "Summary will appear when the call ends." : "No AI summary is available; review the transcript and add agent notes."}
+                </p>
+              )}
+              {conversation.actionItems?.length ? (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">Action points</p>
+                  <ul className="mt-1.5 list-disc space-y-1 pl-5 text-[13px] text-[var(--foreground)]">
+                    {conversation.actionItems.map((item, index) => <li key={`${conversation.id}-action-${index}`}>{item}</li>)}
+                  </ul>
+                </div>
+              ) : null}
+              <details className="rounded-[var(--radius-md)] border border-[var(--border)] p-3">
+                <summary className="cursor-pointer text-[13px] font-medium text-[var(--foreground)]">
+                  Transcript ({conversation.transcript.length} turns)
+                </summary>
+                <ol className="mt-3 space-y-2">
+                  {conversation.transcript.map((turn) => (
+                    <li key={`${conversation.id}-${turn.turn}`} className="text-[13px] leading-relaxed">
+                      <span className="font-medium text-[var(--foreground)]">{turn.role === "AGENT" ? "Agent" : "Borrower"}:</span>{" "}
+                      <span className="text-[var(--muted-foreground)]">{turn.text}</span>
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            </CardContent>
+          </Card>
+        ))}
     </div>
   );
 }

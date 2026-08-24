@@ -161,20 +161,18 @@ export function seedDatabase(db: Database) {
   officers.forEach((o) => db.officers.set(o.id, o));
 
   // ---- Users (demo login identities, one per role) -------------------------
-  // Demo-only password, same across every seeded account — change these in
-  // any real deployment (see DEPLOY.md). Real users created via Admin get a
-  // proper email invite link instead (domain/actions.ts createUserAction).
-  const DEMO_PASSWORD_HASH = hashPasswordSync("MlhDemo#2026");
+  // A known shared password is acceptable only in local/test environments.
+  // Production users start unactivated and must choose a password through an
+  // invite/reset link; no deploy log ever prints a credential.
+  const DEMO_PASSWORD_HASH = process.env.NODE_ENV === "production" ? undefined : hashPasswordSync("MlhDemo#2026");
+  const customerAdminEmail = (process.env.CUSTOMER_ADMIN_EMAIL || "inquiries@equityflowgroup.com").trim().toLowerCase();
   const users: User[] = [
-    { id: "user_admin", name: "Anubhav (Admin)", email: "newanubhav.4@gmail.com", role: "ADMIN", isActive: true, passwordHash: DEMO_PASSWORD_HASH },
+    { id: "user_admin", name: "Equity Flow Group Admin", email: customerAdminEmail, role: "ADMIN", isActive: true, passwordHash: DEMO_PASSWORD_HASH },
     { id: "user_compliance", name: "Dana Whitfield", email: "dana.whitfield@equityflowgroup.com", role: "COMPLIANCE", isActive: true, passwordHash: DEMO_PASSWORD_HASH },
     { id: "user_officer_1", name: "Marcus Chen", email: "marcus.chen@equityflowgroup.com", role: "OFFICER", officerId: "off_1", isActive: true, passwordHash: DEMO_PASSWORD_HASH },
     { id: "user_readonly", name: "Investor View", email: "investor@equityflowgroup.com", role: "READ_ONLY", isActive: true, passwordHash: DEMO_PASSWORD_HASH },
   ];
   users.forEach((u) => db.users.set(u.id, u));
-  console.log(
-    `\n[Equity Flow Group] Seeded demo accounts (password for all: "MlhDemo#2026" — change in any real deployment):\n  ${users.map((u) => `${u.email} (${u.role})`).join("\n  ")}\n`
-  );
 
   // ---- Cadence plans --------------------------------------------------------
   const cadencePlans: CadencePlan[] = [

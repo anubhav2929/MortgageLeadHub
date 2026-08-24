@@ -124,10 +124,10 @@ describe("naming the exact missing thing", () => {
     expect(byId(items, "voice-announcement").remedy).toMatch(/TeXML/i);
   });
 
-  it("names one secret for both receipts and STOP, since they share it", () => {
+  it("requires provider-native verification for both receipts and STOP", () => {
     const items = evaluateGoLive(input());
-    expect(byId(items, "inbound-sms").missingKeys).toEqual(["DELIVERY_WEBHOOK_SECRET"]);
-    expect(byId(items, "delivery-receipts").missingKeys).toEqual(["DELIVERY_WEBHOOK_SECRET"]);
+    expect(byId(items, "inbound-sms").missingKeys).toEqual(["TELNYX_PUBLIC_KEY or Twilio credentials"]);
+    expect(byId(items, "delivery-receipts").missingKeys).toEqual(["TELNYX_PUBLIC_KEY or Twilio credentials"]);
   });
 });
 

@@ -24,7 +24,11 @@ const envSchema = z.object({
   TELNYX_API_KEY: z.string().optional(),
   TELNYX_PHONE_NUMBER: z.string().optional(),
   TELNYX_MESSAGING_PROFILE_ID: z.string().optional(),
+  TELNYX_PUBLIC_KEY: z.string().optional(),
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_MODEL: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_MODEL: z.string().optional(),
   NVIDIA_API_KEY: z.string().optional(),
   NVIDIA_MODEL: z.string().optional(),
   RESEND_API_KEY: z.string().optional(),
@@ -33,13 +37,17 @@ const envSchema = z.object({
   VAPI_API_KEY: z.string().optional(),
   VAPI_PHONE_NUMBER_ID: z.string().optional(),
   VAPI_WEBHOOK_SECRET: z.string().optional(),
+  VAPI_WEBHOOK_CREDENTIAL_ID: z.string().optional(),
+  VAPI_ALLOW_LEGACY_WEBHOOK_AUTH: z.string().optional(),
   RETELL_API_KEY: z.string().optional(),
   PROPERTY_DATA_API_KEY: z.string().optional(),
   SUPABASE_CA_CERT: z.string().optional(),
+  DATABASE_CA_CERT: z.string().optional(),
   CRON_SECRET: z.string().optional(),
   APP_URL: z.string().optional(),
   VERCEL_URL: z.string().optional(),
   COMPANY_NMLS_ID: z.string().optional(),
+  CUSTOMER_ADMIN_EMAIL: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse({
@@ -50,7 +58,11 @@ const parsed = envSchema.safeParse({
   TELNYX_API_KEY: process.env.TELNYX_API_KEY,
   TELNYX_PHONE_NUMBER: process.env.TELNYX_PHONE_NUMBER,
   TELNYX_MESSAGING_PROFILE_ID: process.env.TELNYX_MESSAGING_PROFILE_ID,
+  TELNYX_PUBLIC_KEY: process.env.TELNYX_PUBLIC_KEY,
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  OPENAI_MODEL: process.env.OPENAI_MODEL,
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,
   NVIDIA_API_KEY: process.env.NVIDIA_API_KEY,
   NVIDIA_MODEL: process.env.NVIDIA_MODEL,
   RESEND_API_KEY: process.env.RESEND_API_KEY,
@@ -59,13 +71,17 @@ const parsed = envSchema.safeParse({
   VAPI_API_KEY: process.env.VAPI_API_KEY,
   VAPI_PHONE_NUMBER_ID: process.env.VAPI_PHONE_NUMBER_ID,
   VAPI_WEBHOOK_SECRET: process.env.VAPI_WEBHOOK_SECRET,
+  VAPI_WEBHOOK_CREDENTIAL_ID: process.env.VAPI_WEBHOOK_CREDENTIAL_ID,
+  VAPI_ALLOW_LEGACY_WEBHOOK_AUTH: process.env.VAPI_ALLOW_LEGACY_WEBHOOK_AUTH,
   RETELL_API_KEY: process.env.RETELL_API_KEY,
   PROPERTY_DATA_API_KEY: process.env.PROPERTY_DATA_API_KEY,
   SUPABASE_CA_CERT: process.env.SUPABASE_CA_CERT,
+  DATABASE_CA_CERT: process.env.DATABASE_CA_CERT,
   CRON_SECRET: process.env.CRON_SECRET,
   APP_URL: process.env.APP_URL,
   VERCEL_URL: process.env.VERCEL_URL,
   COMPANY_NMLS_ID: process.env.COMPANY_NMLS_ID,
+  CUSTOMER_ADMIN_EMAIL: process.env.CUSTOMER_ADMIN_EMAIL,
 });
 
 if (!parsed.success) {
@@ -87,6 +103,7 @@ export const capabilities = {
   hasDatabase: Boolean(env.DATABASE_URL),
   hasTwilio: Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_PHONE_NUMBER),
   hasTelnyx: Boolean(env.TELNYX_API_KEY && env.TELNYX_PHONE_NUMBER),
+  hasOpenAi: Boolean(env.OPENAI_API_KEY),
   // Either carrier lights up SMS/voice; adapters/sms.ts and adapters/voice.ts
   // prefer Telnyx when both are configured (cheaper, native 10DLC — see the
   // vendor comparison in DEPLOY.md), falling back to Twilio, then simulated.
@@ -99,11 +116,7 @@ export const capabilities = {
   hasVoiceAgent: Boolean(env.VAPI_API_KEY || env.RETELL_API_KEY),
   // The full, genuinely-callable Vapi setup — see adapters/voiceAgent.ts.
   hasLiveVoiceAgent: Boolean(env.VAPI_API_KEY && env.VAPI_PHONE_NUMBER_ID && env.VAPI_WEBHOOK_SECRET),
-  // No credential gate: discovery reads a public archive (Arctic Shift) that
-  // needs no auth, so this capability is always live. Reddit's /prefs/apps
-  // registration is no longer dependable, which is precisely why it is not a
-  // dependency any more. See adapters/leadDiscovery.ts.
-  hasLeadDiscovery: true,
+  hasLeadDiscovery: process.env.REDDIT_COMMERCIAL_APPROVED === "true",
   hasPropertyData: Boolean(env.PROPERTY_DATA_API_KEY),
 };
 
@@ -120,13 +133,12 @@ export function announceCapabilitiesOnce() {
           ? "LIVE (Twilio)"
           : "simulated — set TELNYX_API_KEY/TELNYX_PHONE_NUMBER or TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_PHONE_NUMBER"
     }`,
-    `Extraction (Anthropic): ${capabilities.hasAnthropic ? "LIVE" : "simulated — set ANTHROPIC_API_KEY"}`,
-    `AI messaging (outreach drafts & signal replies): ${capabilities.hasAnthropic ? "LIVE (Anthropic)" : capabilities.hasNvidia ? "LIVE (NVIDIA NIM, free tier)" : "simulated — set ANTHROPIC_API_KEY or NVIDIA_API_KEY"}`,
+    `AI gateway: ${capabilities.hasOpenAi ? "LIVE (OpenAI configured)" : capabilities.hasAnthropic ? "LIVE (Anthropic configured)" : capabilities.hasNvidia ? "LIVE (NVIDIA configured)" : "unavailable — configure an AI provider"}`,
     `Email (Resend): ${capabilities.hasResend ? "LIVE" : "simulated — set RESEND_API_KEY"}`,
     `Inbound email (Resend receiving): ${capabilities.hasInboundEmail ? "LIVE — webhook wired at /api/webhooks/resend-inbound" : "not configured — set RESEND_INBOUND_WEBHOOK_SECRET and add the webhook in the Resend dashboard (see DEPLOY.md)"}`,
     `Voice AI agent (Vapi): ${capabilities.hasLiveVoiceAgent ? "LIVE — outbound calls + webhook wired" : capabilities.hasVoiceAgent ? "API key present but VAPI_PHONE_NUMBER_ID/VAPI_WEBHOOK_SECRET missing — see adapters/voiceAgent.ts" : "not configured — set VAPI_API_KEY, VAPI_PHONE_NUMBER_ID, VAPI_WEBHOOK_SECRET"}`,
-    `Lead discovery (Arctic Shift public archive): LIVE — no credentials required`,
-    `Property valuation/AVM (RentCast): ${capabilities.hasPropertyData ? "LIVE for leads with a street address, simulated otherwise" : "simulated — set PROPERTY_DATA_API_KEY (free tier at rentcast.io)"}`,
+    `Lead discovery: ${capabilities.hasLeadDiscovery ? "commercial approval gate enabled" : "demo-only — REDDIT_COMMERCIAL_APPROVED is not true"}`,
+    `Property valuation/AVM (RentCast): ${capabilities.hasPropertyData ? "available as an evidence fallback" : "not configured — insufficient evidence is reported instead of a simulated estimate"}`,
     `Automated cadence engine: endpoint ready at /api/cron/cadence (${env.CRON_SECRET ? "protected by CRON_SECRET" : "UNPROTECTED — set CRON_SECRET before scheduling it"}) — needs a scheduler (Vercel Cron or an external pinger) actually hitting it; see vercel.json.`,
   ];
   console.log(`\n[Equity Flow Group] Provider status:\n  ${lines.join("\n  ")}\n`);

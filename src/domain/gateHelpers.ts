@@ -1,6 +1,7 @@
 import { evaluatePolicyGate, type GateInput } from "@/core/policyGate";
 import { getDb } from "@/domain/store";
 import type { Channel, Lead } from "@/domain/types";
+import { sameCalendarDay } from "@/core/timezone";
 
 export async function buildGateInput(lead: Lead, channel: Channel, isManualOfficerAction = false): Promise<GateInput> {
   const db = await getDb();
@@ -31,8 +32,9 @@ export async function buildGateInput(lead: Lead, channel: Channel, isManualOffic
   const channelAttemptRecords = db.attempts
     .filter((a) => a.leadId === lead.id && a.channel === channel && a.outcome !== "BLOCKED")
     .sort((a, b) => new Date(b.scheduledFor).getTime() - new Date(a.scheduledFor).getTime());
-  const today = new Date().toDateString();
-  const channelAttemptsToday = channelAttemptRecords.filter((a) => new Date(a.scheduledFor).toDateString() === today).length;
+  const channelAttemptsToday = channelAttemptRecords.filter((a) =>
+    sameCalendarDay(a.scheduledFor, new Date(), db.config.adminTimezone)
+  ).length;
   const channelLastAttemptAt = channelAttemptRecords[0] ? new Date(channelAttemptRecords[0].scheduledFor) : null;
 
   // A licensed officer manually deciding to reach out again is a deliberate

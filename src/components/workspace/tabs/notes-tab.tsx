@@ -50,9 +50,10 @@ export function NotesTab({
             value={body}
             onChange={(e) => setBody(e.target.value)}
             rows={3}
+            disabled={!canEdit}
           />
           <div className="mt-2 flex justify-end">
-            <Button size="sm" loading={isPending} disabled={!body.trim()} onClick={submit}>
+            <Button size="sm" loading={isPending} disabled={!canEdit || !body.trim()} onClick={submit}>
               <Send className="h-3.5 w-3.5" /> Add note
             </Button>
           </div>

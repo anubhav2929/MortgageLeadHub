@@ -49,7 +49,7 @@ const INTENT_OPTIONS: { value: LoanIntent; label: string; description: string; i
 const DISCLOSURES = {
   voice:
     "By checking this box, I consent to receive phone calls from Equity Flow Group and its licensed partners about my inquiry, including calls made using an automatic telephone dialing system, an artificial or prerecorded voice, or an AI voice assistant. Calls may be recorded for quality and compliance purposes, and I may request a human representative at any time.",
-  sms: "By checking this box, I consent to receive text messages from Equity Flow Group about my inquiry, including messages sent using an automatic telephone dialing system. Message and data rates may apply. Reply STOP to opt out at any time.",
+  sms: "By checking this box, I consent to receive text messages from Equity Flow Group and its licensed partners about my refinance or home equity inquiry, including messages sent using an automatic telephone dialing system. Message and data rates may apply. Consent is not a condition of purchase. Reply STOP to opt out at any time, HELP for help.",
   email: "By checking this box, I consent to receive email communications from Equity Flow Group about my inquiry.",
 };
 
@@ -137,7 +137,11 @@ const INITIAL: FormState = {
 function loadDraft(): { form: FormState; step: number } | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = window.localStorage.getItem(DRAFT_KEY);
+    // Sensitive intake fields are never written to persistent localStorage.
+    // sessionStorage supports refresh recovery in this tab and is discarded
+    // when the browsing session ends; the encrypted/server retention path is
+    // handled separately by saveIntakeDraftAction.
+    const raw = window.sessionStorage.getItem(DRAFT_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed?.form) return null;
@@ -228,6 +232,7 @@ export function IntakeWizard({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [result, setResult] = useState<{
     publicRef: string;
+    statusToken: string;
     slaDueAt: string;
     firstName: string;
     intent: LoanIntent;
@@ -244,14 +249,14 @@ export function IntakeWizard({
 
   // Persist on every change while the form is in progress; cleared on a
   // successful submit (see submit()) so a completed inquiry never resurfaces.
-  // Two copies: localStorage for instant same-device restore (existing
-  // behavior), and a debounced server-side save so the lead is recoverable
-  // even if this browser/device is never seen again — see IntakeDraft.
+  // A tab-scoped copy supports refresh recovery; the debounced server-side
+  // save provides the durable, retention-controlled draft. PII is not placed
+  // in persistent browser localStorage.
   useEffect(() => {
     if (result || typeof window === "undefined") return;
     const hasAnyInput = form.firstName || form.lastName || form.phone || form.email || form.intent;
     if (!hasAnyInput) return;
-    window.localStorage.setItem(DRAFT_KEY, JSON.stringify({ form, step }));
+    window.sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ form, step }));
 
     if (!clientDraftId) return;
     if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
@@ -278,7 +283,7 @@ export function IntakeWizard({
   }
 
   function startOver() {
-    window.localStorage.removeItem(DRAFT_KEY);
+    window.sessionStorage.removeItem(DRAFT_KEY);
     // Best-effort — the visitor is gone either way, and the 30-day
     // retention purge (see purgeStaleIntakeDrafts) is the actual backstop
     // if this fails or the tab closes before it resolves.
@@ -339,6 +344,7 @@ export function IntakeWizard({
         lastName: form.lastName,
         phone: form.phone,
         email: form.email,
+        borrowerTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         stateCode: form.stateCode,
         city: form.city || undefined,
         addressLine1: form.addressLine1.trim() || undefined,
@@ -355,14 +361,15 @@ export function IntakeWizard({
         consents: { voice: form.voice, sms: form.sms, email: form.email_, recording: form.voice },
         creditConsent: form.creditConsent,
       }, clientDraftId || undefined);
-      if (res.ok && res.publicRef && res.slaDueAt) {
-        trackEvent("intake_submitted", { intent: form.intent! });
+      if (res.ok && res.publicRef && res.statusToken && res.slaDueAt) {
+        trackEvent("intake_submitted");
         setSubmitError(null);
-        window.localStorage.removeItem(DRAFT_KEY);
+        window.sessionStorage.removeItem(DRAFT_KEY);
         window.localStorage.removeItem(CLIENT_DRAFT_ID_KEY);
         if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
         setResult({
           publicRef: res.publicRef,
+          statusToken: res.statusToken,
           slaDueAt: res.slaDueAt,
           firstName: form.firstName,
           intent: form.intent!,
@@ -393,6 +400,7 @@ export function IntakeWizard({
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
         <PostSubmitChat
           publicRef={result.publicRef}
+          statusToken={result.statusToken}
           slaDueAt={result.slaDueAt}
           firstName={result.firstName}
           intent={result.intent}

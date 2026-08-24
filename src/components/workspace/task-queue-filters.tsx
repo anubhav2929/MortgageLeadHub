@@ -11,12 +11,10 @@ const TASK_TYPES = ALL_TASK_TYPES;
 
 export function TaskQueueFilters({
   isOfficer,
-  scope,
   status,
   type,
 }: {
   isOfficer: boolean;
-  scope: "mine" | "all";
   status: "open" | "completed" | "all";
   type: string;
 }) {
@@ -34,24 +32,9 @@ export function TaskQueueFilters({
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2">
       {isOfficer && (
-        <div className="flex items-center gap-1 rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] p-0.5">
-          <button
-            onClick={() => setParam("scope", "")}
-            className={`h-8 rounded-[var(--radius-sm)] px-3 text-[13px] font-medium transition-colors ${
-              scope === "mine" ? "bg-[var(--primary)] text-white" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            }`}
-          >
-            My tasks
-          </button>
-          <button
-            onClick={() => setParam("scope", "all")}
-            className={`h-8 rounded-[var(--radius-sm)] px-3 text-[13px] font-medium transition-colors ${
-              scope === "all" ? "bg-[var(--primary)] text-white" : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            }`}
-          >
-            All tasks
-          </button>
-        </div>
+        <span className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2 text-[13px] font-medium text-[var(--foreground)]">
+          My authorized tasks
+        </span>
       )}
       <div className="flex items-center gap-1 rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] p-0.5">
         {(["open", "completed", "all"] as const).map((s) => (

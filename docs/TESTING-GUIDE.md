@@ -131,13 +131,11 @@ is a real degradation, not an equivalent — the attempt is marked
 Without this step every message stays at "Sent" forever and you will never learn
 about a bounce or a blocked number.
 
-1. **Admin → Integrations → Platform**, set `DELIVERY_WEBHOOK_SECRET`
-   (generate with `openssl rand -hex 32`).
-2. In Twilio, set the number's **StatusCallback** to
-   `https://<your-domain>/api/webhooks/delivery/twilio`
-   (or Telnyx's messaging-profile webhook → `/api/webhooks/delivery/telnyx`).
-   The app appends the secret automatically when sending, so you only paste it
-   into the panel.
+1. For Twilio, keep `TWILIO_AUTH_TOKEN` configured and set the exact public
+   inbound and delivery callback URLs; the app verifies `X-Twilio-Signature`.
+2. For Telnyx, configure `/api/webhooks/telnyx` and
+   `/api/webhooks/telnyx/failover`, then save `TELNYX_PUBLIC_KEY`; the app
+   verifies Ed25519 signatures and a five-minute replay window.
 3. Send another text and watch the Timeline: **Sent → Delivered** within a
    minute or two.
 
@@ -297,19 +295,19 @@ quotes a number, stop and report it — that's a compliance issue, not a bug.
 | --- | --- |
 | Banner still says DEMO after entering keys | Key saved but incomplete — Vapi needs all three fields, Twilio needs SID + token + number |
 | Call places a robocall instead of a conversation | Vapi not fully configured; the dialer names the missing fields |
-| Message stuck on "Sent", never "Delivered" | `DELIVERY_WEBHOOK_SECRET` not set, or the provider's status callback URL isn't pointed at this app |
+| Message stuck on "Sent", never "Delivered" | Signed provider callback URL/public key/auth token is missing or mismatched |
 | Every email fails | Sending domain not verified in Resend, or From address still on the placeholder domain |
 | Everything defers with QUIET_HOURS_LOCAL | It's night in the borrower's timezone. Use the manual override for testing, then turn it off |
 | Deploy fails: "Hobby accounts are limited to daily cron jobs" | `vercel.json` had a sub-daily schedule. It now ships as daily (`0 8 * * *`) so Hobby deploys cleanly |
 | Cadence steps only run once a day | That's the Hobby cron cap. Either upgrade to Pro and set `*/15 * * * *`, or point a free external pinger (cron-job.org) at `POST /api/cron/cadence` with `Authorization: Bearer $CRON_SECRET` |
 | AI call never produces a transcript | Vapi Server URL wrong, or webhook secret mismatch |
 
-## Known gaps — don't test for these, they aren't built
+## Controlled rollout items
 
-- **Inbound SMS is not captured.** Borrower replies by text won't appear in the
-  thread. Email and voice replies do.
-- **No job queue.** Cadence is a cron sweep, not a per-item retry queue.
-- **Persistence is a single JSON blob** with per-instance caching. Fine at
-  current volume; concurrent instances can overwrite each other under load.
-- **Seeded demo data and a shared demo password** ship by default. Both must be
-  removed before real borrower data goes in.
+- Signed inbound SMS, delivery reconciliation, and STOP/START/HELP are built;
+  test them only after the carrier webhook keys and approved test number are configured.
+- Durable webhook/outbox queues are built; scheduler cadence and duplicate-worker
+  behavior remain mandatory production UAT.
+- Snapshot writes use revision-locked conflict merge and normalized operational
+  tables. Normalized authoritative reads remain feature-locked until comparison evidence is clean.
+- Production never seeds shared demo passwords. Activate real accounts with expiring links.

@@ -20,8 +20,9 @@
 //  4. Short TTL, so an unused announcement stops being a live credential.
 
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "node:crypto";
+import { safeCompare } from "@/core/auth";
 import { getDb, saveDb } from "@/domain/store";
-import { getConfigValue } from "@/lib/runtimeConfig";
 
 /** TeXML is XML — anything interpolated has to be escaped or the document
  *  breaks, and a stray `<` in a borrower's name would silently truncate the
@@ -44,17 +45,15 @@ function texml(body: string): NextResponse {
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
-  const secret = await getConfigValue("DELIVERY_WEBHOOK_SECRET");
-  const provided = req.nextUrl.searchParams.get("secret");
-
-  if (!secret || provided !== secret) {
+  const provided = req.nextUrl.searchParams.get("token") ?? "";
+  const db = await getDb();
+  const announcement = db.voiceAnnouncements.get(id);
+  const suppliedHash = createHash("sha256").update(provided, "utf8").digest("hex");
+  if (!announcement?.accessTokenHash || !safeCompare(suppliedHash, announcement.accessTokenHash)) {
     // 404 rather than 401: an unauthenticated caller learns nothing about
     // whether this id exists.
     return new NextResponse("Not found", { status: 404 });
   }
-
-  const db = await getDb();
-  const announcement = db.voiceAnnouncements.get(id);
 
   // Every failure below returns a valid TeXML document rather than an error
   // status. If we 500 here, the carrier drops a call that is already ringing
@@ -69,7 +68,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
   announcement.consumedAt = new Date().toISOString();
   db.voiceAnnouncements.set(id, announcement);
-  saveDb();
+  await saveDb();
 
   return texml(
     `<Response><Say voice="Polly.Joanna">${escapeXml(announcement.text)}</Say></Response>`

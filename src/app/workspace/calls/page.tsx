@@ -6,8 +6,10 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { LiveCallBoard } from "@/components/workspace/live-call-board";
 import { CallFailureAlerts } from "@/components/workspace/call-failure-alerts";
+import { DialingSessionBoard } from "@/components/workspace/dialing-session-board";
+import { CallbackAppointmentBoard } from "@/components/workspace/callback-appointment-board";
 import { can } from "@/core/rbac";
-import { listCallActivity, listLiveCalls } from "@/domain/queries";
+import { listCallActivity, listCallbackAppointments, listDialingSessions, listLiveCalls } from "@/domain/queries";
 import { getCurrentUser } from "@/domain/session";
 import { currentVoiceStrategy } from "@/domain/voiceOrchestrator";
 import { formatDateTime } from "@/lib/utils";
@@ -35,7 +37,7 @@ export default async function CallCentrePage() {
   const user = await getCurrentUser();
   const subject = { role: user.role, officerId: user.officerId };
 
-  if (!can(subject, "VIEW_LEAD_PII")) {
+  if (!can(subject, "VIEW_CALL_CENTER")) {
     return (
       <div className="animate-fade-in">
         <PageHeader title="Call centre" />
@@ -46,11 +48,19 @@ export default async function CallCentrePage() {
     );
   }
 
-  const [live, activity, strategy] = await Promise.all([
+  const [allLive, allActivity, strategy, allDialingSessions, allCallbacks] = await Promise.all([
     listLiveCalls(),
     listCallActivity(80),
     currentVoiceStrategy(),
+    listDialingSessions(),
+    listCallbackAppointments(),
   ]);
+  const live = user.role === "OFFICER" ? allLive.filter((entry) => entry.leadAssignedOfficerId === user.officerId) : allLive;
+  const activity = user.role === "OFFICER" ? allActivity.filter((entry) => entry.leadAssignedOfficerId === user.officerId) : allActivity;
+  const dialingSessions = user.role === "ADMIN" ? allDialingSessions : allDialingSessions.filter(({ session }) => session.createdById === user.id);
+  const callbacks = user.role === "OFFICER"
+    ? allCallbacks.filter(({ appointment }) => appointment.officerId === user.officerId)
+    : allCallbacks;
 
   // Surfaced separately rather than left in the log: a run of failures is a
   // provider problem, and reading it as "some calls didn't connect" is how a
@@ -92,6 +102,9 @@ export default async function CallCentrePage() {
           </CardContent>
         </Card>
       )}
+
+      <DialingSessionBoard sessions={dialingSessions} />
+      <CallbackAppointmentBoard appointments={callbacks} />
 
       <h2 className="mb-2 text-[15px] font-semibold text-[var(--foreground)]">In progress</h2>
       <LiveCallBoard calls={live} />

@@ -1,12 +1,14 @@
-import type { Metadata } from "next";
 import { ToolPageShell } from "@/components/marketing/tool-page-shell";
 import { CashOutCalculator } from "@/components/marketing/tools/cash-out-calculator";
+import { seoMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata = seoMetadata({
   title: "Cash-Out Refinance Calculator — Estimate Available Equity | Equity Flow Group",
   description:
     "Free cash-out refinance calculator. Enter your home value and mortgage balance to estimate how much cash you could access from your equity.",
-};
+  path: "/tools/cash-out-calculator",
+  keywords: ["cash-out refinance calculator", "home equity calculator", "available equity estimate"],
+});
 
 export default function CashOutCalculatorPage() {
   return (

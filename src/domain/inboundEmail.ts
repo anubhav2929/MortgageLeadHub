@@ -34,7 +34,7 @@ export async function ingestInboundEmail(input: InboundEmailInput): Promise<{ ma
 
   const person = Array.from(db.people.values()).find((p) => p.email.trim().toLowerCase() === fromEmail);
   if (!person) {
-    console.log(`[inbound-email] no lead matches sender ${fromEmail} — dropped`);
+    console.log("[inbound-email] no lead matches sender — dropped");
     return { matched: false };
   }
 
@@ -69,6 +69,6 @@ export async function ingestInboundEmail(input: InboundEmailInput): Promise<{ ma
   await pushEvent({ leadId: lead.id, type: "NOTE_ADDED", actorType: "BORROWER", occurredAt: nowIso(), channel: "EMAIL", payload: { source: "inbound_email" } });
   await autoAssignOfficer(db, lead, "inbound_email");
 
-  saveDb();
+  await saveDb();
   return { matched: true };
 }

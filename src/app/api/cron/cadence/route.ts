@@ -18,6 +18,9 @@ import { runCadenceTick } from "@/domain/cadenceEngine";
 import { purgeStaleIntakeDrafts, reapStaleCalls } from "@/domain/queries";
 import { safeCompare } from "@/core/auth";
 import { getConfigValue } from "@/lib/runtimeConfig";
+import { hasSqlDatabase, withAdvisoryLease } from "@/domain/sql";
+import { processWebhookBatch } from "@/domain/webhookProcessing";
+import { processAutomatedDialingSessions } from "@/domain/dialingSessions";
 
 const isProduction = process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production";
 
@@ -37,8 +40,25 @@ export async function GET(request: Request) {
     }
   }
 
-  const summary = await runCadenceTick();
-  console.log(`[cadence-engine] processed=${summary.processed} delivered=${summary.delivered} blocked=${summary.blocked} heldForChannel=${summary.heldForChannel} exhausted=${summary.exhausted} errors=${summary.errors.length}`);
+  const run = async () => {
+    const webhooks = await processWebhookBatch(50);
+    const summary = await runCadenceTick();
+    const dialing = await processAutomatedDialingSessions(5);
+    console.log(`[cadence-engine] processed=${summary.processed} delivered=${summary.delivered} blocked=${summary.blocked} heldForChannel=${summary.heldForChannel} exhausted=${summary.exhausted} errors=${summary.errors.length}`);
+
+    const settledCalls = await reapStaleCalls();
+    if (settledCalls > 0) console.log(`[call-reaper] settled ${settledCalls} call(s) with no end-of-call report`);
+
+    const purgedDrafts = await purgeStaleIntakeDrafts();
+    if (purgedDrafts > 0) console.log(`[intake-drafts] purged ${purgedDrafts} draft(s) past retention`);
+    return { summary, settledCalls, purgedDrafts, webhooks, dialing };
+  };
+
+  const execution = hasSqlDatabase() ? await withAdvisoryLease("mortgage-lead-hub:cadence", run) : { acquired: true, value: await run() };
+  if (!execution.acquired || !execution.value) {
+    return NextResponse.json({ ok: true, skipped: "another cadence tick holds the database lease" }, { status: 202 });
+  }
+  const { summary, settledCalls, purgedDrafts, webhooks, dialing } = execution.value;
 
   // Piggybacks on the same scheduled trigger rather than a second cron job —
   // pre-consent draft PII (src/domain/types.ts IntakeDraft) shouldn't outlive
@@ -47,11 +67,5 @@ export async function GET(request: Request) {
   // board, but doing it here means a stuck session settles even if nobody
   // opens the page — which matters because pre-flight refuses to call someone
   // whose previous call is still marked live.
-  const settledCalls = await reapStaleCalls();
-  if (settledCalls > 0) console.log(`[call-reaper] settled ${settledCalls} call(s) with no end-of-call report`);
-
-  const purgedDrafts = await purgeStaleIntakeDrafts();
-  if (purgedDrafts > 0) console.log(`[intake-drafts] purged ${purgedDrafts} draft(s) past retention`);
-
-  return NextResponse.json({ ok: true, ...summary, purgedDrafts, settledCalls });
+  return NextResponse.json({ ok: true, ...summary, purgedDrafts, settledCalls, webhooks, dialing });
 }

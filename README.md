@@ -24,8 +24,8 @@ a simulated implementation when its credentials are absent, so the full product
 is explorable — including AI outreach, calls, and texts — without an account
 anywhere. See [Configuration](#configuration).
 
-Open http://localhost:3000. Demo sign-in credentials are listed in
-[DEPLOY.md](DEPLOY.md).
+Open http://localhost:3000. Local seed accounts are development-only; production
+accounts activate through expiring invitation or password-reset links.
 
 ## Commands
 
@@ -57,7 +57,8 @@ are needed to reach the credential store itself:
 | `DATABASE_URL` | The store is a table in this database |
 | `CREDENTIAL_SECRET` | Encrypts the store; keeping it beside the ciphertext would protect nothing |
 
-Everything else — Telnyx, Twilio, Anthropic, NVIDIA, Resend, Vapi, RentCast —
+Everything else — Vapi, Telnyx, Twilio, Resend, OpenAI, Anthropic, NVIDIA,
+Reddit, RentCast, iSoftpull, GA, Meta, and Cron —
 is configured in the admin panel, which also carries the step-by-step setup
 instructions for each provider. See
 [ADR-0002](docs/adr/0002-runtime-credential-resolution.md) for why.

@@ -1,12 +1,14 @@
-import type { Metadata } from "next";
 import { ToolPageShell } from "@/components/marketing/tool-page-shell";
 import { DtiCalculator } from "@/components/marketing/tools/dti-calculator";
+import { seoMetadata } from "@/lib/seo";
 
-export const metadata: Metadata = {
+export const metadata = seoMetadata({
   title: "Debt-to-Income (DTI) Calculator for Mortgages | Equity Flow Group",
   description:
     "Free debt-to-income calculator for mortgage refinancing. Enter your income, housing payment, and other debts to see your front-end and back-end DTI.",
-};
+  path: "/tools/dti-calculator",
+  keywords: ["debt-to-income calculator", "mortgage DTI calculator", "front-end DTI", "back-end DTI"],
+});
 
 export default function DtiCalculatorPage() {
   return (

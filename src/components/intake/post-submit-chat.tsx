@@ -45,6 +45,7 @@ type BadgeState = "idle" | "loading" | "done" | "error";
 
 export function PostSubmitChat({
   publicRef,
+  statusToken,
   slaDueAt,
   firstName,
   intent,
@@ -55,6 +56,7 @@ export function PostSubmitChat({
   email,
 }: {
   publicRef: string;
+  statusToken: string;
   slaDueAt: string;
   firstName: string;
   intent: LoanIntent;
@@ -79,7 +81,7 @@ export function PostSubmitChat({
     if (inFlight.current[channel]) return;
     inFlight.current[channel] = true;
     setBadgeState((s) => ({ ...s, [channel]: "loading" }));
-    initiateBorrowerChannelAction(publicRef, channel).then((result) => {
+    initiateBorrowerChannelAction(publicRef, statusToken, channel).then((result) => {
       inFlight.current[channel] = false;
       setBadgeState((s) => ({ ...s, [channel]: result.ok ? "done" : "error" }));
       setBadgeMessage((m) => ({ ...m, [channel]: result.message }));
@@ -90,7 +92,7 @@ export function PostSubmitChat({
   function requestScheduledCallback() {
     if (callbackSubmitting || callbackRequested) return;
     setCallbackSubmitting(true);
-    requestPriorityCallbackAction(publicRef).then((result) => {
+    requestPriorityCallbackAction(publicRef, statusToken).then((result) => {
       setCallbackSubmitting(false);
       if (result.ok) setCallbackRequested(true);
     });
@@ -111,7 +113,7 @@ export function PostSubmitChat({
     setQuestionSubmitting(true);
     setQaLog((prev) => [...prev, { from: "borrower", text: trimmed }]);
     setQuestion("");
-    submitBorrowerMessageAction(publicRef, trimmed).then((result) => {
+    submitBorrowerMessageAction(publicRef, statusToken, trimmed).then((result) => {
       setQuestionSubmitting(false);
       if (result.ok) {
         setQuestionSent(true);
@@ -132,7 +134,7 @@ export function PostSubmitChat({
   async function onSubmitCorrection() {
     setCorrectSubmitting(true);
     setCorrectError(null);
-    const result = await updateContactInfoAction(publicRef, correctPhone, correctEmail);
+    const result = await updateContactInfoAction(publicRef, statusToken, correctPhone, correctEmail);
     setCorrectSubmitting(false);
     if (!result.ok) {
       setCorrectError(result.message);
@@ -194,7 +196,7 @@ export function PostSubmitChat({
   async function onQuickCallback() {
     push("borrower", "Just have someone call me later");
     setStage(null);
-    await requestPriorityCallbackAction(publicRef);
+    await requestPriorityCallbackAction(publicRef, statusToken);
     await say(`Got it — flagged for a callback. A licensed loan officer will reach out by ${formatDateTime(slaDueAt)}.`, 600);
     setStage("done");
   }
@@ -217,7 +219,7 @@ export function PostSubmitChat({
               <span className="flex items-center gap-1.5">
                 <Clock className="h-3.5 w-3.5" /> Reference <span className="font-mono font-medium text-[var(--foreground)]">{publicRef}</span>
               </span>
-              <a href={`/status/${publicRef}`} target="_blank" rel="noreferrer" className="font-medium text-[var(--primary)] hover:underline">
+              <a href={`/status/${statusToken}`} target="_blank" rel="noreferrer" className="font-medium text-[var(--primary)] hover:underline">
                 Bookmark your status page →
               </a>
             </p>

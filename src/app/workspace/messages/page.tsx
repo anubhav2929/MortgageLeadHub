@@ -13,7 +13,7 @@ export default async function MessageCentrePage() {
   const user = await getCurrentUser();
   const subject = { role: user.role, officerId: user.officerId };
 
-  if (!can(subject, "VIEW_LEAD_PII")) {
+  if (!can(subject, "VIEW_MESSAGE_CENTER")) {
     return (
       <div className="animate-fade-in">
         <PageHeader title="Message centre" />
@@ -24,7 +24,10 @@ export default async function MessageCentrePage() {
     );
   }
 
-  const [threads, caps] = await Promise.all([listMessageThreads(), getCapabilities()]);
+  const [allThreads, caps] = await Promise.all([listMessageThreads(), getCapabilities()]);
+  const threads = user.role === "OFFICER"
+    ? allThreads.filter((thread) => thread.leadAssignedOfficerId === user.officerId)
+    : allThreads;
 
   const awaitingUs = threads.filter((t) => t.awaitingUs).length;
   const failing = threads.filter((t) => t.lastFailure).length;
@@ -54,8 +57,8 @@ export default async function MessageCentrePage() {
           <CardContent className="flex items-start gap-2.5 p-4">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
             <p className="text-[13px] text-[var(--foreground)]">
-              Replies and delivery receipts need <code className="text-xs">DELIVERY_WEBHOOK_SECRET</code> and the
-              carrier webhook pointed at this app. Until then, texts send but nothing comes back — including STOP.
+              Replies and delivery receipts require provider-signed Telnyx or Twilio webhooks. Until they are configured,
+              texts can send but nothing comes back — including STOP.
             </p>
           </CardContent>
         </Card>

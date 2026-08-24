@@ -18,11 +18,11 @@ export function StatusLookupForm() {
     setError(null);
     const result = await lookupStatusAction(phone, lastName);
     setSubmitting(false);
-    if (!result.ok || !result.publicRef) {
+    if (!result.ok || !result.statusToken) {
       setError(result.message);
       return;
     }
-    router.push(`/status/${result.publicRef}`);
+    router.push(`/status/${result.statusToken}`);
   }
 
   return (

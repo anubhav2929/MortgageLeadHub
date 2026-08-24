@@ -1,26 +1,6 @@
-// Property valuation / AVM (automated valuation model) lookup — the "pull
-// property value, comps, and ownership history the way Clear Capital does"
-// ask from the call, extended with the mortgage-balance/property-type/
-// year-built fields the Equity Flow Group business plan's lead-scoring
-// engine needs to compute usable equity.
-//
-// Live provider: RentCast (rentcast.io) — chosen because it's the only AVM
-// vendor with a real, no-credit-card free tier (50 requests/month) that
-// individual developers can actually sign up for. Zillow's Zestimate API has
-// been closed to the public since 2021 (enterprise/MLS-only via Bridge
-// Interactive); CoreLogic/ATTOM/HouseCanary are all enterprise-sales-only.
-// Set PROPERTY_DATA_API_KEY to a RentCast key to go live — see .env.example.
-//
-// A street address is required for a real per-property comp search (RentCast
-// needs more than "city, state" to find nearby comparables), so this only
-// calls the live API when the borrower provided one; otherwise it simulates,
-// which also protects the free tier's 50/month cap from being spent on
-// low-quality city-centroid lookups. Callers should additionally cache the
-// result (see domain/queries.ts's getOrCachePropertyValuation) so a given
-// lead is only ever looked up once, not once per page view.
-
+import { createHash } from "node:crypto";
 import { getConfigValue } from "@/lib/runtimeConfig";
-import type { PropertyType, PropertyValuationResult } from "@/domain/types";
+import type { PropertyType, PropertyValuationEvidence, PropertyValuationResult } from "@/domain/types";
 
 export interface PropertyValuationInput {
   addressLine1?: string;
@@ -28,182 +8,216 @@ export interface PropertyValuationInput {
   stateCode: string;
   postalCode?: string;
   estimatedValue?: number;
+  currentBalance?: number;
+  useFreeEvidence?: boolean;
 }
 
-// Deterministic per-address jitter so the same lead shows the same
-// "estimate" on every page load instead of re-randomizing each render.
-function seededFraction(seed: string): number {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = (hash << 5) - hash + seed.charCodeAt(i);
-    hash |= 0;
-  }
-  return (Math.abs(hash) % 1000) / 1000;
+const DISCLAIMER = "Informational estimate only — not an appraisal, underwriting decision, approval, rate, or lending advice.";
+const RECORD_HOST_ALLOWLIST = new Set(["api.census.gov", "geocoding.geo.census.gov"]);
+
+function evidenceId(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 20);
 }
 
-const STATE_MEDIAN_VALUE: Record<string, number> = {
-  CA: 785000,
-  FL: 410000,
-  IL: 285000,
-  NY: 465000,
-  OR: 495000,
-  TX: 335000,
-  NV: 425000,
-  SC: 315000,
-  AZ: 435000,
-  CO: 545000,
-  GA: 365000,
-  NC: 375000,
-  OH: 235000,
-  PA: 285000,
-  WA: 605000,
-};
-
-const PROPERTY_TYPES: PropertyType[] = ["SINGLE_FAMILY", "SINGLE_FAMILY", "SINGLE_FAMILY", "CONDO", "TOWNHOME", "MULTI_FAMILY"];
-
-function simulateValuation(input: PropertyValuationInput): PropertyValuationResult {
-  const seed = `${input.addressLine1 ?? ""}|${input.city ?? ""}|${input.stateCode}|${input.postalCode ?? ""}`;
-  const jitter = seededFraction(seed);
-  const jitter2 = seededFraction(`${seed}|2`);
-  const jitter3 = seededFraction(`${seed}|3`);
-
-  const base = input.estimatedValue ?? STATE_MEDIAN_VALUE[input.stateCode] ?? 400000;
-  const estimatedValue = Math.round((base * (0.9 + jitter * 0.25)) / 1000) * 1000;
-  return buildAssumedFinancials(input, estimatedValue, jitter, jitter2, jitter3, true);
-}
-
-// Shared by both simulated and live paths: no AVM vendor exposes real
-// outstanding-mortgage-balance data (that's private lender data, never
-// public record), so the balance/LTV/equity trio is always an assumed-LTV
-// model layered on top of whichever estimatedValue we have — simulated or
-// a real RentCast price.
-function buildAssumedFinancials(
-  input: PropertyValuationInput,
-  estimatedValue: number,
-  jitter: number,
-  jitter2: number,
-  jitter3: number,
-  simulated: boolean,
-  rentcastFields?: Partial<PropertyValuationResult>
-): PropertyValuationResult {
-  const spread = Math.round(estimatedValue * 0.06);
-  const saleYearsAgo = 2 + Math.floor(jitter * 10);
-
-  // Assumed public-record mortgage balance — typical existing-owner LTV
-  // clusters between 45% and 80% rather than uniformly random.
-  const assumedLtv = 0.45 + jitter2 * 0.35;
-  const estimatedMortgageBalance = Math.round((estimatedValue * assumedLtv) / 1000) * 1000;
-  const usableEquity = Math.max(0, estimatedValue - estimatedMortgageBalance);
-  const estimatedLTV = Math.round((estimatedMortgageBalance / estimatedValue) * 1000) / 10;
-
-  const propertyType = PROPERTY_TYPES[Math.floor(jitter3 * PROPERTY_TYPES.length)];
-  const yearBuilt = 1955 + Math.floor(jitter2 * 68);
-
+function emptyResult(input: PropertyValuationInput, evidence: PropertyValuationEvidence[]): PropertyValuationResult {
+  const balance = input.currentBalance && input.currentBalance > 0 ? input.currentBalance : 0;
   return {
-    estimatedValue,
-    confidenceLow: estimatedValue - spread,
-    confidenceHigh: estimatedValue + spread,
-    comparableCount: 3 + Math.floor(jitter * 6),
-    lastSaleDate: new Date(Date.now() - saleYearsAgo * 365 * 24 * 60 * 60 * 1000).toISOString(),
-    lastSalePrice: Math.round((estimatedValue * (0.65 + jitter * 0.15)) / 1000) * 1000,
-    estimatedMortgageBalance,
-    propertyType,
-    yearBuilt,
-    estimatedLTV,
-    usableEquity,
-    simulated,
-    ...rentcastFields,
-    // Built last so it reflects what actually came back from the vendor.
-    // The balance/LTV/equity trio is MODELED on every path, live included —
-    // it is an assumed-LTV calculation, not data anyone reported to us.
+    estimatedValue: 0, confidenceLow: 0, confidenceHigh: 0, comparableCount: 0,
+    estimatedMortgageBalance: balance, propertyType: "SINGLE_FAMILY", yearBuilt: 0, estimatedLTV: 0, usableEquity: 0,
+    simulated: false,
     provenance: {
-      estimatedValue: simulated ? "MODELED" : "MEASURED",
-      confidenceRange: simulated || rentcastFields?.confidenceLow === undefined ? "MODELED" : "MEASURED",
-      comparableCount: simulated ? "MODELED" : "MEASURED",
-      lastSale: !simulated && rentcastFields?.lastSaleDate ? "MEASURED" : "MODELED",
-      estimatedMortgageBalance: "MODELED",
-      estimatedLTV: "MODELED",
-      usableEquity: "MODELED",
-      propertyType: !simulated && rentcastFields?.propertyType ? "MEASURED" : "MODELED",
-      yearBuilt: !simulated && rentcastFields?.yearBuilt ? "MEASURED" : "MODELED",
+      estimatedValue: "MODELED", confidenceRange: "MODELED", comparableCount: "MODELED", lastSale: "MODELED",
+      estimatedMortgageBalance: input.currentBalance ? "MEASURED" : "MODELED", estimatedLTV: "MODELED", usableEquity: "MODELED",
+      propertyType: "MODELED", yearBuilt: "MODELED",
     },
+    disclaimer: DISCLAIMER, method: "INSUFFICIENT_EVIDENCE", confidence: "INSUFFICIENT", evidence,
+    freshnessAt: new Date().toISOString(), providerCostUsd: 0,
   };
 }
 
-const RENTCAST_PROPERTY_TYPE: Record<string, PropertyType> = {
-  "Single Family": "SINGLE_FAMILY",
-  Condo: "CONDO",
-  Condominium: "CONDO",
-  Townhouse: "TOWNHOME",
-  "Multi-Family": "MULTI_FAMILY",
-  Apartment: "MULTI_FAMILY",
-};
+interface CensusMatch { matchedAddress?: string; coordinates?: { x?: number; y?: number } }
+
+async function normalizeWithCensus(input: PropertyValuationInput): Promise<PropertyValuationEvidence | undefined> {
+  if (!input.addressLine1 || !input.city) return undefined;
+  const url = new URL(input.postalCode
+    ? "https://geocoding.geo.census.gov/geocoder/geographies/address"
+    : "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress");
+  if (input.postalCode) {
+    url.searchParams.set("street", input.addressLine1);
+    url.searchParams.set("city", input.city);
+    url.searchParams.set("state", input.stateCode);
+    url.searchParams.set("zip", input.postalCode);
+  } else {
+    url.searchParams.set("address", `${input.addressLine1}, ${input.city}, ${input.stateCode}`);
+  }
+  url.searchParams.set("benchmark", "Public_AR_Current");
+  url.searchParams.set("vintage", "Current_Current");
+  url.searchParams.set("format", "json");
+  const response = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+  if (!response.ok) return undefined;
+  const body = await response.json() as { result?: { addressMatches?: CensusMatch[] } };
+  const match = body.result?.addressMatches?.[0];
+  if (!match?.matchedAddress) return undefined;
+  return {
+    id: evidenceId(`census:${match.matchedAddress}`), kind: "PUBLIC_RECORD", retrievedAt: new Date().toISOString(),
+    sourceUrl: "https://geocoding.geo.census.gov/geocoder/", sourceLabel: "US Census Geocoder", reliability: 0.95,
+    notes: `Normalized address: ${match.matchedAddress}${match.coordinates ? ` (${match.coordinates.y}, ${match.coordinates.x})` : ""}`,
+  };
+}
+
+interface PublicRecordResponse {
+  assessedValue?: number; estimatedValue?: number; lastSalePrice?: number; lastSaleDate?: string;
+  propertyType?: string; yearBuilt?: number; sourceUrl?: string; sourceLabel?: string;
+}
+
+async function collectConfiguredPublicRecord(input: PropertyValuationInput): Promise<{ record: PublicRecordResponse; evidence: PropertyValuationEvidence[] } | undefined> {
+  const endpoint = await getConfigValue("PROPERTY_PUBLIC_RECORD_ENDPOINT");
+  if (!endpoint || !input.addressLine1) return undefined;
+  const url = new URL(endpoint);
+  const configuredHosts = ((await getConfigValue("PROPERTY_RECORD_ALLOWLIST")) ?? "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
+  if (!RECORD_HOST_ALLOWLIST.has(url.hostname) && !configuredHosts.includes(url.hostname.toLowerCase())) {
+    throw new Error(`Public-record host ${url.hostname} is not allowlisted.`);
+  }
+  url.searchParams.set("address", `${input.addressLine1}, ${input.city ?? ""}, ${input.stateCode} ${input.postalCode ?? ""}`.trim());
+  const response = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
+  if (!response.ok) throw new Error(`Public-record source returned ${response.status}.`);
+  const record = await response.json() as PublicRecordResponse;
+  const evidence: PropertyValuationEvidence[] = [];
+  const retrievedAt = new Date().toISOString();
+  if (record.assessedValue && record.assessedValue > 0) evidence.push({
+    id: evidenceId(`assessor:${url.hostname}:${record.assessedValue}`), kind: "ASSESSOR", value: record.assessedValue,
+    retrievedAt, sourceUrl: record.sourceUrl ?? url.origin, sourceLabel: record.sourceLabel ?? `Configured assessor (${url.hostname})`, reliability: 0.72,
+  });
+  if (record.lastSalePrice && record.lastSalePrice > 0) evidence.push({
+    id: evidenceId(`sale:${url.hostname}:${record.lastSalePrice}:${record.lastSaleDate ?? ""}`), kind: "RECORDED_SALE", value: record.lastSalePrice,
+    observedAt: record.lastSaleDate, retrievedAt, sourceUrl: record.sourceUrl ?? url.origin,
+    sourceLabel: record.sourceLabel ?? `Configured public records (${url.hostname})`, reliability: 0.82,
+  });
+  if (record.estimatedValue && record.estimatedValue > 0) evidence.push({
+    id: evidenceId(`public:${url.hostname}:${record.estimatedValue}`), kind: "PUBLIC_RECORD", value: record.estimatedValue,
+    retrievedAt, sourceUrl: record.sourceUrl ?? url.origin, sourceLabel: record.sourceLabel ?? `Configured open-data source (${url.hostname})`, reliability: 0.68,
+  });
+  return { record, evidence };
+}
+
+async function addFhfaAdjustment(input: PropertyValuationInput, record: PublicRecordResponse, evidence: PropertyValuationEvidence[]) {
+  if (!record.lastSalePrice || !record.lastSaleDate) return;
+  const raw = await getConfigValue("FHFA_HPI_INDEX_JSON");
+  if (!raw) return;
+  try {
+    const series = JSON.parse(raw) as Record<string, Record<string, number>>;
+    const state = series[input.stateCode];
+    const saleYear = String(new Date(record.lastSaleDate).getUTCFullYear());
+    const currentYear = String(new Date().getUTCFullYear());
+    const start = state?.[saleYear];
+    const end = state?.[currentYear];
+    if (!start || !end || start <= 0 || end <= 0) return;
+    const adjusted = Math.round(record.lastSalePrice * end / start / 1000) * 1000;
+    evidence.push({
+      id: evidenceId(`fhfa:${input.stateCode}:${saleYear}:${currentYear}:${adjusted}`), kind: "FHFA_HPI", value: adjusted,
+      observedAt: record.lastSaleDate, retrievedAt: new Date().toISOString(), sourceUrl: "https://www.fhfa.gov/data/hpi/datasets",
+      sourceLabel: "FHFA House Price Index", reliability: 0.88,
+      notes: `Recorded sale time-adjusted from ${saleYear} to ${currentYear}; state-level index is contextual evidence, not a comparable sale.`,
+    });
+  } catch {
+    console.error("[property-evidence] FHFA_HPI_INDEX_JSON is invalid JSON; sale adjustment skipped.");
+  }
+}
+
+function propertyType(value?: string): PropertyType {
+  const normalized = value?.toLowerCase() ?? "";
+  if (normalized.includes("condo")) return "CONDO";
+  if (normalized.includes("town")) return "TOWNHOME";
+  if (normalized.includes("multi") || normalized.includes("duplex")) return "MULTI_FAMILY";
+  return "SINGLE_FAMILY";
+}
+
+export function buildOpenEvidenceValuation(input: PropertyValuationInput, evidence: PropertyValuationEvidence[], record?: PublicRecordResponse): PropertyValuationResult | undefined {
+  const hasAdjustedSale = evidence.some((item) => item.kind === "FHFA_HPI");
+  const values = evidence.filter((item) => item.value && item.value > 0 && !(hasAdjustedSale && item.kind === "RECORDED_SALE"));
+  const independent = values.filter((item) => item.kind !== "BORROWER_ESTIMATE");
+  if (independent.length < 2) return undefined;
+  const weight = values.reduce((sum, item) => sum + item.reliability, 0);
+  const estimate = Math.round(values.reduce((sum, item) => sum + item.value! * item.reliability, 0) / weight / 1000) * 1000;
+  const dispersion = Math.max(...values.map((item) => Math.abs(item.value! - estimate) / estimate));
+  const confidence = independent.length >= 3 && dispersion <= 0.12 ? "HIGH" : dispersion <= 0.22 ? "MEDIUM" : "LOW";
+  const spread = Math.round(estimate * (confidence === "HIGH" ? 0.06 : confidence === "MEDIUM" ? 0.1 : 0.16));
+  const balance = input.currentBalance && input.currentBalance > 0 ? input.currentBalance : 0;
+  return {
+    estimatedValue: estimate, confidenceLow: Math.max(0, estimate - spread), confidenceHigh: estimate + spread,
+    comparableCount: independent.length, lastSaleDate: record?.lastSaleDate, lastSalePrice: record?.lastSalePrice,
+    estimatedMortgageBalance: balance, propertyType: propertyType(record?.propertyType), yearBuilt: record?.yearBuilt ?? 0,
+    estimatedLTV: balance ? Math.round(balance / estimate * 1000) / 10 : 0, usableEquity: balance ? Math.max(0, estimate - balance) : 0,
+    simulated: false,
+    provenance: {
+      estimatedValue: "MEASURED", confidenceRange: "MODELED", comparableCount: "MEASURED", lastSale: record?.lastSalePrice ? "MEASURED" : "MODELED",
+      estimatedMortgageBalance: input.currentBalance ? "MEASURED" : "MODELED", estimatedLTV: "MODELED", usableEquity: "MODELED",
+      propertyType: record?.propertyType ? "MEASURED" : "MODELED", yearBuilt: record?.yearBuilt ? "MEASURED" : "MODELED",
+    },
+    disclaimer: DISCLAIMER, method: "OPEN_EVIDENCE", confidence, evidence, freshnessAt: new Date().toISOString(), providerCostUsd: 0,
+  };
+}
 
 interface RentCastValueResponse {
-  price?: number;
-  priceRangeLow?: number;
-  priceRangeHigh?: number;
-  comparables?: unknown[];
-  subjectProperty?: {
-    propertyType?: string;
-    yearBuilt?: number;
-    lastSaleDate?: string;
-    lastSalePrice?: number;
-  };
+  price?: number; priceRangeLow?: number; priceRangeHigh?: number; comparables?: unknown[];
+  subjectProperty?: { propertyType?: string; yearBuilt?: number; lastSaleDate?: string; lastSalePrice?: number };
 }
 
-async function fetchRentCastValuation(input: PropertyValuationInput): Promise<PropertyValuationResult> {
+async function fetchRentCast(input: PropertyValuationInput, existingEvidence: PropertyValuationEvidence[]): Promise<PropertyValuationResult> {
+  const key = await getConfigValue("PROPERTY_DATA_API_KEY");
+  if (!key || !input.addressLine1) return emptyResult(input, existingEvidence);
   const address = `${input.addressLine1}, ${input.city ?? ""}, ${input.stateCode}${input.postalCode ? ` ${input.postalCode}` : ""}`;
   const url = `https://api.rentcast.io/v1/avm/value?address=${encodeURIComponent(address)}`;
-
-  const response = await fetch(url, {
-    headers: { Accept: "application/json", "X-Api-Key": (await getConfigValue("PROPERTY_DATA_API_KEY"))! },
-  });
-  if (!response.ok) {
-    throw new Error(`RentCast AVM request failed: ${response.status} ${await response.text()}`);
+  try {
+    const response = await fetch(url, { headers: { Accept: "application/json", "X-Api-Key": key }, signal: AbortSignal.timeout(12_000) });
+    if (!response.ok) throw new Error(`RentCast returned ${response.status}.`);
+    const data = await response.json() as RentCastValueResponse;
+    if (!data.price || data.price <= 0) throw new Error("RentCast returned no estimate.");
+    const subject = data.subjectProperty;
+    const evidence: PropertyValuationEvidence[] = [...existingEvidence, {
+      id: evidenceId(`rentcast:${address}:${data.price}`), kind: "RENTCAST", value: data.price, retrievedAt: new Date().toISOString(),
+      sourceUrl: "https://www.rentcast.io/", sourceLabel: "RentCast AVM", reliability: 0.9,
+    }];
+    const balance = input.currentBalance && input.currentBalance > 0 ? input.currentBalance : 0;
+    return {
+      estimatedValue: data.price, confidenceLow: data.priceRangeLow ?? Math.round(data.price * 0.94), confidenceHigh: data.priceRangeHigh ?? Math.round(data.price * 1.06),
+      comparableCount: data.comparables?.length ?? 0, lastSaleDate: subject?.lastSaleDate, lastSalePrice: subject?.lastSalePrice,
+      estimatedMortgageBalance: balance, propertyType: propertyType(subject?.propertyType), yearBuilt: subject?.yearBuilt ?? 0,
+      estimatedLTV: balance ? Math.round(balance / data.price * 1000) / 10 : 0, usableEquity: balance ? Math.max(0, data.price - balance) : 0,
+      simulated: false,
+      provenance: {
+        estimatedValue: "MEASURED", confidenceRange: data.priceRangeLow ? "MEASURED" : "MODELED", comparableCount: "MEASURED",
+        lastSale: subject?.lastSalePrice ? "MEASURED" : "MODELED", estimatedMortgageBalance: input.currentBalance ? "MEASURED" : "MODELED",
+        estimatedLTV: "MODELED", usableEquity: "MODELED", propertyType: subject?.propertyType ? "MEASURED" : "MODELED", yearBuilt: subject?.yearBuilt ? "MEASURED" : "MODELED",
+      },
+      disclaimer: DISCLAIMER, method: "RENTCAST", confidence: "MEDIUM", evidence, freshnessAt: new Date().toISOString(),
+      providerCostUsd: Number((await getConfigValue("RENTCAST_COST_PER_LOOKUP_USD")) ?? 0),
+    };
+  } catch (error) {
+    console.error(`[RentCast] evidence fallback failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+    return emptyResult(input, existingEvidence);
   }
-  const data: RentCastValueResponse = await response.json();
-  if (!data.price) {
-    throw new Error("RentCast AVM returned no price estimate (likely insufficient comparables for this address).");
-  }
-
-  const seed = address;
-  const jitter = seededFraction(seed);
-  const jitter2 = seededFraction(`${seed}|2`);
-
-  const subject = data.subjectProperty;
-  const propertyType = (subject?.propertyType && RENTCAST_PROPERTY_TYPE[subject.propertyType]) || "SINGLE_FAMILY";
-
-  return buildAssumedFinancials(input, data.price, jitter, jitter2, jitter, false, {
-    confidenceLow: data.priceRangeLow ?? Math.round(data.price * 0.94),
-    confidenceHigh: data.priceRangeHigh ?? Math.round(data.price * 1.06),
-    comparableCount: data.comparables?.length ?? 0,
-    lastSaleDate: subject?.lastSaleDate,
-    lastSalePrice: subject?.lastSalePrice,
-    propertyType,
-    yearBuilt: subject?.yearBuilt ?? 1955 + Math.floor(jitter2 * 68),
-  });
 }
 
 export async function getPropertyValuation(input: PropertyValuationInput): Promise<PropertyValuationResult> {
-  if (!(await getConfigValue("PROPERTY_DATA_API_KEY"))) {
-    const result = simulateValuation(input);
-    console.log(`[SIMULATED AVM] ${input.city ?? "?"}, ${input.stateCode} → $${result.estimatedValue.toLocaleString()} (LTV ${result.estimatedLTV}%)`);
-    return result;
-  }
-
-  if (!input.addressLine1) {
-    const result = simulateValuation(input);
-    console.log(`[SIMULATED AVM] no street address on file for ${input.city ?? "?"}, ${input.stateCode} — skipping live RentCast lookup to preserve free-tier quota.`);
-    return result;
-  }
-
+  const evidence: PropertyValuationEvidence[] = [];
+  if (input.estimatedValue && input.estimatedValue > 0) evidence.push({
+    id: evidenceId(`borrower:${input.estimatedValue}`), kind: "BORROWER_ESTIMATE", value: input.estimatedValue,
+    retrievedAt: new Date().toISOString(), sourceLabel: "Borrower-provided estimate", reliability: 0.35,
+  });
+  if (input.useFreeEvidence === false) return fetchRentCast(input, evidence);
   try {
-    const result = await fetchRentCastValuation(input);
-    console.log(`[LIVE AVM/RentCast] ${input.addressLine1}, ${input.city ?? "?"}, ${input.stateCode} → $${result.estimatedValue.toLocaleString()} (${result.comparableCount} comps)`);
-    return result;
-  } catch (err) {
-    console.error(`[LIVE AVM/RentCast] lookup failed, falling back to simulated estimate: ${err instanceof Error ? err.message : String(err)}`);
-    return simulateValuation(input);
+    const census = await normalizeWithCensus(input);
+    if (census) evidence.push(census);
+    const source = await collectConfiguredPublicRecord(input);
+    if (source) {
+      evidence.push(...source.evidence);
+      await addFhfaAdjustment(input, source.record, evidence);
+      const open = buildOpenEvidenceValuation(input, evidence, source.record);
+      if (open) return open;
+    }
+  } catch (error) {
+    console.error(`[property-evidence] free chain failed: ${error instanceof Error ? error.message : "Unknown error"}`);
   }
+  return fetchRentCast(input, evidence);
 }

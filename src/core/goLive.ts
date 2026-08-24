@@ -129,7 +129,7 @@ export function evaluateGoLive(input: GoLiveInput): ReadinessItem[] {
     missingKeys: caps.hasVoice
       ? []
       : caps.hasTelnyx
-        ? ["TELNYX_ACCOUNT_SID", "TELNYX_TEXML_APP_ID", "DELIVERY_WEBHOOK_SECRET"]
+        ? ["TELNYX_ACCOUNT_SID", "TELNYX_TEXML_APP_ID"]
         : ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"],
     remedy: caps.hasVoice
       ? undefined
@@ -201,10 +201,10 @@ export function evaluateGoLive(input: GoLiveInput): ReadinessItem[] {
     label: "Delivery receipts",
     status: input.hasDeliveryWebhookSecret ? "LIVE" : "DEGRADED",
     detail: input.hasDeliveryWebhookSecret
-      ? "Carriers report back whether a message actually reached the handset."
-      : "Sends are recorded as accepted-by-carrier and never resolve to delivered or failed. A number that silently rejects every text looks identical to one that works.",
-    missingKeys: input.hasDeliveryWebhookSecret ? [] : ["DELIVERY_WEBHOOK_SECRET"],
-    remedy: input.hasDeliveryWebhookSecret ? undefined : "Set DELIVERY_WEBHOOK_SECRET and add the webhook in your carrier's portal.",
+      ? "Provider-native signatures authenticate carrier delivery updates."
+      : "Sends are recorded as accepted-by-carrier and never resolve to delivered or failed. Configure Telnyx Ed25519 or Twilio signature verification.",
+    missingKeys: input.hasDeliveryWebhookSecret ? [] : ["TELNYX_PUBLIC_KEY or Twilio credentials"],
+    remedy: input.hasDeliveryWebhookSecret ? undefined : "Configure a signed primary provider webhook and its failover endpoint.",
     blocksAutomation: false,
   });
 
@@ -218,14 +218,10 @@ export function evaluateGoLive(input: GoLiveInput): ReadinessItem[] {
     detail: input.hasInboundSmsSecret
       ? "STOP replies suppress the lead across every channel, and ordinary replies join the conversation thread."
       : "STOP replies are not received. The carrier blocks its own channel, but the cadence keeps calling and emailing — and our consent text promises otherwise.",
-    // Same secret as delivery receipts — the inbound route authenticates with
-    // DELIVERY_WEBHOOK_SECRET too, so one value unlocks both. Worth stating,
-    // because "which secret does this need" is exactly the question that
-    // stalls a go-live.
-    missingKeys: input.hasInboundSmsSecret ? [] : ["DELIVERY_WEBHOOK_SECRET"],
+    missingKeys: input.hasInboundSmsSecret ? [] : ["TELNYX_PUBLIC_KEY or Twilio credentials"],
     remedy: input.hasInboundSmsSecret
       ? undefined
-      : "Set DELIVERY_WEBHOOK_SECRET (the same one delivery receipts use) and point Telnyx's inbound-message webhook at /api/webhooks/inbound/telnyx.",
+      : "Configure provider-native webhook verification and point the carrier at the signed inbound route.",
     blocksAutomation: false,
   });
 
@@ -249,7 +245,7 @@ export function evaluateGoLive(input: GoLiveInput): ReadinessItem[] {
     status: caps.hasPropertyData ? "LIVE" : "DEGRADED",
     detail: caps.hasPropertyData
       ? "Real AVM lookups for leads with a street address."
-      : "Estimated values are modelled, and labelled as such in the UI.",
+      : "The free evidence chain is used when enabled; otherwise the CRM reports insufficient evidence instead of fabricating a value.",
     missingKeys: caps.hasPropertyData ? [] : ["PROPERTY_DATA_API_KEY"],
     blocksAutomation: false,
   });
@@ -260,8 +256,8 @@ export function evaluateGoLive(input: GoLiveInput): ReadinessItem[] {
     status: input.hasCreditCheck ? "LIVE" : "DEGRADED",
     detail: input.hasCreditCheck
       ? "Real soft pulls via iSoftpull, gated on FCRA consent."
-      : "Credit bands are modelled and labelled Simulated. The FCRA gate still applies.",
-    missingKeys: input.hasCreditCheck ? [] : ["ISOFTPULL_API_KEY", "ISOFTPULL_API_SECRET"],
+      : "Live soft credit is disabled. No score or credit band is generated without approved provider access and the legal launch gate.",
+    missingKeys: input.hasCreditCheck ? [] : ["ISOFTPULL_API_KEY", "ISOFTPULL_API_SECRET", "CREDIT_LIVE_APPROVED"],
     blocksAutomation: false,
   });
 

@@ -28,7 +28,7 @@ export interface LiveCallSummary {
 
 export async function GET() {
   const user = await getCurrentUser();
-  if (!can({ role: user.role, officerId: user.officerId }, "VIEW_LEAD_PII")) {
+  if (!can({ role: user.role, officerId: user.officerId }, "VIEW_CALL_CENTER")) {
     return NextResponse.json({ calls: [] }, { status: 403 });
   }
 
@@ -42,7 +42,10 @@ export async function GET() {
     // provider poll failed.
   }
 
-  const live = await listLiveCalls();
+  const allLive = await listLiveCalls();
+  const live = user.role === "OFFICER"
+    ? allLive.filter((entry) => entry.leadAssignedOfficerId === user.officerId)
+    : allLive;
   const calls: LiveCallSummary[] = live.map((e) => {
     const c = e.conversation!;
     const last = c.transcript[c.transcript.length - 1];

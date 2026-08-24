@@ -6,6 +6,7 @@
 import { nanoid } from "nanoid";
 import type {
   IntegrationCredential,
+  InboundCallTriage,
   AuditLog,
   AuthToken,
   CadencePlan,
@@ -22,6 +23,16 @@ import type {
   LeadDocument,
   LegalPage,
   VoiceAnnouncement,
+  CallbackAppointment,
+  LeadContextSnapshot,
+  QualificationProgress,
+  QualificationDecision,
+  TransferAttempt,
+  RedditConnection,
+  RedditPublication,
+  IntegrationHealthCheck,
+  DialingSession,
+  DialingQueueItem,
   KillSwitchState,
   Lead,
   LeadEvent,
@@ -39,6 +50,8 @@ import type {
 } from "@/domain/types";
 import { seedDatabase } from "@/domain/seed";
 import { loadDb, persist, reloadIfStale } from "@/domain/persistence";
+import { hasSqlDatabase } from "@/domain/sql";
+import { listSqlIdentities } from "@/domain/authRepository";
 
 export interface Database {
   leads: Map<string, Lead>;
@@ -87,6 +100,17 @@ export interface Database {
   leadDocuments: LeadDocument[];
   /** Admin-authored overrides for the public legal pages. */
   legalPages: Map<string, LegalPage>;
+  inboundCallTriage: InboundCallTriage[];
+  leadContextSnapshots: Map<string, LeadContextSnapshot>;
+  qualificationProgress: Map<string, QualificationProgress>; // keyed by conversation id
+  qualificationDecisions: Map<string, QualificationDecision>; // keyed by conversation id
+  transferAttempts: Map<string, TransferAttempt>;
+  callbackAppointments: Map<string, CallbackAppointment>;
+  redditConnections: Map<string, RedditConnection>;
+  redditPublications: Map<string, RedditPublication>;
+  integrationHealth: Map<string, IntegrationHealthCheck>;
+  dialingSessions: Map<string, DialingSession>;
+  dialingQueueItems: Map<string, DialingQueueItem>;
 }
 
 declare global {
@@ -94,6 +118,8 @@ declare global {
 }
 
 export const DEFAULT_CONFIG: SystemConfig = {
+  adminTimezone: "America/Los_Angeles",
+  timezoneConfirmed: false,
   firstContactSlaMinutes: 5,
   dailyAttemptCap: 3,
   engagementWindowMinutes: 5,
@@ -105,6 +131,25 @@ export const DEFAULT_CONFIG: SystemConfig = {
   scoringWeights: { equity: 40, margin: 25, compliance: 20, behavior: 15 },
   hotLeadThreshold: 80,
   showEnvironmentBanner: true,
+  callbackReminderPolicy: {
+    slotDurationMinutes: 30,
+    bufferMinutes: 10,
+    minimumLeadMinutes: 30,
+    bookingHorizonDays: 14,
+    reminderMinutesBefore: 15,
+    confirmationTemplate: "Your callback with Equity Flow Group is booked for {{localTime}}. Reply STOP to opt out.",
+    reminderTemplate: "Reminder: your Equity Flow Group callback starts in 15 minutes at {{localTime}}. Reply STOP to opt out.",
+  },
+  featureFlags: {
+    vapiSquads: false,
+    automaticWarmTransfer: false,
+    callbackScheduling: false,
+    normalizedReads: false,
+    redditPosting: false,
+    freePropertyValuation: false,
+    metaCapi: false,
+    automatedPowerDialer: false,
+  },
 };
 
 function createEmptyDb(): Database {
@@ -140,6 +185,17 @@ function createEmptyDb(): Database {
     voiceAnnouncements: new Map(),
     leadDocuments: [],
     legalPages: new Map(),
+    inboundCallTriage: [],
+    leadContextSnapshots: new Map(),
+    qualificationProgress: new Map(),
+    qualificationDecisions: new Map(),
+    transferAttempts: new Map(),
+    callbackAppointments: new Map(),
+    redditConnections: new Map(),
+    redditPublications: new Map(),
+    integrationHealth: new Map(),
+    dialingSessions: new Map(),
+    dialingQueueItems: new Map(),
   };
 }
 
@@ -152,10 +208,25 @@ function hydrateDefaults(db: Database): Database {
   if (!db.authTokens) db.authTokens = new Map();
   if (!db.intakeDrafts) db.intakeDrafts = new Map();
   if (!db.credentials) db.credentials = new Map();
+  if (!db.inboundCallTriage) db.inboundCallTriage = [];
+  if (!db.leadContextSnapshots) db.leadContextSnapshots = new Map();
+  if (!db.qualificationProgress) db.qualificationProgress = new Map();
+  if (!db.qualificationDecisions) db.qualificationDecisions = new Map();
+  if (!db.transferAttempts) db.transferAttempts = new Map();
+  if (!db.callbackAppointments) db.callbackAppointments = new Map();
+  if (!db.redditConnections) db.redditConnections = new Map();
+  if (!db.redditPublications) db.redditPublications = new Map();
+  if (!db.integrationHealth) db.integrationHealth = new Map();
+  if (!db.dialingSessions) db.dialingSessions = new Map();
+  if (!db.dialingQueueItems) db.dialingQueueItems = new Map();
   if (!db.config.senderName) db.config.senderName = DEFAULT_CONFIG.senderName;
   if (!db.config.senderEmail) db.config.senderEmail = DEFAULT_CONFIG.senderEmail;
   if (!db.config.scoringWeights) db.config.scoringWeights = { ...DEFAULT_CONFIG.scoringWeights };
+  if (!db.config.adminTimezone) db.config.adminTimezone = DEFAULT_CONFIG.adminTimezone;
+  if (db.config.timezoneConfirmed === undefined) db.config.timezoneConfirmed = false;
   if (db.config.hotLeadThreshold === undefined) db.config.hotLeadThreshold = DEFAULT_CONFIG.hotLeadThreshold;
+  if (!db.config.callbackReminderPolicy) db.config.callbackReminderPolicy = { ...DEFAULT_CONFIG.callbackReminderPolicy! };
+  db.config.featureFlags = { ...DEFAULT_CONFIG.featureFlags, ...(db.config.featureFlags ?? {}) };
   return db;
 }
 
@@ -177,7 +248,10 @@ export async function getDb(): Promise<Database> {
       } else {
         global.__mlh_db__ = createEmptyDb();
         seedDatabase(global.__mlh_db__);
-        persist(global.__mlh_db__);
+        await persist(global.__mlh_db__);
+      }
+      if (hasSqlDatabase()) {
+        for (const user of await listSqlIdentities()) global.__mlh_db__.users.set(user.id, user);
       }
       return global.__mlh_db__;
     })().catch((err) => {
@@ -229,8 +303,8 @@ export async function refreshDb(): Promise<Database> {
   return db;
 }
 
-export function saveDb() {
-  if (global.__mlh_db__) persist(global.__mlh_db__);
+export function saveDb(): Promise<void> {
+  return global.__mlh_db__ ? persist(global.__mlh_db__) : Promise.resolve();
 }
 
 export function newId(prefix: string) {

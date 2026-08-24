@@ -1,5 +1,6 @@
 "use server";
 
+import { createHash } from "node:crypto";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
@@ -7,7 +8,6 @@ import { sendSms } from "@/adapters/sms";
 import type { AdapterResult } from "@/adapters/result";
 import { sendEmail } from "@/adapters/email";
 import { assessSignal, extractFieldsFromTranscript, generateOutreachContent, classifySignalIntent, generateSignalReply, validateIntakeIdentity, answerBorrowerQuestion } from "@/adapters/llm";
-import { searchForSignals } from "@/adapters/leadDiscovery";
 import { blendScore, dedupeKey } from "@/core/discoveryQuery";
 import { ALLOWED_DOCUMENT_TYPES, MAX_DOCUMENT_BYTES, dataUriBytes } from "@/core/documentPolicy";
 import { clampSms } from "@/core/smsFormat";
@@ -16,10 +16,12 @@ import { FIELD_TO_LEAD_PROPERTY, type MappedFieldPath } from "@/core/callInsight
 import { syncCallState } from "@/domain/queries";
 import { controlLiveCall, type CallControlAction } from "@/adapters/vapiCallControl";
 import { getPropertyValuation } from "@/adapters/propertyData";
+import { deletePrivateDocument, uploadPrivateDocument } from "@/adapters/documentStorage";
+import { publishRedditComment, revokeRedditConnection, searchApprovedReddit } from "@/adapters/reddit";
 import { promoteCandidate, type RawCandidate } from "@/core/extraction/promote";
 import { resolveCadence } from "@/core/cadence";
 import { computeLeadQualityScore } from "@/core/leadScoring";
-import { can } from "@/core/rbac";
+import { can, type Subject } from "@/core/rbac";
 import { transition } from "@/core/stateMachine";
 import { generateToken } from "@/core/auth";
 import { intakeInputSchema } from "@/core/intakeValidation";
@@ -28,15 +30,30 @@ import { recordCreditConsent, runGatedSoftPull } from "@/domain/creditActions";
 import { buildBriefForLead } from "@/domain/leadContext";
 import { type VoiceMechanism } from "@/core/callStrategy";
 import { placeOutboundCall } from "@/domain/voiceOrchestrator";
+import { bookCallbackForConversation } from "@/domain/voiceWorkflow";
 import { countsAgainstAttemptCap, decideRetry, describeFailure, shouldSuppressChannel, type DeliveryFailure } from "@/core/deliveryStatus";
 import { computeOfficerLoadToday } from "@/domain/queries";
 import { buildGateInput, evaluateForLead } from "@/domain/gateHelpers";
 import { getCurrentUser } from "@/domain/session";
 import { audit } from "@/domain/audit";
 import { getDb, newId, nowIso, refreshDb, saveDb, withLeadLock, type Database } from "@/domain/store";
-import { getAppUrl } from "@/lib/runtimeConfig";
+import { getAppUrl, getConfigValue } from "@/lib/runtimeConfig";
 import { formatDateTime } from "@/lib/utils";
+import { isValidIanaTimezone } from "@/core/timezone";
+import { callItemHasSettled, nextPendingDialItem } from "@/core/dialingQueue";
+import { consumeRateLimit } from "@/domain/rateLimit";
+import { enqueueOutbox } from "@/domain/durableQueue";
+import { getRequestContext } from "@/lib/requestContext";
+import { issueStatusToken, matchesStatusToken } from "@/domain/statusAccess";
+import { revealBearerUrl } from "@/core/secretBox";
 import { STATE_NAMES } from "@/domain/stateTimezone";
+import { hasSqlDatabase } from "@/domain/sql";
+import {
+  createSqlIdentityWithToken,
+  findSqlIdentityByEmail,
+  issueSqlIdentityToken,
+  updateSqlIdentity,
+} from "@/domain/authRepository";
 import type {
   AttemptOutcome,
   ContactWindow,
@@ -59,14 +76,28 @@ import type {
   Task,
   TaskType,
   LeadDocument,
+  DialingSessionMode,
+  User,
 } from "@/domain/types";
-import { STATE_TIMEZONE } from "@/domain/stateTimezone";
 
 async function requireLead(publicRef: string): Promise<Lead> {
   const db = await getDb();
   const lead = Array.from(db.leads.values()).find((l) => l.publicRef === publicRef);
   if (!lead) throw new Error(`Lead not found: ${publicRef}`);
   return lead;
+}
+
+async function authorizationSubject(user: User): Promise<Subject> {
+  if (user.role !== "OFFICER" || !user.officerId) return { role: user.role, officerId: user.officerId };
+  const officer = (await getDb()).officers.get(user.officerId);
+  return { role: user.role, officerId: user.officerId, licensedStates: officer?.licensedStates ?? [] };
+}
+
+async function requireBorrowerLead(publicRef: string, statusToken: string): Promise<Lead | null> {
+  const db = await getDb();
+  const lead = Array.from(db.leads.values()).find((item) => item.publicRef === publicRef);
+  if (!lead) return null;
+  return matchesStatusToken(lead, statusToken) ? lead : null;
 }
 
 export async function pushEvent(partial: Omit<LeadEvent, "id" | "correlationId" | "recordedAt">) {
@@ -79,8 +110,8 @@ export async function pushEvent(partial: Omit<LeadEvent, "id" | "correlationId" 
   });
 }
 
-function revalidateLead(publicRef: string) {
-  saveDb();
+async function revalidateLead(publicRef: string) {
+  await saveDb();
   revalidatePath("/workspace/leads");
   revalidatePath(`/workspace/leads/${publicRef}`);
   revalidatePath("/workspace");
@@ -196,7 +227,7 @@ export async function takeOverLeadAction(publicRef: string): Promise<ActionResul
   const user = await getCurrentUser();
   const lead = await requireLead(publicRef);
 
-  if (user.role !== "ADMIN" && user.role !== "OFFICER") {
+  if (!can(await authorizationSubject(user), "TAKE_OVER_LEAD", lead)) {
     await audit(user.id, user.name, "TAKE_OVER_LEAD", "Lead", lead.id, "DENY");
     return { ok: false, message: "You don't have permission to take over this lead." };
   }
@@ -220,7 +251,7 @@ export async function takeOverLeadAction(publicRef: string): Promise<ActionResul
     occurredAt: nowIso(),
   });
   await audit(user.id, user.name, "TAKE_OVER_LEAD", "Lead", lead.id, "ALLOW");
-  revalidateLead(publicRef);
+  await revalidateLead(publicRef);
   return { ok: true, message: `You've taken over this lead. Automation is paused.` };
 }
 
@@ -251,14 +282,18 @@ export async function assignOfficerAction(publicRef: string, officerId: string):
     payload: { officerId, reason: "manual_assignment", previousOfficerId },
   });
   await audit(user.id, user.name, "ASSIGN_OFFICER", "Lead", lead.id, "ALLOW", { officerId, previousOfficerId });
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
   return { ok: true, message: `Assigned to ${officer.name}.` };
 }
 
 export async function acknowledgeAssignmentAction(publicRef: string): Promise<ActionResult> {
   const user = await getCurrentUser();
   const lead = await requireLead(publicRef);
+
+  if (!can(await authorizationSubject(user), "EDIT_FIELDS", lead)) {
+    return { ok: false, message: "You do not have permission to acknowledge this assignment." };
+  }
 
   if (lead.state !== "ASSIGNED") {
     return { ok: false, message: `Lead must be in ASSIGNED state to acknowledge (currently ${lead.state}).` };
@@ -284,7 +319,7 @@ export async function acknowledgeAssignmentAction(publicRef: string): Promise<Ac
     occurredAt: nowIso(),
   });
   await audit(user.id, user.name, "ACKNOWLEDGE_HANDOFF", "Lead", lead.id, "ALLOW");
-  revalidateLead(publicRef);
+  await revalidateLead(publicRef);
   return { ok: true, message: "Handoff acknowledged. Automation halted permanently for this lead." };
 }
 
@@ -348,7 +383,7 @@ export async function logManualCallAction(
     db.notes.push({ id: newId("note"), leadId: lead.id, authorId: user.id, authorName: user.name, body: `Call log: ${notes.trim()}`, createdAt: nowIso() });
   }
   await audit(user.id, user.name, "LOG_MANUAL_CALL", "ContactAttempt", attemptId, "ALLOW");
-  revalidateLead(publicRef);
+  await revalidateLead(publicRef);
   return { ok: true, message: "Call logged." };
 }
 
@@ -383,13 +418,16 @@ export async function editAttemptOutcomeAction(
     payload: { correctedAttemptId: attemptId, previousOutcome, newOutcome: outcome, notes: notes.trim() || undefined },
   });
   await audit(user.id, user.name, "EDIT_CALL_LOG", "ContactAttempt", attemptId, "ALLOW");
-  revalidateLead(publicRef);
+  await revalidateLead(publicRef);
   return { ok: true, message: "Call log updated." };
 }
 
 export async function addNoteAction(publicRef: string, body: string): Promise<ActionResult> {
   const user = await getCurrentUser();
   const lead = await requireLead(publicRef);
+  if (!can(await authorizationSubject(user), "ADD_NOTE", lead)) {
+    return { ok: false, message: "You do not have permission to add notes to this lead." };
+  }
   if (!body.trim()) return { ok: false, message: "Note cannot be empty." };
 
   const db = await getDb();
@@ -409,7 +447,7 @@ export async function addNoteAction(publicRef: string, body: string): Promise<Ac
     actorName: user.name,
     occurredAt: nowIso(),
   });
-  revalidateLead(publicRef);
+  await revalidateLead(publicRef);
   return { ok: true, message: "Note added." };
 }
 
@@ -448,7 +486,7 @@ export async function confirmFieldAction(publicRef: string, fieldPath: string, v
     payload: { fieldPath, value },
   });
   await audit(user.id, user.name, "EDIT_FIELD", "LeadField", key, "ALLOW");
-  revalidateLead(publicRef);
+  await revalidateLead(publicRef);
   return { ok: true, message: "Field confirmed and locked in as officer-entered." };
 }
 
@@ -476,7 +514,7 @@ export async function markWonLostAction(publicRef: string, outcome: "WON" | "LOS
     payload: reason ? { reason } : undefined,
   });
   await audit(user.id, user.name, `MARK_${outcome}`, "Lead", lead.id, "ALLOW");
-  revalidateLead(publicRef);
+  await revalidateLead(publicRef);
   return { ok: true, message: outcome === "WON" ? "Marked as won. Congrats!" : "Marked as lost." };
 }
 
@@ -554,6 +592,9 @@ export async function runExtractionForConversation(
 export async function runExtractionAction(publicRef: string): Promise<ActionResult> {
   const user = await getCurrentUser();
   const lead = await requireLead(publicRef);
+  if (!can(await authorizationSubject(user), "EDIT_FIELDS", lead)) {
+    return { ok: false, message: "You do not have permission to extract or change fields on this lead." };
+  }
   const db = await getDb();
 
   const conversation = Array.from(db.conversations.values())
@@ -568,8 +609,8 @@ export async function runExtractionAction(publicRef: string): Promise<ActionResu
     actorType: "OFFICER",
     actorId: user.id,
   });
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
 
   return {
     ok: true,
@@ -582,6 +623,9 @@ export async function runExtractionAction(publicRef: string): Promise<ActionResu
 export async function requestComplianceReviewAction(publicRef: string, note: string): Promise<ActionResult> {
   const user = await getCurrentUser();
   const lead = await requireLead(publicRef);
+  if (!can(await authorizationSubject(user), "REQUEST_COMPLIANCE_REVIEW", lead)) {
+    return { ok: false, message: "You do not have permission to request review for this lead." };
+  }
   const db = await getDb();
 
   const task: Task = {
@@ -597,7 +641,7 @@ export async function requestComplianceReviewAction(publicRef: string, note: str
     db.notes.push({ id: newId("note"), leadId: lead.id, authorId: user.id, authorName: user.name, body: note.trim(), createdAt: nowIso() });
   }
   await pushEvent({ leadId: lead.id, type: "ESCALATED", actorType: "OFFICER", actorId: user.id, actorName: user.name, occurredAt: nowIso(), payload: { reason: "MANUAL_COMPLIANCE_REQUEST" } });
-  revalidateLead(publicRef);
+  await revalidateLead(publicRef);
   return { ok: true, message: "Compliance review requested." };
 }
 
@@ -628,7 +672,7 @@ export async function addSuppressionAction(phoneE164: string, reason: Suppressio
     }
   }
   await audit(user.id, user.name, "ADD_SUPPRESSION", "Suppression", phoneE164, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/suppression");
   revalidatePath("/workspace/leads");
   return { ok: true, message: `${phoneE164} suppressed globally.` };
@@ -651,7 +695,7 @@ export async function liftSuppressionAction(phoneE164: string, reason: string): 
   // Suppression record itself is deleted right above (that's the point of
   // lifting it), so the audit log's metadata is the only place it can live.
   await audit(user.id, user.name, "SUPPRESSION_LIFTED", "Suppression", phoneE164, "ALLOW", { reason: reason.trim(), scope: liftedScope });
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/suppression");
   return { ok: true, message: `Suppression lifted for ${phoneE164}.` };
 }
@@ -695,7 +739,7 @@ export async function selfServeOptOutAction(phone: string): Promise<ActionResult
     await audit("borrower", "Borrower (self-serve opt-out)", "ADD_SUPPRESSION", "Suppression", normalized, "ALLOW", {
       source: "self_serve_unsubscribe",
     });
-    saveDb();
+    await saveDb();
     revalidatePath("/workspace/suppression");
     revalidatePath("/workspace/leads");
   }
@@ -718,7 +762,7 @@ export async function toggleKillSwitchAction(reason: string): Promise<ActionResu
     reason: reason.trim(),
   };
   await audit(user.id, user.name, "KILL_SWITCH_TOGGLED", "System", "kill_switch", "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
   revalidatePath("/workspace");
   return { ok: true, message: db.killSwitch.isOn ? "Kill switch activated. All outbound automation is paused." : "Kill switch deactivated. Automation resumed." };
@@ -738,7 +782,15 @@ export async function runLeadDiscoveryAction(query?: string): Promise<ActionResu
   }
 
   const db = await getDb();
-  const { signals: raw, error, stats } = await searchForSignals(query);
+  if ((await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) !== "true") {
+    return {
+      ok: false,
+      message: "Production Reddit discovery is disabled until REDDIT_COMMERCIAL_APPROVED=true records written commercial authorization. Use seeded demo signals meanwhile.",
+    };
+  }
+  const connection = Array.from(db.redditConnections.values()).find((item) => !item.revokedAt);
+  if (!connection) return { ok: false, message: "Connect a verified Reddit OAuth account before running approved API discovery." };
+  const { signals: raw, error, stats } = await searchApprovedReddit(connection, query);
 
   if (error && raw.length === 0) {
     // Say what actually happened. Reporting "0 new signals" for an archive
@@ -819,7 +871,7 @@ export async function runLeadDiscoveryAction(query?: string): Promise<ActionResu
   }
 
   await audit(user.id, user.name, "RUN_LEAD_DISCOVERY", "DiscoveredSignal", "*", "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/discovery");
   const scanned = stats ? ` Scanned ${stats.fetched} posts across ${stats.sources ?? stats.queries} sources.` : "";
   // Naming the AI rejections is the point: it turns an invisible filter into
@@ -833,10 +885,76 @@ export async function runLeadDiscoveryAction(query?: string): Promise<ActionResu
 }
 
 export async function generateSignalReplyAction(signalId: string): Promise<{ body: string; simulated: boolean }> {
+  const user = await getCurrentUser();
+  if (!can({ role: user.role, officerId: user.officerId }, "MANAGE_SUPPRESSION")) {
+    return { body: "", simulated: true };
+  }
   const db = await getDb();
   const signal = db.signals.get(signalId);
   if (!signal) return { body: "", simulated: true };
   return generateSignalReply({ title: signal.title, snippet: signal.snippet, subreddit: signal.subreddit ?? "personalfinance" });
+}
+
+export async function publishRedditReplyAction(signalId: string, finalText: string, subredditRulesConfirmed: boolean): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  if (!can({ role: user.role, officerId: user.officerId }, "MANAGE_SUPPRESSION")) return { ok: false, message: "Only Admin or Compliance can publish a reviewed reply." };
+  if ((await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) !== "true") return { ok: false, message: "Reddit publishing is unavailable until written commercial approval is recorded." };
+  const text = finalText.trim();
+  if (text.length < 10 || text.length > 10_000) return { ok: false, message: "Review the final reply and keep it between 10 and 10,000 characters." };
+  if (!subredditRulesConfirmed) return { ok: false, message: "Confirm that you reviewed the subreddit rules before publishing." };
+  const db = await getDb();
+  if (db.config.featureFlags?.redditPosting !== true) return { ok: false, message: "The Reddit posting feature flag is not enabled for this environment." };
+  const signal = db.signals.get(signalId);
+  if (!signal) return { ok: false, message: "Signal not found." };
+  const prior = Array.from(db.redditPublications.values()).find((item) => item.signalId === signalId);
+  if (prior) return { ok: false, message: prior.status === "PUBLISHED" ? `This signal was already published${prior.permalink ? `: ${prior.permalink}` : "."}` : "A publication attempt already exists and must be reconciled before retrying." };
+  const connection = Array.from(db.redditConnections.values()).find((item) => !item.revokedAt);
+  if (!connection) return { ok: false, message: "Connect and verify a Reddit account first." };
+  const publicationId = newId("reddit_pub");
+  db.redditPublications.set(publicationId, {
+    id: publicationId, signalId, finalText: text, approvedById: user.id, approvedByName: user.name,
+    subredditRulesConfirmed: true, idempotencyKey: `reddit:${signalId}`, status: "PENDING", createdAt: nowIso(),
+  });
+  await audit(user.id, user.name, "REDDIT_PUBLISH_APPROVED", "RedditPublication", publicationId, "ALLOW", { signalId, accountName: connection.accountName });
+  await saveDb();
+  try {
+    const result = await publishRedditComment({ connection, sourceUrl: signal.sourceUrl, text });
+    const publication = db.redditPublications.get(publicationId)!;
+    publication.status = "PUBLISHED";
+    publication.redditCommentId = result.commentId;
+    publication.permalink = result.permalink;
+    publication.providerResponse = result.providerResponse;
+    publication.publishedAt = nowIso();
+    signal.redditPublicationId = publicationId;
+    signal.status = "ACTIONED";
+    signal.reviewedById = user.id;
+    signal.reviewedByName = user.name;
+    signal.reviewedAt = nowIso();
+    await audit(user.id, user.name, "REDDIT_PUBLISHED", "RedditPublication", publicationId, "ALLOW", { commentId: result.commentId, permalink: result.permalink });
+    await saveDb();
+    revalidatePath("/workspace/discovery");
+    return { ok: true, message: result.permalink ? `Published: ${result.permalink}` : "Reply published to Reddit." };
+  } catch (error) {
+    const publication = db.redditPublications.get(publicationId)!;
+    publication.status = "FAILED";
+    publication.providerResponse = { error: error instanceof Error ? error.message : "Reddit publish failed" };
+    await saveDb();
+    return { ok: false, message: error instanceof Error ? error.message : "Reddit publish failed." };
+  }
+}
+
+export async function disconnectRedditAction(): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  if (user.role !== "ADMIN") return { ok: false, message: "Only Admin can disconnect Reddit." };
+  const db = await getDb();
+  const connection = Array.from(db.redditConnections.values()).find((item) => !item.revokedAt);
+  if (!connection) return { ok: false, message: "No Reddit account is connected." };
+  await revokeRedditConnection(connection).catch((error) => console.error("[reddit] token revocation failed", error));
+  connection.revokedAt = nowIso();
+  await audit(user.id, user.name, "REDDIT_DISCONNECTED", "RedditConnection", connection.id, "ALLOW", { accountName: connection.accountName });
+  await saveDb();
+  revalidatePath("/workspace/discovery");
+  return { ok: true, message: "Reddit account disconnected and refresh token revoked." };
 }
 
 export async function dismissSignalAction(signalId: string, note: string): Promise<ActionResult> {
@@ -855,7 +973,7 @@ export async function dismissSignalAction(signalId: string, note: string): Promi
   signal.reviewedAt = nowIso();
 
   await audit(user.id, user.name, "DISMISS_SIGNAL", "DiscoveredSignal", signalId, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/discovery");
   return { ok: true, message: "Signal dismissed." };
 }
@@ -940,7 +1058,7 @@ export async function promoteSignalToLeadAction(signalId: string): Promise<Actio
   signal.reviewedAt = createdAt;
 
   await audit(user.id, user.name, "PROMOTE_SIGNAL_TO_LEAD", "Lead", leadId, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/discovery");
   revalidatePath("/workspace/leads");
   return { ok: true, message: "Added to the CRM with no consent on file — automated contact is blocked by PolicyGate until that changes." };
@@ -954,6 +1072,9 @@ export async function updateSystemConfigAction(config: SystemConfig): Promise<Ac
   if (!can({ role: user.role, officerId: user.officerId }, "EDIT_CADENCE_PROMPTS_DISCLOSURES")) {
     return { ok: false, message: "Only Admin can change system configuration." };
   }
+  if (config.featureFlags?.normalizedReads) {
+    return { ok: false, message: "Normalized authoritative reads remain locked until shadow-write reconciliation is clean." };
+  }
   if (config.firstContactSlaMinutes < 1 || config.dailyAttemptCap < 1 || config.minSpacingHours < 0) {
     return { ok: false, message: "Values must be positive." };
   }
@@ -962,6 +1083,9 @@ export async function updateSystemConfigAction(config: SystemConfig): Promise<Ac
   }
   if (!config.senderName.trim() || !config.senderEmail.includes("@")) {
     return { ok: false, message: "Enter a sender name and a valid sender email." };
+  }
+  if (!config.adminTimezone || !isValidIanaTimezone(config.adminTimezone)) {
+    return { ok: false, message: "Choose a valid IANA timezone, for example America/New_York." };
   }
   const weights = config.scoringWeights;
   if (weights.equity < 0 || weights.margin < 0 || weights.compliance < 0 || weights.behavior < 0) {
@@ -974,10 +1098,14 @@ export async function updateSystemConfigAction(config: SystemConfig): Promise<Ac
   if (engagementWindow !== undefined && (engagementWindow < 0 || engagementWindow > 120)) {
     return { ok: false, message: "Live-chat hold must be between 0 and 120 minutes." };
   }
+  const callback = config.callbackReminderPolicy;
+  if (!callback || callback.slotDurationMinutes < 5 || callback.slotDurationMinutes > 240 || callback.bufferMinutes < 0 || callback.bufferMinutes > 120 || callback.minimumLeadMinutes < 0 || callback.minimumLeadMinutes > 1440 || callback.bookingHorizonDays < 1 || callback.bookingHorizonDays > 90 || callback.reminderMinutesBefore < 1 || callback.reminderMinutesBefore > 1440 || !callback.confirmationTemplate.trim() || !callback.reminderTemplate.trim()) {
+    return { ok: false, message: "Callback timing and both SMS templates must contain valid values." };
+  }
 
   const db = await getDb();
   const previousOverrides = db.config.outreachOverrides ?? {};
-  db.config = { ...config };
+  db.config = { ...config, timezoneConfirmed: true };
 
   // Turning a pacing rule off is a compliance-relevant decision. Audit it
   // separately from the rest of the settings save, naming which guardrail
@@ -993,7 +1121,7 @@ export async function updateSystemConfigAction(config: SystemConfig): Promise<Ac
   }
 
   await audit(user.id, user.name, "UPDATE_SYSTEM_CONFIG", "System", "config", "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
   // The environment banner renders in the ROOT layout, so revalidating the
   // admin path alone would save the toggle without the banner appearing to
@@ -1021,7 +1149,7 @@ export async function updateCadencePlanAction(planId: string, steps: CadenceStep
 
   plan.steps = steps.map((s) => ({ ...s, stopOnOutcomes: s.stopOnOutcomes ?? [] })).sort((a, b) => a.offsetMinutes - b.offsetMinutes);
   await audit(user.id, user.name, "EDIT_CADENCE_PLAN", "CadencePlan", planId, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
   return { ok: true, message: "Cadence plan saved. In-flight leads keep their snapshotted version — this only affects new attempts." };
 }
@@ -1044,7 +1172,7 @@ export async function createCadencePlanAction(input: { name: string; stateCode?:
     steps: [{ offsetMinutes: 0, channel: "VOICE", maxAttempts: 3, stopOnOutcomes: ["ANSWERED"] }],
   });
   await audit(user.id, user.name, "CREATE_CADENCE_PLAN", "CadencePlan", id, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
   return { ok: true, message: `${input.name} created — add steps and save.` };
 }
@@ -1079,7 +1207,7 @@ export async function createDisclosureDraftAction(key: string, bodyText: string)
     status: "DRAFT",
   });
   await audit(user.id, user.name, "CREATE_DISCLOSURE_DRAFT", "DisclosureVersion", id, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
   return { ok: true, message: `Draft v${nextVersion} created for "${key.trim()}" — approve it to make it live.` };
 }
@@ -1107,7 +1235,7 @@ export async function approveDisclosureAction(disclosureId: string): Promise<Act
   draft.effectiveFrom = now;
 
   await audit(user.id, user.name, "APPROVE_DISCLOSURE", "DisclosureVersion", disclosureId, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
   return { ok: true, message: `"${draft.key}" v${draft.version} is now live.` };
 }
@@ -1135,17 +1263,21 @@ export async function createUserAction(input: CreateUserInput): Promise<ActionRe
     return { ok: false, message: "A name and valid email are required." };
   }
   const db = await getDb();
-  const emailTaken = Array.from(db.users.values()).some((u) => u.email.toLowerCase() === input.email.trim().toLowerCase());
+  const normalizedEmail = input.email.trim().toLowerCase();
+  const emailTaken = hasSqlDatabase()
+    ? Boolean(await findSqlIdentityByEmail(normalizedEmail))
+    : Array.from(db.users.values()).some((u) => u.email.toLowerCase() === normalizedEmail);
   if (emailTaken) {
     return { ok: false, message: "A user with that email already exists." };
   }
 
   const userId = newId("user");
   let officerId: string | undefined;
+  let newOfficer: ReturnType<typeof db.officers.get>;
 
   if (input.role === "OFFICER") {
     officerId = newId("off");
-    db.officers.set(officerId, {
+    newOfficer = {
       id: officerId,
       userId,
       name: input.name.trim(),
@@ -1159,30 +1291,33 @@ export async function createUserAction(input: CreateUserInput): Promise<ActionRe
       activeHoursStart: 8,
       activeHoursEnd: 18,
       isActive: true,
-    });
+    };
   }
 
-  db.users.set(userId, {
+  const newUser = {
     id: userId,
     name: input.name.trim(),
-    email: input.email.trim(),
+    email: normalizedEmail,
     role: input.role,
     officerId,
     isActive: true,
     createdAt: nowIso(),
     createdById: user.id,
-  });
+  } satisfies import("@/domain/types").User;
 
   const inviteToken = generateToken();
-  db.authTokens.set(inviteToken, {
-    token: inviteToken,
-    userId,
-    purpose: "invite",
-    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-  });
+  const inviteExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  if (hasSqlDatabase()) {
+    await createSqlIdentityWithToken(newUser, inviteToken, "invite", inviteExpiresAt);
+  }
+  if (newOfficer) db.officers.set(newOfficer.id, newOfficer);
+  db.users.set(userId, newUser);
+  if (!hasSqlDatabase()) {
+    db.authTokens.set(inviteToken, { token: inviteToken, userId, purpose: "invite", expiresAt: inviteExpiresAt });
+  }
 
   await audit(user.id, user.name, "CREATE_USER", "User", userId, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
 
   const roleLabel = input.role.replace("_", " ").toLowerCase();
@@ -1231,13 +1366,19 @@ export async function setUserActiveAction(userId: string, isActive: boolean): Pr
   if (!target) return { ok: false, message: "User not found." };
 
   target.isActive = isActive;
+  if (hasSqlDatabase()) await updateSqlIdentity(target, { revokeSessions: !isActive });
+  if (!isActive) {
+    for (const [token, session] of db.sessions) {
+      if (session.userId === userId) db.sessions.delete(token);
+    }
+  }
   if (target.officerId) {
     const officer = db.officers.get(target.officerId);
     if (officer) officer.isActive = isActive;
   }
 
   await audit(user.id, user.name, isActive ? "REACTIVATE_USER" : "DEACTIVATE_USER", "User", userId, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
   return { ok: true, message: isActive ? `${target.name}'s access restored.` : `${target.name}'s portal access revoked.` };
 }
@@ -1257,13 +1398,12 @@ export async function resendInviteAction(userId: string): Promise<ActionResult> 
   if (target.passwordHash) return { ok: false, message: `${target.name} has already activated their account.` };
 
   const inviteToken = generateToken();
-  db.authTokens.set(inviteToken, {
-    token: inviteToken,
-    userId,
-    purpose: "invite",
-    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-  });
-  saveDb();
+  const inviteExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  if (hasSqlDatabase()) await issueSqlIdentityToken(userId, inviteToken, "invite", inviteExpiresAt);
+  else {
+    db.authTokens.set(inviteToken, { token: inviteToken, userId, purpose: "invite", expiresAt: inviteExpiresAt });
+    await saveDb();
+  }
 
   const inviteUrl = `${await getAppUrl()}/accept-invite?token=${inviteToken}`;
   const roleLabel = target.role.replace("_", " ").toLowerCase();
@@ -1293,7 +1433,7 @@ export async function updateOfficerProductTypesAction(officerId: string, product
 
   officer.productTypes = productTypes;
   await audit(user.id, user.name, "UPDATE_OFFICER_PRODUCT_TYPES", "Officer", officerId, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
   return {
     ok: true,
@@ -1335,7 +1475,7 @@ export async function updateOfficerAction(officerId: string, input: UpdateOffice
   officer.isActive = input.isActive;
 
   await audit(user.id, user.name, "UPDATE_OFFICER", "Officer", officerId, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
   return { ok: true, message: `${officer.name}'s profile updated.` };
 }
@@ -1346,6 +1486,9 @@ export async function updateOfficerAction(officerId: string, input: UpdateOffice
 export async function createTaskAction(publicRef: string, type: TaskType, title: string, dueInHours: number, assigneeId?: string): Promise<ActionResult> {
   const user = await getCurrentUser();
   const lead = await requireLead(publicRef);
+  if (!can(await authorizationSubject(user), "MANAGE_TASK", lead)) {
+    return { ok: false, message: "You do not have permission to create tasks for this lead." };
+  }
   if (!title.trim()) return { ok: false, message: "Task title is required." };
 
   const db = await getDb();
@@ -1369,37 +1512,44 @@ export async function createTaskAction(publicRef: string, type: TaskType, title:
     occurredAt: nowIso(),
     payload: { taskCreated: title.trim() },
   });
-  revalidateLead(publicRef);
+  await revalidateLead(publicRef);
   return { ok: true, message: "Task created." };
 }
 
 export async function completeTaskAction(publicRef: string, taskId: string): Promise<ActionResult> {
   const user = await getCurrentUser();
-  await requireLead(publicRef);
+  const lead = await requireLead(publicRef);
+  if (!can(await authorizationSubject(user), "MANAGE_TASK", lead)) {
+    return { ok: false, message: "You do not have permission to complete tasks for this lead." };
+  }
   const db = await getDb();
   const task = db.tasks.get(taskId);
-  if (!task) return { ok: false, message: "Task not found." };
+  if (!task || task.leadId !== lead.id) return { ok: false, message: "Task not found." };
 
   task.status = "COMPLETED";
   task.completedAt = nowIso();
   task.completedById = user.id;
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
   return { ok: true, message: "Task completed." };
 }
 
 // Post-action follow-up: pushing a task's due date out, instead of either
 // completing it (loses the reminder) or leaving it to just sit overdue.
 export async function snoozeTaskAction(publicRef: string, taskId: string, snoozeHours: number): Promise<ActionResult> {
-  await requireLead(publicRef);
+  const user = await getCurrentUser();
+  const lead = await requireLead(publicRef);
+  if (!can(await authorizationSubject(user), "MANAGE_TASK", lead)) {
+    return { ok: false, message: "You do not have permission to snooze tasks for this lead." };
+  }
   const db = await getDb();
   const task = db.tasks.get(taskId);
-  if (!task) return { ok: false, message: "Task not found." };
+  if (!task || task.leadId !== lead.id) return { ok: false, message: "Task not found." };
   if (task.status !== "OPEN") return { ok: false, message: "Only open tasks can be snoozed." };
 
   task.dueAt = new Date(Date.now() + snoozeHours * 3_600_000).toISOString();
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
   return { ok: true, message: `Snoozed to ${formatDateTime(task.dueAt)}.` };
 }
 
@@ -1415,10 +1565,13 @@ export async function getComposeContextAction(publicRef: string): Promise<{
   senderName: string;
   senderEmail: string;
 }> {
+  const user = await getCurrentUser();
   const lead = await requireLead(publicRef);
+  if (!can(await authorizationSubject(user), "CALL_NOW", lead)) {
+    throw new Error("You do not have permission to contact this lead.");
+  }
   const db = await getDb();
   const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
-  const user = await getCurrentUser();
   return {
     toEmail: person?.email ?? "",
     toPhone: person?.phoneE164 ?? "",
@@ -1431,10 +1584,13 @@ export async function getComposeContextAction(publicRef: string): Promise<{
 }
 
 export async function generateDraftAction(publicRef: string, channel: "EMAIL" | "SMS"): Promise<{ subject?: string; body: string; simulated: boolean }> {
+  const user = await getCurrentUser();
   const lead = await requireLead(publicRef);
+  if (!can(await authorizationSubject(user), "CALL_NOW", lead)) {
+    return { body: "", simulated: true };
+  }
   const db = await getDb();
   const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
-  const user = await getCurrentUser();
 
   if (channel === "EMAIL") {
     return generateOutreachContent({
@@ -1482,7 +1638,7 @@ export async function sendEmailAction(publicRef: string, subject: string, body: 
 
   if (decision.decision !== "ALLOW") {
     await pushEvent({ leadId: lead.id, type: "OUTREACH_BLOCKED", actorType: "OFFICER", actorId: user.id, actorName: user.name, channel: "EMAIL", occurredAt: nowIso(), payload: { reasons: decision.reasons, manual: true } });
-    revalidateLead(publicRef);
+  await revalidateLead(publicRef);
     return { ok: false, message: `Blocked by PolicyGate: ${decision.reasons.join(", ")}` };
   }
 
@@ -1529,12 +1685,12 @@ export async function sendEmailAction(publicRef: string, subject: string, body: 
     // A failed send did not reach the borrower, so it must not count against
     // the attempt caps that exist to limit how often they are contacted.
     await recordSendFailure(db, lead, person, "EMAIL", result.failure, user, true);
-    revalidateLead(publicRef);
+  await revalidateLead(publicRef);
     return { ok: false, message: describeFailure("EMAIL", result.failure) };
   }
 
   await pushEvent({ leadId: lead.id, type: "OUTREACH_ATTEMPTED", actorType: "OFFICER", actorId: user.id, actorName: user.name, channel: "EMAIL", occurredAt: nowIso(), payload: { manual: true, simulated: result.simulated } });
-  revalidateLead(publicRef);
+  await revalidateLead(publicRef);
   return { ok: true, message: result.simulated ? "Email queued (simulated — no provider configured)." : "Email sent to provider. Delivery will confirm shortly." };
 }
 
@@ -1561,7 +1717,7 @@ export async function sendSmsComposedAction(publicRef: string, body: string): Pr
 
   if (decision.decision !== "ALLOW") {
     await pushEvent({ leadId: lead.id, type: "OUTREACH_BLOCKED", actorType: "OFFICER", actorId: user.id, actorName: user.name, channel: "SMS", occurredAt: nowIso(), payload: { reasons: decision.reasons, manual: true } });
-    revalidateLead(publicRef);
+  await revalidateLead(publicRef);
     return { ok: false, message: `Blocked by PolicyGate: ${decision.reasons.join(", ")}` };
   }
 
@@ -1597,12 +1753,12 @@ export async function sendSmsComposedAction(publicRef: string, body: string): Pr
 
   if (!result.ok) {
     await recordSendFailure(db, lead, person, "SMS", result.failure, user, true);
-    revalidateLead(publicRef);
+  await revalidateLead(publicRef);
     return { ok: false, message: describeFailure("SMS", result.failure) };
   }
 
   await pushEvent({ leadId: lead.id, type: "OUTREACH_ATTEMPTED", actorType: "OFFICER", actorId: user.id, actorName: user.name, channel: "SMS", occurredAt: nowIso(), payload: { manual: true, simulated: result.simulated } });
-  revalidateLead(publicRef);
+  await revalidateLead(publicRef);
   return { ok: true, message: result.simulated ? "Text queued (simulated — no provider configured)." : "Text sent to carrier. Delivery will confirm shortly." };
 }
 
@@ -1619,6 +1775,150 @@ export interface DialerStartResult extends ActionResult {
   strategyReason?: string;
   strategyRemedy?: string;
   degraded?: boolean;
+}
+
+function reconcileSessionCurrentItem(db: Database, sessionId: string) {
+  const session = db.dialingSessions.get(sessionId);
+  if (!session?.currentItemId) return session;
+  const item = db.dialingQueueItems.get(session.currentItemId);
+  if (!item || item.status !== "CALLING") {
+    session.currentItemId = undefined;
+    return session;
+  }
+  const attempt = item.attemptId ? db.attempts.find((candidate) => candidate.id === item.attemptId) : undefined;
+  const conversation = item.conversationId ? db.conversations.get(item.conversationId) : attempt
+    ? Array.from(db.conversations.values()).find((candidate) => candidate.contactAttemptId === attempt.id)
+    : undefined;
+  if (callItemHasSettled(attempt?.outcome, conversation?.callStatus)) {
+    item.status = attempt?.outcome === "FAILED" ? "FAILED" : attempt?.outcome === "BLOCKED" ? "BLOCKED" : "COMPLETED";
+    item.reason = attempt?.failureMessage ?? attempt?.blockedReason;
+    item.completedAt = nowIso();
+    session.currentItemId = undefined;
+    session.updatedAt = nowIso();
+  }
+  return session;
+}
+
+export async function createDialingSessionAction(input: { publicRefs: string[]; mode: DialingSessionMode; name?: string }): Promise<ActionResult & { sessionId?: string }> {
+  const user = await getCurrentUser();
+  const publicRefs = Array.from(new Set(input.publicRefs.map((value) => value.trim()).filter(Boolean))).slice(0, 50);
+  if (publicRefs.length === 0) return { ok: false, message: "Select at least one lead." };
+  if (input.publicRefs.length > 50) return { ok: false, message: "A dialing session can contain at most 50 leads." };
+  if (input.mode === "AUTO_SEQUENTIAL" && user.role !== "ADMIN") return { ok: false, message: "Only an administrator can start unattended sequential calling." };
+
+  const db = await refreshDb();
+  if (input.mode === "AUTO_SEQUENTIAL" && db.config.featureFlags?.automatedPowerDialer !== true) {
+    return { ok: false, message: "Automated power dialing is disabled. Enable it only after approved-number UAT." };
+  }
+  const leads = publicRefs.map((publicRef) => Array.from(db.leads.values()).find((lead) => lead.publicRef === publicRef));
+  if (leads.some((lead) => !lead)) return { ok: false, message: "One or more selected leads no longer exist." };
+  for (const lead of leads) {
+    if (!lead || !can({ role: user.role, officerId: user.officerId }, "CALL_NOW", lead)) {
+      return { ok: false, message: "You do not have permission to call every selected lead." };
+    }
+  }
+
+  const sessionId = newId("dialsession");
+  const timestamp = nowIso();
+  db.dialingSessions.set(sessionId, {
+    id: sessionId,
+    name: input.name?.trim().slice(0, 80) || `Call list · ${new Date().toLocaleDateString()}`,
+    mode: input.mode,
+    status: "ACTIVE",
+    createdById: user.id,
+    createdByName: user.name,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  leads.forEach((lead, position) => {
+    const id = newId("dialitem");
+    db.dialingQueueItems.set(id, { id, sessionId, leadId: lead!.id, position, status: "PENDING" });
+  });
+  await audit(user.id, user.name, "POWER_DIAL_SESSION_CREATED", "DialingSession", sessionId, "ALLOW", { mode: input.mode, leadCount: leads.length });
+  await saveDb();
+  revalidatePath("/workspace/calls");
+  return { ok: true, sessionId, message: `${leads.length}-lead call list created. Calls run one at a time and every lead is rechecked before dialing.` };
+}
+
+export async function advanceDialingSessionAction(sessionId: string): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  let db = await refreshDb();
+  let session = reconcileSessionCurrentItem(db, sessionId);
+  if (!session) return { ok: false, message: "Dialing session not found." };
+  if (user.role !== "ADMIN" && session.createdById !== user.id) return { ok: false, message: "You do not own this call list." };
+  if (session.mode !== "MANUAL_NEXT") return { ok: false, message: "This automated list advances through the scheduler." };
+  if (session.status !== "ACTIVE") return { ok: false, message: `This call list is ${session.status.toLowerCase()}.` };
+  if (session.currentItemId) return { ok: false, message: "Finish the current call before dialing the next lead." };
+  const next = nextPendingDialItem(session, Array.from(db.dialingQueueItems.values()));
+  if (!next) {
+    session.status = "COMPLETED";
+    session.completedAt = nowIso();
+    session.updatedAt = nowIso();
+    await saveDb();
+    revalidatePath("/workspace/calls");
+    return { ok: true, message: "Call list completed." };
+  }
+  const lead = db.leads.get(next.leadId);
+  if (!lead) {
+    next.status = "FAILED";
+    next.reason = "Lead no longer exists";
+    next.completedAt = nowIso();
+    await saveDb();
+    return { ok: false, message: "The next lead no longer exists; it was marked failed." };
+  }
+
+  const result = await startDialerCallAction(lead.publicRef);
+  db = await refreshDb();
+  session = db.dialingSessions.get(sessionId);
+  const freshItem = db.dialingQueueItems.get(next.id);
+  if (!session || !freshItem) return { ok: false, message: "The call started but its list state could not be reloaded." };
+  if (result.ok && result.attemptId) {
+    freshItem.status = "CALLING";
+    freshItem.attemptId = result.attemptId;
+    freshItem.conversationId = Array.from(db.conversations.values()).find((candidate) => candidate.contactAttemptId === result.attemptId)?.id;
+    freshItem.startedAt = nowIso();
+    session.currentItemId = freshItem.id;
+  } else {
+    freshItem.status = "BLOCKED";
+    freshItem.reason = result.message;
+    freshItem.completedAt = nowIso();
+  }
+  session.updatedAt = nowIso();
+  await audit(user.id, user.name, "POWER_DIAL_ADVANCED", "DialingSession", sessionId, result.ok ? "ALLOW" : "DENY", { itemId: freshItem.id, leadId: lead.id, attemptId: result.attemptId });
+  await saveDb();
+  revalidatePath("/workspace/calls");
+  return result.ok ? { ok: true, message: `Calling ${Array.from(db.people.values()).find((person) => person.leadId === lead.id && person.role === "PRIMARY")?.firstName ?? "next lead"}.` } : result;
+}
+
+export async function updateDialingSessionAction(sessionId: string, operation: "PAUSE" | "RESUME" | "CANCEL" | "SKIP_NEXT"): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  const db = await refreshDb();
+  const session = reconcileSessionCurrentItem(db, sessionId);
+  if (!session) return { ok: false, message: "Dialing session not found." };
+  if (user.role !== "ADMIN" && session.createdById !== user.id) return { ok: false, message: "You do not own this call list." };
+  if (operation === "SKIP_NEXT") {
+    if (session.currentItemId) return { ok: false, message: "End the active call before skipping another lead." };
+    const item = nextPendingDialItem(session, Array.from(db.dialingQueueItems.values()));
+    if (!item) return { ok: false, message: "There is no pending lead to skip." };
+    item.status = "SKIPPED";
+    item.reason = "Skipped by operator";
+    item.completedAt = nowIso();
+  } else if (operation === "PAUSE") {
+    session.status = "PAUSED";
+  } else if (operation === "RESUME") {
+    if (session.status === "COMPLETED" || session.status === "CANCELLED") return { ok: false, message: "A finished call list cannot be resumed." };
+    session.status = "ACTIVE";
+  } else {
+    session.status = "CANCELLED";
+    session.cancelledAt = nowIso();
+    for (const item of db.dialingQueueItems.values()) if (item.sessionId === session.id && item.status === "PENDING") item.status = "SKIPPED";
+  }
+  session.updatedAt = nowIso();
+  await audit(user.id, user.name, `POWER_DIAL_${operation}`, "DialingSession", session.id, "ALLOW");
+  await saveDb();
+  revalidatePath("/workspace/calls");
+  const messages = { PAUSE: "Call list paused.", RESUME: "Call list resumed.", CANCEL: "Call list cancelled.", SKIP_NEXT: "Next lead skipped." } as const;
+  return { ok: true, message: messages[operation] };
 }
 
 export async function startDialerCallAction(publicRef: string): Promise<DialerStartResult> {
@@ -1643,7 +1943,7 @@ export async function startDialerCallAction(publicRef: string): Promise<DialerSt
 
   if (decision.decision !== "ALLOW") {
     await pushEvent({ leadId: lead.id, type: "OUTREACH_BLOCKED", actorType: "OFFICER", actorId: user.id, actorName: user.name, channel: "VOICE", occurredAt: nowIso(), payload: { reasons: decision.reasons, manual: true } });
-    revalidateLead(publicRef);
+  await revalidateLead(publicRef);
     return {
       ok: false,
       message: `Blocked by PolicyGate: ${decision.reasons.join(", ")}${decision.nextPermittedAt ? ` — next permitted at ${decision.nextPermittedAt.toLocaleString()}` : ""}`,
@@ -1662,8 +1962,8 @@ export async function startDialerCallAction(publicRef: string): Promise<DialerSt
   // otherwise it falls through, burns an attempt, and emits
   // OUTREACH_ATTEMPTED for a call that never left the building.
   if (!outcome.ok && outcome.blockedReason) {
-    saveDb();
-    revalidateLead(publicRef);
+    await saveDb();
+  await revalidateLead(publicRef);
     return {
       ok: false,
       message: outcome.remedy ? `${outcome.blockedReason} ${outcome.remedy}` : outcome.blockedReason,
@@ -1672,8 +1972,8 @@ export async function startDialerCallAction(publicRef: string): Promise<DialerSt
 
   if (!outcome.ok && outcome.failure) {
     await recordSendFailure(db, lead, person, "VOICE", outcome.failure, user);
-    saveDb();
-    revalidateLead(publicRef);
+    await saveDb();
+  await revalidateLead(publicRef);
     return { ok: false, message: describeFailure("VOICE", outcome.failure) };
   }
 
@@ -1694,7 +1994,8 @@ export async function startDialerCallAction(publicRef: string): Promise<DialerSt
     payload: { manual: true, mechanism: outcome.strategy.mechanism, simulated: outcome.simulated },
   });
 
-  saveDb();
+  await saveDb();
+  revalidatePath("/workspace/calls");
   return {
     ok: true,
     message: outcome.simulated ? "Simulated call — no voice provider connected." : "Dialing…",
@@ -1711,6 +2012,9 @@ export async function startDialerCallAction(publicRef: string): Promise<DialerSt
 export async function endDialerCallAction(publicRef: string, attemptId: string, outcome: AttemptOutcome, durationSec: number, notes: string): Promise<ActionResult> {
   const user = await getCurrentUser();
   const lead = await requireLead(publicRef);
+  if (!can(await authorizationSubject(user), "CALL_NOW", lead)) {
+    return { ok: false, message: "You do not have permission to update calls for this lead." };
+  }
   const db = await getDb();
   const attempt = db.attempts.find((a) => a.id === attemptId && a.leadId === lead.id);
   if (!attempt) return { ok: false, message: "Call record not found." };
@@ -1719,10 +2023,9 @@ export async function endDialerCallAction(publicRef: string, attemptId: string, 
   attempt.endedAt = nowIso();
   attempt.durationSec = durationSec;
 
-  lead.attemptsTotal += 1;
-  lead.attemptsToday += 1;
-  lead.lastAttemptAt = nowIso();
-  if (!lead.firstContactAt) lead.firstContactAt = nowIso();
+  // Counters were already advanced when the dialer placed this attempt.
+  // Ending it updates outcome/state only; counting here again made every
+  // manual call consume two daily attempts.
   lead.lastContactAt = nowIso();
   if (lead.state === "NEW") {
     try {
@@ -1761,8 +2064,8 @@ export async function endDialerCallAction(publicRef: string, attemptId: string, 
     fallbackSms = await deliverOutreach(db, lead, "SMS", "SYSTEM", `missed_call_fallback_${outcome.toLowerCase()}`);
   }
 
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
   return {
     ok: true,
     message: fallbackSms?.ok ? "Call logged — follow-up text sent automatically." : "Call logged.",
@@ -1774,6 +2077,52 @@ export async function endDialerCallAction(publicRef: string, attemptId: string, 
 // app/api/webhooks/vapi/route.ts for the outbound-call + transcript-ingestion
 // halves of this. Same PolicyGate/RBAC gating as the human-officer dialer.
 // ---------------------------------------------------------------------------
+export async function cancelCallbackAppointmentAction(appointmentId: string, reason: string): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  const db = await getDb();
+  const appointment = db.callbackAppointments.get(appointmentId);
+  const lead = appointment ? db.leads.get(appointment.leadId) : undefined;
+  if (!appointment || !lead) return { ok: false, message: "Callback appointment not found." };
+  if (!can(await authorizationSubject(user), "EDIT_FIELDS", lead)) return { ok: false, message: "You do not have permission to cancel this callback." };
+  if (!["BOOKED", "CONFIRMED"].includes(appointment.status)) return { ok: false, message: `This callback is already ${appointment.status.toLowerCase()}.` };
+  appointment.status = "CANCELLED";
+  appointment.cancelledAt = nowIso();
+  appointment.cancellationReason = reason.trim().slice(0, 500) || "Cancelled by operator";
+  appointment.updatedAt = nowIso();
+  await audit(user.id, user.name, "CALLBACK_CANCELLED", "CallbackAppointment", appointment.id, "ALLOW", { reason: appointment.cancellationReason });
+  await saveDb();
+  await revalidateLead(lead.publicRef);
+  return { ok: true, message: "Callback cancelled. Any pending reminder will be suppressed by the worker." };
+}
+
+export async function rescheduleCallbackAppointmentAction(appointmentId: string, startsAt: string): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  const db = await getDb();
+  const appointment = db.callbackAppointments.get(appointmentId);
+  const lead = appointment ? db.leads.get(appointment.leadId) : undefined;
+  if (!appointment || !lead || !appointment.sourceConversationId) return { ok: false, message: "This callback cannot be rescheduled from its original conversation." };
+  if (!can(await authorizationSubject(user), "EDIT_FIELDS", lead)) return { ok: false, message: "You do not have permission to reschedule this callback." };
+  if (!["BOOKED", "CONFIRMED"].includes(appointment.status)) return { ok: false, message: `This callback is already ${appointment.status.toLowerCase()}.` };
+  try {
+    const replacement = await bookCallbackForConversation({
+      conversationId: appointment.sourceConversationId,
+      startsAt,
+      borrowerTimezone: appointment.borrowerTimezone,
+      idempotencyKey: `reschedule:${appointment.id}:${new Date(startsAt).toISOString()}`,
+    });
+    appointment.status = "CANCELLED";
+    appointment.cancelledAt = nowIso();
+    appointment.cancellationReason = `Rescheduled to ${replacement.id}`;
+    appointment.updatedAt = nowIso();
+    await audit(user.id, user.name, "CALLBACK_RESCHEDULED", "CallbackAppointment", appointment.id, "ALLOW", { replacementId: replacement.id, startsAt: replacement.startsAt });
+    await saveDb();
+  await revalidateLead(lead.publicRef);
+    return { ok: true, message: "Callback rescheduled. The old reminder is suppressed and the replacement has its own confirmation and reminder." };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Callback rescheduling failed." };
+  }
+}
+
 export async function startVoiceAgentCallAction(publicRef: string): Promise<ActionResult> {
   const user = await getCurrentUser();
   const lead = await requireLead(publicRef);
@@ -1796,7 +2145,7 @@ export async function startVoiceAgentCallAction(publicRef: string): Promise<Acti
 
   if (decision.decision !== "ALLOW") {
     await pushEvent({ leadId: lead.id, type: "OUTREACH_BLOCKED", actorType: "OFFICER", actorId: user.id, actorName: user.name, channel: "VOICE", occurredAt: nowIso(), payload: { reasons: decision.reasons, manual: true } });
-    revalidateLead(publicRef);
+  await revalidateLead(publicRef);
     return { ok: false, message: `Blocked by PolicyGate: ${decision.reasons.join(", ")}` };
   }
 
@@ -1813,8 +2162,8 @@ export async function startVoiceAgentCallAction(publicRef: string): Promise<Acti
   // otherwise it falls through, burns an attempt, and emits
   // OUTREACH_ATTEMPTED for a call that never left the building.
   if (!outcome.ok && outcome.blockedReason) {
-    saveDb();
-    revalidateLead(publicRef);
+    await saveDb();
+  await revalidateLead(publicRef);
     return {
       ok: false,
       message: outcome.remedy ? `${outcome.blockedReason} ${outcome.remedy}` : outcome.blockedReason,
@@ -1823,8 +2172,8 @@ export async function startVoiceAgentCallAction(publicRef: string): Promise<Acti
 
   if (!outcome.ok && outcome.failure) {
     await recordSendFailure(db, lead, person, "VOICE", outcome.failure, user);
-    saveDb();
-    revalidateLead(publicRef);
+    await saveDb();
+  await revalidateLead(publicRef);
     return { ok: false, message: describeFailure("VOICE", outcome.failure) };
   }
 
@@ -1845,8 +2194,8 @@ export async function startVoiceAgentCallAction(publicRef: string): Promise<Acti
     payload: { manual: true, mechanism: outcome.strategy.mechanism, simulated: outcome.simulated },
   });
 
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
 
   if (outcome.strategy.degraded) {
     return {
@@ -1868,6 +2217,7 @@ export type IntakeInput = z.infer<typeof intakeInputSchema>;
 export interface IntakeResult {
   ok: boolean;
   publicRef?: string;
+  statusToken?: string;
   slaDueAt?: string;
   referralType?: ReferralType;
   /** Per-field messages, keyed by field name, for re-display on the form. */
@@ -1876,6 +2226,9 @@ export interface IntakeResult {
 }
 
 export async function submitIntakeAction(input: IntakeInput, clientDraftId?: string): Promise<IntakeResult> {
+  const requestContext = await getRequestContext();
+  const throttle = await consumeRateLimit({ scope: "public-intake", subject: requestContext.ipAddress, limit: 8, windowSeconds: 60 * 60 });
+  if (!throttle.allowed) return { ok: false, message: "Too many submissions. Please try again later." };
   // This is the one public, unauthenticated write path in the whole app —
   // real schema validation (type/length/enum bounds) belongs right here,
   // not just a truthiness check, since anyone can POST to it directly.
@@ -1897,6 +2250,25 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
 
   const db = await getDb();
 
+  const intakeRequestKey = clientDraftId && /^[A-Za-z0-9_-]{16,64}$/.test(clientDraftId)
+    ? createHash("sha256").update(`${clientDraftId}:${phone}`, "utf8").digest("hex")
+    : undefined;
+  if (intakeRequestKey) {
+    const prior = db.events.find((event) => event.payload?.intakeRequestKey === intakeRequestKey);
+    const existingLead = prior ? db.leads.get(prior.leadId) : undefined;
+    if (existingLead) {
+      const statusToken = issueStatusToken(existingLead);
+      await saveDb();
+      return {
+        ok: true,
+        publicRef: existingLead.publicRef,
+        statusToken,
+        slaDueAt: existingLead.slaDueAt,
+        referralType: existingLead.referralType ?? "NONE",
+      };
+    }
+  }
+
   // Suppressed phone → create lead SUPPRESSED, skip all outreach, neutral response.
   const suppressed = db.suppressions.get(phone);
 
@@ -1904,7 +2276,9 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
   const personId = newId("person");
   const publicRef = nanoid(10);
   const createdAt = nowIso();
-  const timezone = STATE_TIMEZONE[input.stateCode] ?? "UNKNOWN";
+  const timezone = input.borrowerTimezone && isValidIanaTimezone(input.borrowerTimezone)
+    ? input.borrowerTimezone
+    : "UNKNOWN";
 
   const identity = await validateIntakeIdentity({ firstName: input.firstName, lastName: input.lastName, email: input.email });
 
@@ -1938,8 +2312,8 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
       exactTextSnapshot: db.disclosures.get(c.disclosureVersionId)?.bodyText ?? "",
       capturedAt: createdAt,
       sourceUrl: "https://apply.equityflowgroup.com/intake",
-      ipAddress: "203.0.113.10",
-      userAgent: "demo-ui",
+      ipAddress: requestContext.ipAddress,
+      userAgent: requestContext.userAgent,
       sessionId: newId("sess"),
       formFingerprint: newId("fp"),
     });
@@ -1984,6 +2358,7 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
     attemptsTotal: 0,
     lastAttemptAt: null,
   };
+  const statusToken = issueStatusToken(lead);
   db.leads.set(leadId, lead);
 
   // Form-submitted answers are real, sourced field values (SPEC.md F-06/F-07
@@ -2013,13 +2388,16 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
   setFormField("borrower.timeline", input.timeline);
   setFormField("borrower.creditBand", input.creditRange);
   if (input.city && input.stateCode) setFormField("property.identified", true, 0.9);
+  if (input.addressLine1) setFormField("property.addressLine1", input.addressLine1);
+  if (input.estimatedValue) setFormField("property.estimatedValue", input.estimatedValue);
+  if (input.currentBalance) setFormField("loan.currentBalance", input.currentBalance);
 
   await pushEvent({
     leadId,
     type: suppressed ? "SUPPRESSED_ON_INTAKE" : "LEAD_CREATED",
     actorType: "BORROWER",
     occurredAt: createdAt,
-    payload: { intent: input.intent, goal: input.goal, allConsentsFalse, missedPayments: input.missedPayments, referralType },
+    payload: { intent: input.intent, goal: input.goal, allConsentsFalse, missedPayments: input.missedPayments, referralType, intakeRequestKey },
   });
 
   if (!suppressed) {
@@ -2061,6 +2439,8 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
       city: input.city,
       stateCode: input.stateCode,
       estimatedValue: input.estimatedValue,
+      currentBalance: input.currentBalance,
+      useFreeEvidence: db.config.featureFlags?.freePropertyValuation === true,
     });
     // Cache on the lead itself so later reads (lead detail page, quality
     // re-scoring) reuse this instead of re-hitting a metered AVM vendor.
@@ -2141,10 +2521,26 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
   // the same PII sitting outside the consent-gated pipeline.
   if (clientDraftId) db.intakeDrafts.delete(clientDraftId);
 
-  saveDb();
+  await saveDb();
+  // Confirmation is queued only after the lead transaction is durable. The
+  // unique key makes a retried intake request incapable of double-sending.
+  if (!suppressed && input.consents.email) {
+    const appUrl = await getAppUrl();
+    await enqueueOutbox({
+      jobType: "INQUIRY_CONFIRMATION_EMAIL",
+      idempotencyKey: `inquiry:${leadId}:confirmation`,
+      aggregateType: "Lead",
+      aggregateId: leadId,
+      payload: {
+        leadId,
+        subject: "We received your Equity Flow Group inquiry",
+        body: `Thanks for reaching out. We received your mortgage inquiry and a licensed team member will review it. This is not a loan approval or an appraisal.\n\nCheck your inquiry status: ${appUrl}/status/${encodeURIComponent(statusToken)}`,
+      },
+    });
+  }
   revalidatePath("/workspace/leads");
   revalidatePath("/workspace");
-  return { ok: true, publicRef, slaDueAt, referralType };
+  return { ok: true, publicRef, statusToken, slaDueAt, referralType };
 }
 
 // Autosaves a visitor's in-progress intake form before they've consented to
@@ -2157,6 +2553,9 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
 const MAX_DRAFT_SNAPSHOT_BYTES = 20_000;
 
 export async function saveIntakeDraftAction(clientDraftId: string, furthestStep: number, formSnapshot: Record<string, unknown>): Promise<ActionResult> {
+  const requestContext = await getRequestContext();
+  const throttle = await consumeRateLimit({ scope: "intake-draft", subject: `${requestContext.ipAddress}:${clientDraftId}`, limit: 60, windowSeconds: 60 * 60 });
+  if (!throttle.allowed) return { ok: false, message: "Draft save limit reached. Please wait and try again." };
   if (!clientDraftId || typeof clientDraftId !== "string" || clientDraftId.length > 64) {
     return { ok: false, message: "Invalid draft id." };
   }
@@ -2175,7 +2574,7 @@ export async function saveIntakeDraftAction(clientDraftId: string, furthestStep:
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   });
-  saveDb();
+  await saveDb();
   return { ok: true, message: "Draft saved." };
 }
 
@@ -2188,7 +2587,7 @@ export async function discardIntakeDraftAction(clientDraftId: string): Promise<A
   if (!clientDraftId || typeof clientDraftId !== "string") return { ok: false, message: "Invalid draft id." };
   const db = await getDb();
   db.intakeDrafts.delete(clientDraftId);
-  saveDb();
+  await saveDb();
   return { ok: true, message: "Draft discarded." };
 }
 
@@ -2205,7 +2604,7 @@ export async function deleteIntakeDraftAction(draftId: string): Promise<ActionRe
     return { ok: false, message: "Draft not found." };
   }
   await audit(user.id, user.name, "DELETE_INTAKE_DRAFT", "IntakeDraft", draftId, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
   return { ok: true, message: "Draft deleted." };
 }
@@ -2250,8 +2649,12 @@ async function touchEngagement(lead: Lead): Promise<void> {
   lead.updatedAt = nowIso();
 }
 
-export async function requestPriorityCallbackAction(publicRef: string): Promise<ActionResult> {
-  const lead = await requireLead(publicRef);
+export async function requestPriorityCallbackAction(publicRef: string, statusToken = ""): Promise<ActionResult> {
+  const requestContext = await getRequestContext();
+  const throttle = await consumeRateLimit({ scope: "priority-callback", subject: `${requestContext.ipAddress}:${publicRef}`, limit: 3, windowSeconds: 60 * 60 });
+  if (!throttle.allowed) return { ok: false, message: "A callback request is already pending." };
+  const lead = await requireBorrowerLead(publicRef, statusToken);
+  if (!lead) return { ok: false, message: "This status link is invalid or has been replaced." };
   await touchEngagement(lead);
   const db = await getDb();
   const taskId = newId("task");
@@ -2266,13 +2669,14 @@ export async function requestPriorityCallbackAction(publicRef: string): Promise<
   await pushEvent({ leadId: lead.id, type: "PRIORITY_CALLBACK_REQUESTED", actorType: "BORROWER", occurredAt: nowIso(), payload: {} });
   await autoAssignOfficer(db, lead, "priority_callback_request");
 
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
   return { ok: true, message: "Got it — flagged for an immediate callback." };
 }
 
-export async function updateContactInfoAction(publicRef: string, phone: string, email: string): Promise<ActionResult> {
-  const lead = await requireLead(publicRef);
+export async function updateContactInfoAction(publicRef: string, statusToken: string, phone: string, email: string): Promise<ActionResult> {
+  const lead = await requireBorrowerLead(publicRef, statusToken);
+  if (!lead) return { ok: false, message: "This status link is invalid or has been replaced." };
   await touchEngagement(lead);
   const db = await getDb();
   const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
@@ -2304,17 +2708,21 @@ export async function updateContactInfoAction(publicRef: string, phone: string, 
     },
   });
 
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
   return { ok: true, message: "Thanks — we've updated your contact info." };
 }
 
-export async function submitBorrowerMessageAction(publicRef: string, message: string): Promise<ActionResult> {
+export async function submitBorrowerMessageAction(publicRef: string, statusToken: string, message: string): Promise<ActionResult> {
+  const requestContext = await getRequestContext();
+  const throttle = await consumeRateLimit({ scope: "borrower-message", subject: `${requestContext.ipAddress}:${publicRef}`, limit: 20, windowSeconds: 60 * 60 });
+  if (!throttle.allowed) return { ok: false, message: "Too many messages. Please wait and try again." };
   const trimmed = message.trim();
   if (!trimmed) return { ok: false, message: "Type a message first." };
   if (trimmed.length > 2000) return { ok: false, message: "That message is too long — keep it under 2000 characters." };
 
-  const lead = await requireLead(publicRef);
+  const lead = await requireBorrowerLead(publicRef, statusToken);
+  if (!lead) return { ok: false, message: "This status link is invalid or has been replaced." };
 
   await touchEngagement(lead);
   const db = await getDb();
@@ -2371,14 +2779,14 @@ export async function submitBorrowerMessageAction(publicRef: string, message: st
     });
   }
 
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
   return { ok: true, message: answer.reply };
 }
 
 export interface StatusLookupResult {
   ok: boolean;
-  publicRef?: string;
+  statusToken?: string;
   message: string;
 }
 
@@ -2386,6 +2794,9 @@ export interface StatusLookupResult {
 // Requires phone + last name (not phone alone) so this can't be used to
 // enumerate other people's inquiries just by guessing phone numbers.
 export async function lookupStatusAction(phone: string, lastName: string): Promise<StatusLookupResult> {
+  const requestContext = await getRequestContext();
+  const throttle = await consumeRateLimit({ scope: "status-lookup", subject: requestContext.ipAddress, limit: 8, windowSeconds: 15 * 60 });
+  if (!throttle.allowed) return { ok: false, message: "Too many lookup attempts. Please wait and try again." };
   const normalizedPhone = normalizePhone(phone);
   if (!normalizedPhone) return { ok: false, message: "Enter a valid 10-digit US phone number." };
   const trimmedLastName = lastName.trim().toLowerCase();
@@ -2399,7 +2810,9 @@ export async function lookupStatusAction(phone: string, lastName: string): Promi
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 
   if (!match) return { ok: false, message: "We couldn't find an inquiry matching that phone number and last name." };
-  return { ok: true, publicRef: match.publicRef, message: "Found it." };
+  const statusToken = issueStatusToken(match);
+  await saveDb();
+  return { ok: true, statusToken, message: "Found it." };
 }
 
 // ---------------------------------------------------------------------------
@@ -2560,7 +2973,8 @@ async function deliverOutreachLocked(
     body = smsBody;
   } else {
     subject = `${officerFirstName} from Equity Flow Group — following up on your inquiry`;
-    const statusUrl = `${await getAppUrl()}/status/${lead.publicRef}`;
+    const statusToken = issueStatusToken(lead);
+    const statusUrl = `${await getAppUrl()}/status/${statusToken}`;
     const emailBody = `${content.body}\n\nTrack your inquiry anytime: ${statusUrl}`;
     result = await sendEmail({ to: person?.email ?? "", subject, text: emailBody, idempotencyKey, from: `${db.config.senderName} <${db.config.senderEmail}>` });
     body = emailBody;
@@ -2669,13 +3083,14 @@ export interface BorrowerChannelResult extends ActionResult {
   blocked?: boolean;
 }
 
-export async function initiateBorrowerChannelAction(publicRef: string, channel: Channel): Promise<BorrowerChannelResult> {
-  const lead = await requireLead(publicRef);
+export async function initiateBorrowerChannelAction(publicRef: string, statusToken: string, channel: Channel): Promise<BorrowerChannelResult> {
+  const lead = await requireBorrowerLead(publicRef, statusToken);
+  if (!lead) return { ok: false, message: "This status link is invalid or has been replaced." };
   await touchEngagement(lead);
   const db = await getDb();
   const result = await deliverOutreach(db, lead, channel, "BORROWER", `borrower_selected_${channel.toLowerCase()}`);
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
   return { ok: result.ok, message: result.message, officerFirstName: result.officerFirstName, blocked: result.blocked };
 }
 
@@ -2715,7 +3130,7 @@ export async function createReferralPartnerAction(input: CreateReferralPartnerIn
     createdAt: nowIso(),
   });
   await audit(user.id, user.name, "CREATE_REFERRAL_PARTNER", "ReferralPartner", id, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
   return { ok: true, message: `${input.name} added to referral partners.` };
 }
@@ -2730,7 +3145,7 @@ export async function setReferralPartnerActiveAction(partnerId: string, isActive
   if (!partner) return { ok: false, message: "Referral partner not found." };
   partner.isActive = isActive;
   await audit(user.id, user.name, isActive ? "REACTIVATE_REFERRAL_PARTNER" : "DEACTIVATE_REFERRAL_PARTNER", "ReferralPartner", partnerId, "ALLOW");
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/admin");
   return { ok: true, message: `${partner.name} ${isActive ? "reactivated" : "deactivated"}.` };
 }
@@ -2767,8 +3182,8 @@ export async function referLeadToPartnerAction(publicRef: string, partnerId: str
     createdAt: nowIso(),
   });
   await audit(user.id, user.name, "REFER_LEAD_TO_PARTNER", "Lead", lead.id, "ALLOW");
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
   return { ok: true, message: `Referred to ${partner.name}.` };
 }
 
@@ -2850,7 +3265,9 @@ export async function updateLeadDetailsAction(
     if (changes.includes("email")) {
       person.dataQualityFlags = (person.dataQualityFlags ?? []).filter((f) => f !== "EMAIL_UNDELIVERABLE");
     }
-    if (input.stateCode !== lead.stateCode) person.timezone = STATE_TIMEZONE[input.stateCode] ?? "UNKNOWN";
+    // Property state is not a reliable borrower timezone (multi-zone states,
+    // second homes, and remote applicants). Keep the explicitly captured
+    // timezone until a borrower or officer changes it deliberately.
   }
 
   track("city", lead.city, input.city.trim());
@@ -2887,8 +3304,8 @@ export async function updateLeadDetailsAction(
     payload: { manual: true, fields: changes },
   });
   await audit(user.id, user.name, "EDIT_FIELDS", "Lead", lead.id, "ALLOW", { fields: changes });
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
   revalidatePath("/workspace/leads");
   return { ok: true, message: `Saved — updated ${changes.length} field${changes.length === 1 ? "" : "s"}.` };
 }
@@ -2909,32 +3326,11 @@ export async function deleteLeadAction(publicRef: string): Promise<ActionResult>
   if (user.role !== "ADMIN") {
     return { ok: false, message: "Only an admin can delete a lead." };
   }
-  const lead = await requireLead(publicRef);
-  const db = await getDb();
-
-  const personIds = Array.from(db.people.values()).filter((p) => p.leadId === lead.id).map((p) => p.id);
-  for (const id of personIds) db.people.delete(id);
-  for (const [id, c] of db.conversations) if (c.leadId === lead.id) db.conversations.delete(id);
-  for (const [id, t] of db.tasks) if (t.leadId === lead.id) db.tasks.delete(id);
-  for (const [id, f] of db.leadFields) if (f.leadId === lead.id) db.leadFields.delete(id);
-
-  db.attempts = db.attempts.filter((a) => a.leadId !== lead.id);
-  db.notes = db.notes.filter((n) => n.leadId !== lead.id);
-  db.events = db.events.filter((e) => e.leadId !== lead.id);
-  db.policyDecisions = db.policyDecisions.filter((d) => d.leadId !== lead.id);
-  db.consents = db.consents.filter((c) => c.leadId !== lead.id);
-
-  db.leads.delete(lead.id);
-
-  await audit(user.id, user.name, "DELETE_LEAD", "Lead", lead.id, "ALLOW", {
-    publicRef: lead.publicRef,
-    state: lead.state,
-    attemptsRemoved: personIds.length,
-  });
-  saveDb();
-  revalidatePath("/workspace/leads");
-  revalidatePath("/workspace");
-  return { ok: true, message: `Lead ${lead.publicRef} deleted.` };
+  await requireLead(publicRef);
+  return {
+    ok: false,
+    message: "Permanent lead deletion is disabled. Use the counsel-approved retention and legal-hold workflow before removing borrower data.",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -2946,10 +3342,10 @@ export async function uploadLeadDocumentAction(
   input: { filename: string; mimeType: string; sizeBytes: number; dataUri: string; category: LeadDocument["category"] }
 ): Promise<ActionResult> {
   const user = await getCurrentUser();
-  if (!can({ role: user.role, officerId: user.officerId }, "EDIT_FIELDS")) {
+  const lead = await requireLead(publicRef);
+  if (!can(await authorizationSubject(user), "EDIT_FIELDS", lead)) {
     return { ok: false, message: "You do not have permission to attach documents to this lead." };
   }
-  const lead = await requireLead(publicRef);
 
   if (!ALLOWED_DOCUMENT_TYPES.has(input.mimeType)) {
     return { ok: false, message: `${input.mimeType || "That file type"} is not an accepted document format.` };
@@ -2963,14 +3359,21 @@ export async function uploadLeadDocumentAction(
     return { ok: false, message: "Upload failed — the file could not be read." };
   }
 
+  let uploaded: Awaited<ReturnType<typeof uploadPrivateDocument>>;
+  try {
+    uploaded = await uploadPrivateDocument({ leadId: lead.id, filename: input.filename, mimeType: input.mimeType, dataUri: input.dataUri });
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "The secure document upload failed." };
+  }
   const db = await getDb();
   db.leadDocuments.push({
     id: newId("doc"),
     leadId: lead.id,
     filename: input.filename.slice(0, 180),
     mimeType: input.mimeType,
-    sizeBytes: input.sizeBytes,
-    inlineContent: input.dataUri,
+    sizeBytes: uploaded.sizeBytes,
+    inlineContent: null,
+    storageRef: uploaded.storageRef,
     category: input.category,
     uploadedById: user.id,
     uploadedByName: user.name,
@@ -2983,25 +3386,35 @@ export async function uploadLeadDocumentAction(
     filename: input.filename,
     category: input.category,
   });
-  saveDb();
+  await saveDb();
   revalidatePath(`/workspace/leads/${publicRef}`);
   return { ok: true, message: `${input.filename} attached.` };
 }
 
 export async function deleteLeadDocumentAction(publicRef: string, documentId: string): Promise<ActionResult> {
   const user = await getCurrentUser();
-  if (!can({ role: user.role, officerId: user.officerId }, "EDIT_FIELDS")) {
+  const lead = await requireLead(publicRef);
+  if (!can(await authorizationSubject(user), "EDIT_FIELDS", lead)) {
     return { ok: false, message: "You do not have permission to remove documents." };
   }
-  const lead = await requireLead(publicRef);
 
   const db = await getDb();
   const index = db.leadDocuments.findIndex((d) => d.id === documentId && d.leadId === lead.id);
   if (index === -1) return { ok: false, message: "Document not found." };
 
   const [removed] = db.leadDocuments.splice(index, 1);
+  if (removed.storageRef) {
+    try {
+      await deletePrivateDocument(removed.storageRef);
+    } catch (error) {
+      // Restore the record if storage deletion failed. An audit row claiming
+      // deletion while the sensitive object remained would be misleading.
+      db.leadDocuments.splice(index, 0, removed);
+      return { ok: false, message: error instanceof Error ? error.message : "The private document could not be removed." };
+    }
+  }
   await audit(user.id, user.name, "DELETE_LEAD_DOCUMENT", "Lead", lead.id, "ALLOW", { filename: removed.filename });
-  saveDb();
+  await saveDb();
   revalidatePath(`/workspace/leads/${publicRef}`);
   return { ok: true, message: `${removed.filename} removed.` };
 }
@@ -3027,18 +3440,19 @@ export async function controlLiveCallAction(
   action: CallControlAction
 ): Promise<ActionResult> {
   const user = await getCurrentUser();
-  if (!can({ role: user.role, officerId: user.officerId }, "CALL_NOW")) {
-    return { ok: false, message: "You do not have permission to control a live call." };
-  }
-
   const db = await refreshDb();
   const conversation = db.conversations.get(conversationId);
   if (!conversation) return { ok: false, message: "That call was not found." };
+  const lead = db.leads.get(conversation.leadId);
+  if (!lead || !can(await authorizationSubject(user), "CALL_NOW", lead)) {
+    return { ok: false, message: "You do not have permission to control this live call." };
+  }
 
   if (conversation.status !== "IN_PROGRESS" || conversation.callStatus === "ENDED") {
     return { ok: false, message: "That call has already ended." };
   }
-  if (!conversation.controlUrl) {
+  const controlUrl = revealBearerUrl(conversation.controlUrl);
+  if (!controlUrl) {
     // Announcement calls and simulated calls have no control channel. Saying
     // so beats a generic failure the officer cannot act on.
     return { ok: false, message: "This call cannot be controlled — only AI agent calls support live control." };
@@ -3050,7 +3464,7 @@ export async function controlLiveCallAction(
     ...(action.type === "TRANSFER" ? { to: action.toNumberE164 } : {}),
   });
 
-  const result = await controlLiveCall(conversation.controlUrl, action);
+  const result = await controlLiveCall(controlUrl, action);
   if (!result.ok) {
     // A control URL dies the instant the call does, which an officer will hit
     // routinely by clicking as the borrower hangs up. Settle the session so
@@ -3058,7 +3472,7 @@ export async function controlLiveCallAction(
     if (result.failure.class === "PERMANENT") {
       conversation.callStatus = "ENDED";
       conversation.endedAt = conversation.endedAt ?? nowIso();
-      saveDb();
+      await saveDb();
     }
     return { ok: false, message: result.failure.message };
   }
@@ -3073,7 +3487,7 @@ export async function controlLiveCallAction(
       text: action.content,
       at: nowIso(),
     });
-    saveDb();
+    await saveDb();
   }
 
   await pushEvent({
@@ -3109,7 +3523,7 @@ export async function controlLiveCallAction(
  */
 export async function acknowledgeCallFailuresAction(attemptIds: string[]): Promise<ActionResult> {
   const user = await getCurrentUser();
-  if (!can({ role: user.role, officerId: user.officerId }, "CALL_NOW")) {
+  if (!can({ role: user.role, officerId: user.officerId }, "VIEW_CALL_CENTER")) {
     return { ok: false, message: "You do not have permission to dismiss these." };
   }
 
@@ -3118,6 +3532,8 @@ export async function acknowledgeCallFailuresAction(attemptIds: string[]): Promi
   let count = 0;
   for (const attempt of db.attempts) {
     if (!ids.has(attempt.id) || attempt.acknowledgedAt) continue;
+    const lead = db.leads.get(attempt.leadId);
+    if (!lead || (user.role === "OFFICER" && !can(await authorizationSubject(user), "CALL_NOW", lead))) continue;
     attempt.acknowledgedAt = nowIso();
     attempt.acknowledgedByName = user.name;
     count += 1;
@@ -3126,7 +3542,7 @@ export async function acknowledgeCallFailuresAction(attemptIds: string[]): Promi
   if (count === 0) return { ok: false, message: "Nothing to dismiss." };
 
   await audit(user.id, user.name, "ACKNOWLEDGE_CALL_FAILURES", "ContactAttempt", "*", "ALLOW", { count });
-  saveDb();
+  await saveDb();
   revalidatePath("/workspace/calls");
   return { ok: true, message: `Dismissed ${count} alert${count === 1 ? "" : "s"} — still in the call log.` };
 }
@@ -3152,7 +3568,7 @@ export async function updateLegalPageAction(slug: "privacy" | "terms", body: str
   if (!trimmed) {
     db.legalPages.delete(slug);
     await audit(user.id, user.name, "RESET_LEGAL_PAGE", "LegalPage", slug, "ALLOW");
-    saveDb();
+    await saveDb();
     revalidatePath(`/${slug}`);
     return { ok: true, message: `Reset to the built-in ${slug} copy.` };
   }
@@ -3161,7 +3577,7 @@ export async function updateLegalPageAction(slug: "privacy" | "terms", body: str
   // Carriers fetch these URLs during 10DLC review and regulators cite them,
   // so who changed the wording and when is worth keeping.
   await audit(user.id, user.name, "UPDATE_LEGAL_PAGE", "LegalPage", slug, "ALLOW", { length: trimmed.length });
-  saveDb();
+  await saveDb();
   revalidatePath(`/${slug}`);
   return { ok: true, message: `${slug === "privacy" ? "Privacy policy" : "Terms"} updated and live.` };
 }
@@ -3180,10 +3596,10 @@ export async function updateLegalPageAction(slug: "privacy" | "terms", body: str
  */
 export async function acceptCallInsightAction(publicRef: string, fieldPath: string): Promise<ActionResult> {
   const user = await getCurrentUser();
-  if (!can({ role: user.role, officerId: user.officerId }, "EDIT_FIELDS")) {
+  const lead = await requireLead(publicRef);
+  if (!can({ role: user.role, officerId: user.officerId }, "EDIT_FIELDS", lead)) {
     return { ok: false, message: "You do not have permission to change lead details." };
   }
-  const lead = await requireLead(publicRef);
   const db = await getDb();
 
   const property = FIELD_TO_LEAD_PROPERTY[fieldPath as MappedFieldPath];
@@ -3212,6 +3628,15 @@ export async function acceptCallInsightAction(publicRef: string, fieldPath: stri
     conflictingValue: undefined,
     lastUpdatedById: user.id,
   });
+  const candidate = db.fieldCandidates
+    .filter((item) => item.leadId === lead.id && item.fieldPath === fieldPath && item.reviewStatus !== "REJECTED")
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+  if (candidate) {
+    candidate.reviewStatus = "ACCEPTED";
+    candidate.reviewedById = user.id;
+    candidate.reviewedAt = nowIso();
+    candidate.promoted = true;
+  }
 
   await pushEvent({
     leadId: lead.id,
@@ -3220,22 +3645,22 @@ export async function acceptCallInsightAction(publicRef: string, fieldPath: stri
     actorId: user.id,
     actorName: user.name,
     occurredAt: nowIso(),
-    payload: { fieldPath, from: previous, to: value, source: "call_extraction" },
+    payload: { fieldPath, from: previous, to: value, source: "call_extraction", candidateId: candidate?.id, sessionId: candidate?.sessionId },
   });
   await audit(user.id, user.name, "ACCEPT_CALL_INSIGHT", "Lead", lead.id, "ALLOW", { fieldPath, from: previous, to: value });
 
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
   return { ok: true, message: `Updated from the call.` };
 }
 
 /** Dismisses a call-derived suggestion without changing the lead. */
 export async function dismissCallInsightAction(publicRef: string, fieldPath: string): Promise<ActionResult> {
   const user = await getCurrentUser();
-  if (!can({ role: user.role, officerId: user.officerId }, "EDIT_FIELDS")) {
+  const lead = await requireLead(publicRef);
+  if (!can({ role: user.role, officerId: user.officerId }, "EDIT_FIELDS", lead)) {
     return { ok: false, message: "You do not have permission to change lead details." };
   }
-  const lead = await requireLead(publicRef);
   const db = await getDb();
 
   const field = db.leadFields.get(`${lead.id}:${fieldPath}`);
@@ -3250,10 +3675,18 @@ export async function dismissCallInsightAction(publicRef: string, fieldPath: str
     conflictingValue: undefined,
     lastUpdatedById: user.id,
   });
+  const candidate = db.fieldCandidates
+    .filter((item) => item.leadId === lead.id && item.fieldPath === fieldPath && item.reviewStatus !== "ACCEPTED")
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+  if (candidate) {
+    candidate.reviewStatus = "REJECTED";
+    candidate.reviewedById = user.id;
+    candidate.reviewedAt = nowIso();
+  }
 
   await audit(user.id, user.name, "DISMISS_CALL_INSIGHT", "Lead", lead.id, "ALLOW", { fieldPath });
-  saveDb();
-  revalidateLead(publicRef);
+  await saveDb();
+  await revalidateLead(publicRef);
   return { ok: true, message: "Kept the existing value." };
 }
 
@@ -3271,7 +3704,7 @@ export async function dismissCallInsightAction(publicRef: string, fieldPath: str
  */
 export async function syncCallStateAction(): Promise<{ ok: boolean }> {
   const user = await getCurrentUser();
-  if (!can({ role: user.role, officerId: user.officerId }, "VIEW_LEAD_PII")) {
+  if (!can({ role: user.role, officerId: user.officerId }, "VIEW_CALL_CENTER")) {
     return { ok: false };
   }
   try {

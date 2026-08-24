@@ -15,7 +15,7 @@ export default async function TasksPage({ searchParams }: PageProps) {
   const [allTasks, user] = await Promise.all([listAllTasks(), getCurrentUser()]);
 
   const isOfficer = user.role === "OFFICER";
-  const scope = isOfficer && params.scope !== "all" ? "mine" : "all";
+  const scope = isOfficer ? "mine" : "all";
   const status = params.status === "all" ? "all" : params.status === "completed" ? "completed" : "open";
   const type = params.type ?? "";
 
@@ -34,7 +34,7 @@ export default async function TasksPage({ searchParams }: PageProps) {
         description={`${tasks.length} task${tasks.length === 1 ? "" : "s"}${isComplianceQueue ? " flagged for compliance review, across every lead" : " across your leads"}`}
       />
 
-      <TaskQueueFilters isOfficer={isOfficer} scope={scope} status={status} type={type} />
+      <TaskQueueFilters isOfficer={isOfficer} status={status} type={type} />
 
       {tasks.length === 0 ? (
         <div className="rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface)]">

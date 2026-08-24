@@ -7,7 +7,7 @@ import type { Lead } from "@/domain/types";
 // able to do", because that is the direction where a mistake is a breach
 // rather than a support ticket.
 
-const lead = (assignedOfficerId?: string) => ({ id: "l1", assignedOfficerId } as Lead);
+const lead = (assignedOfficerId?: string, stateCode = "CA") => ({ id: "l1", assignedOfficerId, stateCode } as Lead);
 
 describe("READ_ONLY", () => {
   it("cannot see raw PII", () => {
@@ -27,7 +27,7 @@ describe("READ_ONLY", () => {
 });
 
 describe("OFFICER — scoped to their own book", () => {
-  const me = { role: "OFFICER" as const, officerId: "off1" };
+  const me = { role: "OFFICER" as const, officerId: "off1", licensedStates: ["CA"] };
 
   it("can act on a lead assigned to them", () => {
     expect(can(me, "EDIT_FIELDS", lead("off1"))).toBe(true);
@@ -47,8 +47,17 @@ describe("OFFICER — scoped to their own book", () => {
     expect(can(me, "EXPORT_LEAD")).toBe(false);
   });
 
-  it("may view PII on an unassigned lead, so it can be picked up", () => {
+  it("may view PII on an unassigned lead in a state where the officer is licensed", () => {
     expect(can(me, "VIEW_LEAD_PII", lead(undefined))).toBe(true);
+  });
+
+  it("cannot view or take over an unassigned lead outside the officer's licensed states", () => {
+    expect(can(me, "VIEW_LEAD_PII", lead(undefined, "TX"))).toBe(false);
+    expect(can(me, "TAKE_OVER_LEAD", lead(undefined, "TX"))).toBe(false);
+  });
+
+  it("may take over an unassigned lead in a licensed state", () => {
+    expect(can(me, "TAKE_OVER_LEAD", lead(undefined, "CA"))).toBe(true);
   });
 
   it("may not export an unassigned lead, even though they can view it", () => {

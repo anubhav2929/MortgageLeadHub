@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { preferenceIsUnavailable, resolveAiProvider } from "@/core/aiRouting";
+import { preferenceIsUnavailable, resolveAiProvider, resolveAiRouteOrder } from "@/core/aiRouting";
 
 // Provider choice used to be inlined in eight functions that did not agree:
 // most preferred Anthropic, signal assessment preferred NVIDIA, and transcript
@@ -27,6 +27,15 @@ describe("AUTO — whatever is configured", () => {
 
   it("reports NONE when nothing is configured", () => {
     expect(resolveAiProvider({ hasAnthropic: false, hasNvidia: false })).toBe("NONE");
+  });
+});
+
+describe("global provider priority", () => {
+  it("uses the first configured provider and keeps configured fallbacks", () => {
+    expect(resolveAiRouteOrder({
+      priority: "ANTHROPIC,OPENAI,NVIDIA",
+      availability: { OPENAI: true, ANTHROPIC: false, NVIDIA: true },
+    })).toEqual(["OPENAI", "NVIDIA"]);
   });
 });
 

@@ -46,7 +46,7 @@ export async function recordCreditConsent(
     ipAddress: context.ipAddress ?? "unknown",
     userAgent: context.userAgent ?? "unknown",
   });
-  saveDb();
+  await saveDb();
 }
 
 /**
@@ -91,7 +91,7 @@ export async function runGatedSoftPull(
       occurredAt: nowIso(),
       payload: { trigger, blocker: decision.blocker, reason: decision.reason },
     });
-    saveDb();
+    await saveDb();
     return { ok: false, message: decision.reason };
   }
 
@@ -123,7 +123,7 @@ export async function runGatedSoftPull(
       occurredAt: nowIso(),
       payload: { trigger, reason: result.failure.message, class: result.failure.class },
     });
-    saveDb();
+    await saveDb();
     return { ok: false, message: result.failure.message };
   }
 
@@ -152,13 +152,11 @@ export async function runGatedSoftPull(
     // widely read; the score lives on the credit-pull record alone.
     payload: { trigger, band: result.band, simulated: result.simulated },
   });
-  saveDb();
+  await saveDb();
 
   return {
     ok: true,
-    message: result.simulated
-      ? "Soft pull simulated — add iSoftpull credentials to run a real inquiry."
-      : `Soft pull complete — credit band ${result.band.replace(/_/g, " ").toLowerCase()}.`,
+    message: `Soft pull complete — credit band ${result.band.replace(/_/g, " ").toLowerCase()}.`,
     band: result.band,
     simulated: result.simulated,
   };

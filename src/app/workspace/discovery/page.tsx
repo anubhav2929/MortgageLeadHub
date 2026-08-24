@@ -64,7 +64,8 @@ export default async function DiscoveryPage() {
       />
 
       <div className="mb-5 flex items-center gap-2">
-        <Badge tone={commercialApproved ? "success" : "warning"}>{commercialApproved ? "Commercial approval recorded" : "Demo only — approval pending"}</Badge>
+        <Badge tone="success">Arctic Shift ready</Badge>
+        <Badge tone="neutral">Free read-only source · human review only</Badge>
         {redditConnection && <Badge tone="neutral">Connected u/{redditConnection.accountName}</Badge>}
         <Badge tone="neutral">Last 14 days</Badge>
         <Badge tone="neutral">{newSignals.length} awaiting review</Badge>

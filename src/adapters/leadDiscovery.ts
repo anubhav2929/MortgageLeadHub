@@ -117,20 +117,23 @@ interface ArcticPost {
 
 async function fetchFromArctic(
   path: "posts" | "comments",
-  params: Record<string, string>
+  params: Record<string, string>,
+  options: { timeoutMs?: number; maxRetries?: number } = {}
 ): Promise<ArcticPost[]> {
   const qs = new URLSearchParams({ limit: String(PER_REQUEST_LIMIT), sort: "desc", ...params });
+  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const maxRetries = options.maxRetries ?? MAX_RETRIES;
 
   // The archive answers overload with 422/500 and the text "Timeout. Maybe
   // slow down a bit" — an explicitly retryable condition, not a bad request.
   // Backing off and retrying recovers most of them.
   let lastError = "";
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     if (attempt > 0) await sleep(1500 * attempt);
     try {
       const res = await fetch(`${ARCTIC}/${path}/search?${qs}`, {
         headers: { "User-Agent": UA, Accept: "application/json" },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       const json = (await res.json().catch(() => ({}))) as { data?: ArcticPost[] | null; error?: string };
       if (res.ok && !json.error) return json.data ?? [];
@@ -140,6 +143,25 @@ async function fetchFromArctic(
     }
   }
   throw new Error(`Arctic Shift ${path}: ${lastError}`);
+}
+
+/** Cheap, read-only Admin health check using the same adapter and bounded
+ * recent-data query as discovery. Keeping this here prevents the Admin panel
+ * from drifting to a slower, structurally different Arctic Shift request. */
+export async function verifyArcticShiftConnection(): Promise<{ ok: boolean; message: string }> {
+  try {
+    await fetchFromArctic(
+      "posts",
+      { subreddit: "Mortgages", limit: "1" },
+      { timeoutMs: 12_000, maxRetries: 1 }
+    );
+    return { ok: true, message: "Arctic Shift is reachable — no credentials are required." };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : "Arctic Shift connection test failed.",
+    };
+  }
 }
 
 function toCandidate(raw: ArcticPost, kind: "POST" | "COMMENT"): RawCandidate | null {

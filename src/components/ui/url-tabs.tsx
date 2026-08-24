@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
+import { useOptimistic, useTransition } from "react";
 import { Tabs } from "@/components/ui/tabs";
 
 /**
@@ -34,19 +35,34 @@ export function UrlTabs({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const [isPending, startTransition] = useTransition();
 
   const requested = searchParams.get(param);
-  const tab = requested && validTabs.includes(requested) ? requested : defaultTab;
+  const resolvedTab = requested && validTabs.includes(requested) ? requested : defaultTab;
+  const [tab, setOptimisticTab] = useOptimistic(resolvedTab);
 
   function onValueChange(value: string) {
+    if (value === resolvedTab && !isPending) return;
     const params = new URLSearchParams(searchParams.toString());
     params.set(param, value);
-    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    startTransition(() => {
+      setOptimisticTab(value);
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    });
   }
 
   return (
-    <Tabs value={tab} onValueChange={onValueChange}>
-      {children}
-    </Tabs>
+    <div className="relative" aria-busy={isPending}>
+      <div
+        aria-hidden
+        className={`pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 overflow-hidden transition-opacity ${isPending ? "opacity-100" : "opacity-0"}`}
+      >
+        <div className="h-full w-1/3 animate-[tab-progress_0.9s_ease-in-out_infinite] rounded-full bg-[var(--primary)]" />
+      </div>
+      <span className="sr-only" aria-live="polite">{isPending ? `Loading ${tab} tab` : ""}</span>
+      <Tabs value={tab} onValueChange={onValueChange} pending={isPending}>
+        {children}
+      </Tabs>
+    </div>
   );
 }

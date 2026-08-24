@@ -17,7 +17,8 @@ import { syncCallState } from "@/domain/queries";
 import { controlLiveCall, type CallControlAction } from "@/adapters/vapiCallControl";
 import { getPropertyValuation } from "@/adapters/propertyData";
 import { deletePrivateDocument, uploadPrivateDocument } from "@/adapters/documentStorage";
-import { publishRedditComment, revokeRedditConnection, searchApprovedReddit } from "@/adapters/reddit";
+import { publishRedditComment, revokeRedditConnection } from "@/adapters/reddit";
+import { searchForSignals } from "@/adapters/leadDiscovery";
 import { promoteCandidate, type RawCandidate } from "@/core/extraction/promote";
 import { resolveCadence } from "@/core/cadence";
 import { computeLeadQualityScore } from "@/core/leadScoring";
@@ -782,15 +783,10 @@ export async function runLeadDiscoveryAction(query?: string): Promise<ActionResu
   }
 
   const db = await getDb();
-  if ((await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) !== "true") {
-    return {
-      ok: false,
-      message: "Production Reddit discovery is disabled until REDDIT_COMMERCIAL_APPROVED=true records written commercial authorization. Use seeded demo signals meanwhile.",
-    };
-  }
-  const connection = Array.from(db.redditConnections.values()).find((item) => !item.revokedAt);
-  if (!connection) return { ok: false, message: "Connect a verified Reddit OAuth account before running approved API discovery." };
-  const { signals: raw, error, stats } = await searchApprovedReddit(connection, query);
+  // Arctic Shift is the established no-auth, read-only retrieval source.
+  // It must not inherit Reddit OAuth's commercial publishing gate: discovery
+  // creates review-only signals and cannot call, text, or email anyone.
+  const { signals: raw, error, stats } = await searchForSignals(query);
 
   if (error && raw.length === 0) {
     // Say what actually happened. Reporting "0 new signals" for an archive

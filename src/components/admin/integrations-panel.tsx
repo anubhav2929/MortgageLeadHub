@@ -6,7 +6,7 @@ import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, ExternalLink, Lo
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input, Label } from "@/components/ui/input";
+import { Input, Label, Textarea } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
 import { INTEGRATIONS, isSecretKey, type IntegrationCategory } from "@/core/integrationRegistry";
 import { saveIntegrationKeysAction, testIntegrationAction, type IntegrationStatus } from "@/domain/integrationActions";
@@ -199,6 +199,11 @@ function IntegrationRow({
               <p className="mb-3 text-[12px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
                 Credentials
               </p>
+              {def.fields.length === 0 && (
+                <p className="rounded-[var(--radius-md)] border border-[var(--success-border)] bg-[var(--success-tint)] px-3.5 py-3 text-[12.5px] text-[var(--foreground)]">
+                  No credentials required. This read-only integration is available by default.
+                </p>
+              )}
               <div className="flex flex-col gap-3.5">
                 {def.fields.map((f) => {
                   const fieldStatus = status?.fields.find((x) => x.key === f.key);
@@ -208,16 +213,30 @@ function IntegrationRow({
                         {f.label}
                         {f.optional && <span className="ml-1.5 text-[var(--muted-foreground)]">(optional)</span>}
                       </Label>
-                      <Input
-                        id={`int-${f.key}`}
-                        type={isSecretKey(f.key) ? "password" : "text"}
-                        value={values[f.key] ?? ""}
-                        onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}
-                        placeholder={f.placeholder}
-                        disabled={!canEdit || fieldStatus?.fromEnv}
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
+                      {f.multiline ? (
+                        <Textarea
+                          id={`int-${f.key}`}
+                          rows={6}
+                          className="font-mono text-xs"
+                          value={values[f.key] ?? ""}
+                          onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}
+                          placeholder={f.placeholder}
+                          disabled={!canEdit || fieldStatus?.fromEnv}
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      ) : (
+                        <Input
+                          id={`int-${f.key}`}
+                          type={isSecretKey(f.key) ? "password" : "text"}
+                          value={values[f.key] ?? ""}
+                          onChange={(e) => setValues({ ...values, [f.key]: e.target.value })}
+                          placeholder={f.placeholder}
+                          disabled={!canEdit || fieldStatus?.fromEnv}
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      )}
                       <p className="mt-1 text-[11.5px] text-[var(--muted-foreground)]">
                         {fieldStatus?.fromEnv ? (
                           <span className="flex items-center gap-1">
@@ -234,9 +253,11 @@ function IntegrationRow({
               </div>
 
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                <Button onClick={save} loading={isSaving} disabled={!canEdit}>
-                  Save
-                </Button>
+                {def.fields.length > 0 && (
+                  <Button onClick={save} loading={isSaving} disabled={!canEdit}>
+                    Save
+                  </Button>
+                )}
                 {!isPlatform && (
                   <Button variant="secondary" onClick={runTest} disabled={testing}>
                     {testing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Plug className="mr-1.5 h-3.5 w-3.5" />}
@@ -261,7 +282,7 @@ function IntegrationRow({
                 </p>
               )}
 
-              {!canEdit && (
+              {!canEdit && def.fields.length > 0 && (
                 <p className="mt-2.5 text-[11.5px] text-[var(--muted-foreground)]">
                   Read-only — Admin role and CREDENTIAL_SECRET are both required to change keys.
                 </p>

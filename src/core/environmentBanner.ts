@@ -14,7 +14,7 @@ export interface EnvironmentInput {
   hasVoice: boolean;
   hasVoiceAgent: boolean;
   hasResend: boolean;
-  /** Discovery reads a public archive and is live regardless of credentials. */
+  /** Discovery reads real public posts only when an approved source is active. */
   hasLeadDiscovery: boolean;
 }
 

@@ -73,6 +73,7 @@ export interface RuntimeCapabilities {
    *  field instead of saying "not configured" to someone who just entered a key. */
   hasPartialVoiceAgent: boolean;
   hasLeadDiscovery: boolean;
+  hasPropertySearch: boolean;
   hasPropertyData: boolean;
   hasCredit: boolean;
 }
@@ -110,9 +111,10 @@ export async function getCapabilities(): Promise<RuntimeCapabilities> {
     hasVoiceAgent: await hasAll(["VAPI_API_KEY", "VAPI_PHONE_NUMBER_ID", "VAPI_WEBHOOK_SECRET"]),
     hasPartialVoiceAgent:
       (await hasAll(["VAPI_API_KEY"])) && !(await hasAll(["VAPI_PHONE_NUMBER_ID", "VAPI_WEBHOOK_SECRET"])),
-    hasLeadDiscovery:
-      (await hasAll(["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"])) &&
-      (await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) === "true",
+    // Arctic Shift is a public, read-only, no-auth source. Reddit OAuth and
+    // commercial approval are required for publishing, not retrieval.
+    hasLeadDiscovery: true,
+    hasPropertySearch: await hasAll(["BRAVE_SEARCH_API_KEY"]),
     hasPropertyData: await hasAll(["PROPERTY_DATA_API_KEY"]),
     hasCredit:
       (await hasAll(["ISOFTPULL_API_KEY", "ISOFTPULL_API_SECRET"])) &&

@@ -19,6 +19,8 @@ import { encryptSecret, isSecretStorageEnabled } from "@/core/secretBox";
 import { ALL_INTEGRATION_KEYS, INTEGRATIONS, isSecretKey } from "@/core/integrationRegistry";
 import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import { getRedditAccessToken } from "@/adapters/reddit";
+import { verifyArcticShiftConnection } from "@/adapters/leadDiscovery";
+import { verifyPublicDataIntegration } from "@/adapters/publicData";
 
 export interface ActionResult {
   ok: boolean;
@@ -69,8 +71,12 @@ export async function getIntegrationStatusesAction(): Promise<{
     resend: caps.hasResend,
     vapi: caps.hasVoiceAgent,
     rentcast: caps.hasPropertyData,
+    "arctic-shift": caps.hasLeadDiscovery,
+    "public-data": caps.hasLeadDiscovery,
     isoftpull: caps.hasCredit,
-    reddit: caps.hasLeadDiscovery,
+    reddit:
+      (await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) === "true" &&
+      Boolean(Array.from(db.redditConnections.values()).find((item) => !item.revokedAt)),
     analytics: Boolean(await getConfigValue("NEXT_PUBLIC_GA_MEASUREMENT_ID")),
     platform: true,
   };
@@ -118,6 +124,29 @@ export async function saveIntegrationKeysAction(
 
   const def = INTEGRATIONS.find((i) => i.id === integrationId);
   if (!def) return { ok: false, message: "Unknown integration." };
+
+  if (integrationId === "public-data") {
+    const rawSources = values.PROPERTY_PUBLIC_RECORD_SOURCES_JSON?.trim();
+    if (rawSources) {
+      try {
+        const sources = JSON.parse(rawSources) as unknown;
+        if (!Array.isArray(sources) || sources.length > 8) {
+          return { ok: false, message: "Public-record source definitions must be a JSON array with at most 8 entries." };
+        }
+        const hosts = new Set((values.PROPERTY_RECORD_ALLOWLIST ?? "").split(",").map((host) => host.trim().toLowerCase()).filter(Boolean));
+        for (const source of sources) {
+          if (!source || typeof source !== "object") return { ok: false, message: "Every public-record source must be a JSON object." };
+          const endpoint = String((source as Record<string, unknown>).endpoint ?? "");
+          const url = new URL(endpoint);
+          if (url.protocol !== "https:" || !hosts.has(url.hostname.toLowerCase())) {
+            return { ok: false, message: `Add ${url.hostname || "the endpoint host"} to the allowlist and use HTTPS before saving.` };
+          }
+        }
+      } catch (error) {
+        return { ok: false, message: `Public-record source JSON is invalid: ${error instanceof Error ? error.message : "parse failed"}` };
+      }
+    }
+  }
 
   const db = await getDb();
   const changed: string[] = [];
@@ -179,8 +208,12 @@ export async function saveIntegrationKeysAction(
       resend: caps.hasResend,
       vapi: caps.hasVoiceAgent,
       rentcast: caps.hasPropertyData,
+      "arctic-shift": caps.hasLeadDiscovery,
+      "public-data": caps.hasLeadDiscovery,
       isoftpull: caps.hasCredit,
-      reddit: caps.hasLeadDiscovery,
+      reddit:
+        (await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) === "true" &&
+        Boolean(Array.from(db.redditConnections.values()).find((item) => !item.revokedAt)),
       analytics: Boolean(await getConfigValue("NEXT_PUBLIC_GA_MEASUREMENT_ID")),
     } as Record<string, boolean>)[def.id] ?? false;
 
@@ -274,6 +307,12 @@ async function runIntegrationTest(integrationId: string): Promise<TestResult> {
         return res.ok || res.status === 404
           ? { ok: true, message: "Connected to RentCast." }
           : { ok: false, message: `RentCast rejected the key (HTTP ${res.status}).` };
+      }
+      case "arctic-shift": {
+        return verifyArcticShiftConnection();
+      }
+      case "public-data": {
+        return verifyPublicDataIntegration();
       }
       case "nvidia": {
         const key = await getConfigValue("NVIDIA_API_KEY");

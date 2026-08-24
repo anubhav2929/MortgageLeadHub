@@ -116,7 +116,9 @@ export const capabilities = {
   hasVoiceAgent: Boolean(env.VAPI_API_KEY || env.RETELL_API_KEY),
   // The full, genuinely-callable Vapi setup — see adapters/voiceAgent.ts.
   hasLiveVoiceAgent: Boolean(env.VAPI_API_KEY && env.VAPI_PHONE_NUMBER_ID && env.VAPI_WEBHOOK_SECRET),
-  hasLeadDiscovery: process.env.REDDIT_COMMERCIAL_APPROVED === "true",
+  // Arctic Shift discovery is live without credentials. It only produces
+  // review-only signals and has no automated outreach path.
+  hasLeadDiscovery: true,
   hasPropertyData: Boolean(env.PROPERTY_DATA_API_KEY),
 };
 
@@ -137,7 +139,7 @@ export function announceCapabilitiesOnce() {
     `Email (Resend): ${capabilities.hasResend ? "LIVE" : "simulated — set RESEND_API_KEY"}`,
     `Inbound email (Resend receiving): ${capabilities.hasInboundEmail ? "LIVE — webhook wired at /api/webhooks/resend-inbound" : "not configured — set RESEND_INBOUND_WEBHOOK_SECRET and add the webhook in the Resend dashboard (see DEPLOY.md)"}`,
     `Voice AI agent (Vapi): ${capabilities.hasLiveVoiceAgent ? "LIVE — outbound calls + webhook wired" : capabilities.hasVoiceAgent ? "API key present but VAPI_PHONE_NUMBER_ID/VAPI_WEBHOOK_SECRET missing — see adapters/voiceAgent.ts" : "not configured — set VAPI_API_KEY, VAPI_PHONE_NUMBER_ID, VAPI_WEBHOOK_SECRET"}`,
-    `Lead discovery: ${capabilities.hasLeadDiscovery ? "commercial approval gate enabled" : "demo-only — REDDIT_COMMERCIAL_APPROVED is not true"}`,
+    `Lead discovery: ${capabilities.hasLeadDiscovery ? "LIVE (Arctic Shift read-only archive)" : "unavailable"}`,
     `Property valuation/AVM (RentCast): ${capabilities.hasPropertyData ? "available as an evidence fallback" : "not configured — insufficient evidence is reported instead of a simulated estimate"}`,
     `Automated cadence engine: endpoint ready at /api/cron/cadence (${env.CRON_SECRET ? "protected by CRON_SECRET" : "UNPROTECTED — set CRON_SECRET before scheduling it"}) — needs a scheduler (Vercel Cron or an external pinger) actually hitting it; see vercel.json.`,
   ];

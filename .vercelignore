@@ -1,4 +1,7 @@
 /.backups/
 /.data/
 /coverage/
+/.playwright-mcp/
+/AGENTS.md
+/CLAUDE.md
 /docs/internal/

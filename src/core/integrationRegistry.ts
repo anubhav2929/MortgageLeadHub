@@ -18,6 +18,7 @@ export interface IntegrationField {
   placeholder?: string;
   help?: string;
   optional?: boolean;
+  multiline?: boolean;
 }
 
 export type IntegrationCategory = "Messaging" | "AI" | "Voice AI" | "Data" | "Platform";
@@ -237,11 +238,73 @@ export const INTEGRATIONS: IntegrationDef[] = [
     freeTier: "50 lookups/month free, no card",
   },
   {
+    id: "arctic-shift",
+    name: "Lead discovery (Arctic Shift)",
+    category: "Data",
+    powers:
+      "Free read-only lead discovery — finds recent public posts showing refinance or home-equity intent for a human to review. It never contacts anyone automatically.",
+    requiredKeys: [],
+    fields: [],
+    setupSteps: [
+      "Nothing to configure — Arctic Shift is a public, no-auth archive and is live by default.",
+      "Run Discovery searches recent posts across the curated mortgage and consumer-finance communities, then filters and scores them locally.",
+      "The same adapter also supplies the public-search lane in Public Search & Property Records; there is one Arctic Shift implementation, not two competing clients.",
+      "Discovered posts remain review-only signals. They are not callable, textable, or emailable CRM leads because no borrower consent was collected.",
+      "Reddit OAuth below is separate and is only required for approved, human-confirmed publishing.",
+    ],
+    docsUrl: "https://arctic-shift.photon-reddit.com",
+    freeTier: "Free · no account or API key",
+  },
+  {
+    id: "public-data",
+    name: "Public Search & Property Records",
+    category: "Data",
+    powers:
+      "Two independent read-only lanes: Arctic Shift searches public mortgage conversations, while the no-key ArcGIS catalog, Census, FHFA, optional Brave ranking, and allowlisted assessors supply property evidence. Both lanes can run concurrently; discussion content never becomes a property value.",
+    requiredKeys: [],
+    fields: [
+      {
+        key: "BRAVE_SEARCH_API_KEY",
+        label: "Brave property-source search API key",
+        secret: true,
+        optional: true,
+        help: "Optional second ranking layer for official .gov and allowlisted property-record pages. ArcGIS public-catalog discovery is built in. Search results never become valuation values.",
+      },
+      {
+        key: "PROPERTY_PUBLIC_RECORD_SOURCES_JSON",
+        label: "Public-record source definitions (JSON)",
+        secret: false,
+        optional: true,
+        placeholder: '[{"label":"County assessor","endpoint":"https://.../query","format":"ARCGIS","addressField":"SITE_ADDR"}]',
+        multiline: true,
+        help: "One or more allowlisted JSON/ArcGIS query APIs. Each source fails independently so one county outage cannot erase all evidence.",
+      },
+      {
+        key: "PROPERTY_RECORD_ALLOWLIST",
+        label: "Allowed public-record hosts",
+        secret: false,
+        optional: true,
+        placeholder: "services.arcgis.com,data.county.gov",
+        help: "Comma-separated HTTPS hosts. Required for every configured public-record endpoint to prevent server-side request forgery.",
+      },
+    ],
+    setupSteps: [
+      "Arctic Shift public-conversation search is built in and needs no account or key. Its requests are isolated from property valuation requests.",
+      "ArcGIS public-catalog discovery, Census normalization, and FHFA market adjustment are built in. Catalog searches use locality only—not the street address—and can only rank configured sources.",
+      "Optionally add a Brave Search API key as a second source-ranking signal; valuation works without it.",
+      "Add each assessor/open-data API host to PROPERTY_RECORD_ALLOWLIST, then add its JSON or ArcGIS source definition.",
+      "Test Connection starts the Arctic Shift and property-evidence checks together and reports each lane independently.",
+      "Only official/allowlisted property facts enter deterministic valuation. Arctic Shift posts remain lead-discovery signals and never influence a dollar estimate.",
+    ],
+    docsUrl: "https://api-dashboard.search.brave.com/documentation",
+    freeTier: "Arctic Shift, ArcGIS catalog, Census, and FHFA built in",
+  },
+  {
     id: "reddit",
     name: "Reddit OAuth",
     category: "Data",
     powers:
-      "Lead discovery — finds public posts showing refinance or equity intent for a human to review. Never contacts anyone automatically.",
+      "Approved Reddit API connection for human-reviewed direct publishing and, when authorized, first-party discovery. It is independent from the read-only public-data adapter.",
     requiredKeys: ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET", "REDDIT_COMMERCIAL_APPROVED"],
     fields: [
       { key: "REDDIT_CLIENT_ID", label: "OAuth client ID", secret: false },

@@ -4,6 +4,7 @@ import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
 import { MobileNavProvider } from "@/components/layout/mobile-nav-context";
 import { getCurrentUser } from "@/domain/session";
+import { can } from "@/core/rbac";
 
 // Internal, login-gated — never indexed, unlike the public marketing/apply
 // pages (root layout).
@@ -12,7 +13,8 @@ export const metadata: Metadata = { robots: { index: false, follow: false } };
 export default async function WorkspaceLayout({ children }: { children: React.ReactNode }) {
   // Sole route-protection gate for the whole /workspace section — redirects
   // to /login if there's no valid session. Every page under here inherits it.
-  await getCurrentUser();
+  const user = await getCurrentUser();
+  const canViewLiveCalls = can({ role: user.role, officerId: user.officerId }, "VIEW_CALL_CENTER");
 
   return (
     <MobileNavProvider>
@@ -28,7 +30,7 @@ export default async function WorkspaceLayout({ children }: { children: React.Re
       {/* Outside <main> so it stays put while the page scrolls, and lives in
           the layout so a call in flight remains visible wherever the officer
           navigates. Renders nothing when no call is live. */}
-      <FloatingCallMonitor />
+      {canViewLiveCalls && <FloatingCallMonitor />}
     </MobileNavProvider>
   );
 }

@@ -9,7 +9,7 @@ try {
   if (error?.code !== "ENOENT") throw error;
 }
 
-const databaseUrl = process.env.DIRECT_URL || process.env.DATABASE_URL || process.env.POSTGRES_URL_NON_POOLING || process.env.POSTGRES_URL;
+const databaseUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.DIRECT_URL || process.env.POSTGRES_URL_NON_POOLING;
 if (!databaseUrl) throw new Error("DATABASE_URL is required");
 const apply = process.argv.includes("--apply");
 const url = new URL(databaseUrl);

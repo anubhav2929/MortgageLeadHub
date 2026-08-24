@@ -2,7 +2,7 @@ import { createDecipheriv, scryptSync } from "node:crypto";
 import process from "node:process";
 import pg from "pg";
 
-const databaseUrl = process.env.DIRECT_URL || process.env.DATABASE_URL || process.env.POSTGRES_URL_NON_POOLING || process.env.POSTGRES_URL;
+const databaseUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.DIRECT_URL || process.env.POSTGRES_URL_NON_POOLING;
 if (!databaseUrl) throw new Error("A database URL is required for provider diagnostics");
 const url = new URL(databaseUrl);
 const isSupabase = url.hostname.endsWith(".supabase.com");

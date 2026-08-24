@@ -9,7 +9,13 @@ const isSupabase = url.hostname.endsWith(".supabase.com");
 const supabaseCa = process.env.SUPABASE_CA_CERT?.replace(/\\n/g, "\n");
 const databaseCa = process.env.DATABASE_CA_CERT?.replace(/\\n/g, "\n");
 url.searchParams.delete("sslmode");
-const client = new pg.Client({ connectionString: url.toString(), ssl: { ...(isSupabase ? { ca: supabaseCa } : databaseCa ? { ca: databaseCa } : {}), rejectUnauthorized: true } });
+const client = new pg.Client({
+  connectionString: url.toString(),
+  connectionTimeoutMillis: 10_000,
+  query_timeout: 20_000,
+  statement_timeout: 20_000,
+  ssl: { ...(isSupabase ? { ca: supabaseCa } : databaseCa ? { ca: databaseCa } : {}), rejectUnauthorized: true },
+});
 
 function decrypt(payload) {
   try {

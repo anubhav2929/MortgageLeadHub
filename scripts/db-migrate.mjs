@@ -18,7 +18,13 @@ const supabaseCa = process.env.SUPABASE_CA_CERT?.replace(/\\n/g, "\n");
 const databaseCa = process.env.DATABASE_CA_CERT?.replace(/\\n/g, "\n");
 if (isSupabase && !supabaseCa) throw new Error("SUPABASE_CA_CERT is required for verified Supabase TLS");
 url.searchParams.delete("sslmode");
-const client = new pg.Client({ connectionString: url.toString(), ssl: { ...(isSupabase ? { ca: supabaseCa } : databaseCa ? { ca: databaseCa } : {}), rejectUnauthorized: true } });
+const client = new pg.Client({
+  connectionString: url.toString(),
+  connectionTimeoutMillis: 10_000,
+  query_timeout: 20_000,
+  statement_timeout: 20_000,
+  ssl: { ...(isSupabase ? { ca: supabaseCa } : databaseCa ? { ca: databaseCa } : {}), rejectUnauthorized: true },
+});
 await client.connect();
 try {
   const directory = path.join(process.cwd(), "migrations");

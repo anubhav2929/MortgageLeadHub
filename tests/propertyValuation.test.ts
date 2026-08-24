@@ -1,8 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { buildOpenEvidenceValuation, findFhfaAdjustment, parsePublicRecordSources } from "@/adapters/propertyData";
+import { buildInsufficientPropertyValuation, buildOpenEvidenceValuation, findFhfaAdjustment, parsePublicRecordSources } from "@/adapters/propertyData";
 import type { PropertyValuationEvidence } from "@/domain/types";
 
 describe("deterministic property valuation weighting", () => {
+  it("sanitizes stale valuations without inventing a replacement value", () => {
+    const result = buildInsufficientPropertyValuation({
+      stateCode: "CA",
+      estimatedValue: 525_000,
+      currentBalance: 310_000,
+    });
+    expect(result).toMatchObject({
+      method: "INSUFFICIENT_EVIDENCE",
+      simulated: false,
+      estimatedValue: 0,
+      estimatedMortgageBalance: 310_000,
+    });
+    expect(result.evidence).toEqual([
+      expect.objectContaining({ kind: "BORROWER_ESTIMATE", value: 525_000, reliability: 0.35 }),
+    ]);
+  });
+
+  it("keeps a borrower-reported paid-off balance as measured zero", () => {
+    const result = buildInsufficientPropertyValuation({ stateCode: "CA", currentBalance: 0 });
+    expect(result.estimatedMortgageBalance).toBe(0);
+    expect(result.provenance.estimatedMortgageBalance).toBe("MEASURED");
+  });
+
   it("requires two independent value sources", () => {
     const evidence: PropertyValuationEvidence[] = [
       { id: "borrower", kind: "BORROWER_ESTIMATE", value: 500_000, retrievedAt: "2026-08-24T00:00:00Z", sourceLabel: "Borrower", reliability: 0.35 },

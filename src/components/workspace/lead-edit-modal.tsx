@@ -208,6 +208,18 @@ export function LeadEditModal({
               </Select>
             </div>
             <div>
+              <Label htmlFor="postalCode">ZIP code</Label>
+              <Input
+                id="postalCode"
+                inputMode="numeric"
+                value={form.postalCode ?? ""}
+                onChange={(e) => set("postalCode", e.target.value.replace(/[^\d-]/g, "").slice(0, 10))}
+                placeholder="90210"
+              />
+            </div>
+          </Row>
+          <Row>
+            <div>
               <Label htmlFor="occ">Occupancy</Label>
               <Select
                 id="occ"

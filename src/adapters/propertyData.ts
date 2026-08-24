@@ -34,24 +34,50 @@ interface PropertyEvidenceConnectionOptions {
   };
 }
 
+function reportedBalance(input: PropertyValuationInput): { balance: number; supplied: boolean } {
+  const supplied = typeof input.currentBalance === "number" && Number.isFinite(input.currentBalance) && input.currentBalance >= 0;
+  return { balance: supplied ? input.currentBalance! : 0, supplied };
+}
+
 function evidenceId(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 20);
 }
 
 function emptyResult(input: PropertyValuationInput, evidence: PropertyValuationEvidence[]): PropertyValuationResult {
-  const balance = input.currentBalance && input.currentBalance > 0 ? input.currentBalance : 0;
+  const { balance, supplied: balanceSupplied } = reportedBalance(input);
   return {
     estimatedValue: 0, confidenceLow: 0, confidenceHigh: 0, comparableCount: 0,
     estimatedMortgageBalance: balance, propertyType: "SINGLE_FAMILY", yearBuilt: 0, estimatedLTV: 0, usableEquity: 0,
     simulated: false,
     provenance: {
       estimatedValue: "MODELED", confidenceRange: "MODELED", comparableCount: "MODELED", lastSale: "MODELED",
-      estimatedMortgageBalance: input.currentBalance ? "MEASURED" : "MODELED", estimatedLTV: "MODELED",
+      estimatedMortgageBalance: balanceSupplied ? "MEASURED" : "MODELED", estimatedLTV: "MODELED",
       usableEquity: "MODELED", propertyType: "MODELED", yearBuilt: "MODELED",
     },
     disclaimer: DISCLAIMER, method: "INSUFFICIENT_EVIDENCE", confidence: "INSUFFICIENT", evidence,
     freshnessAt: new Date().toISOString(), providerCostUsd: 0,
   };
+}
+
+/**
+ * Safe synchronous replacement for a stale/demo valuation. It intentionally
+ * carries forward only the borrower's own estimate as low-weight evidence;
+ * no external lookup or modeled dollar value happens while a lead page is
+ * rendering. An administrator can start the real evidence check explicitly.
+ */
+export function buildInsufficientPropertyValuation(input: PropertyValuationInput): PropertyValuationResult {
+  const evidence: PropertyValuationEvidence[] = [];
+  if (input.estimatedValue && input.estimatedValue > 0) {
+    evidence.push({
+      id: evidenceId(`borrower:${input.estimatedValue}`),
+      kind: "BORROWER_ESTIMATE",
+      value: input.estimatedValue,
+      retrievedAt: new Date().toISOString(),
+      sourceLabel: "Borrower-provided estimate",
+      reliability: 0.35,
+    });
+  }
+  return emptyResult(input, evidence);
 }
 
 interface CensusMatch { matchedAddress?: string; coordinates?: { x?: number; y?: number } }
@@ -561,7 +587,7 @@ export function buildOpenEvidenceValuation(input: PropertyValuationInput, eviden
   const confidence = independentSources.size >= 3 && dispersion <= 0.12 && newestAgeDays <= 365
     ? "HIGH" : dispersion <= 0.22 ? "MEDIUM" : "LOW";
   const spread = Math.round(estimate * (confidence === "HIGH" ? 0.06 : confidence === "MEDIUM" ? 0.1 : 0.16));
-  const balance = input.currentBalance && input.currentBalance > 0 ? input.currentBalance : 0;
+  const { balance, supplied: balanceSupplied } = reportedBalance(input);
   return {
     estimatedValue: estimate, confidenceLow: Math.max(0, estimate - spread), confidenceHigh: estimate + spread,
     comparableCount: independentSources.size, lastSaleDate: record?.lastSaleDate, lastSalePrice: record?.lastSalePrice,
@@ -570,7 +596,7 @@ export function buildOpenEvidenceValuation(input: PropertyValuationInput, eviden
     simulated: false,
     provenance: {
       estimatedValue: "MEASURED", confidenceRange: "MODELED", comparableCount: "MEASURED", lastSale: record?.lastSalePrice ? "MEASURED" : "MODELED",
-      estimatedMortgageBalance: input.currentBalance ? "MEASURED" : "MODELED", estimatedLTV: "MODELED", usableEquity: "MODELED",
+      estimatedMortgageBalance: balanceSupplied ? "MEASURED" : "MODELED", estimatedLTV: "MODELED", usableEquity: "MODELED",
       propertyType: record?.propertyType ? "MEASURED" : "MODELED", yearBuilt: record?.yearBuilt ? "MEASURED" : "MODELED",
     },
     disclaimer: DISCLAIMER, method: "OPEN_EVIDENCE", confidence, evidence, freshnessAt: new Date().toISOString(), providerCostUsd: 0,
@@ -596,7 +622,7 @@ async function fetchRentCast(input: PropertyValuationInput, existingEvidence: Pr
       id: evidenceId(`rentcast:${address}:${data.price}`), kind: "RENTCAST", value: data.price, retrievedAt: new Date().toISOString(),
       sourceUrl: "https://www.rentcast.io/", sourceLabel: "RentCast AVM", reliability: 0.9,
     }];
-    const balance = input.currentBalance && input.currentBalance > 0 ? input.currentBalance : 0;
+    const { balance, supplied: balanceSupplied } = reportedBalance(input);
     return {
       estimatedValue: data.price, confidenceLow: data.priceRangeLow ?? Math.round(data.price * 0.94),
       confidenceHigh: data.priceRangeHigh ?? Math.round(data.price * 1.06), comparableCount: data.comparables?.length ?? 0,
@@ -606,7 +632,7 @@ async function fetchRentCast(input: PropertyValuationInput, existingEvidence: Pr
       simulated: false,
       provenance: {
         estimatedValue: "MEASURED", confidenceRange: data.priceRangeLow ? "MEASURED" : "MODELED", comparableCount: "MEASURED",
-        lastSale: subject?.lastSalePrice ? "MEASURED" : "MODELED", estimatedMortgageBalance: input.currentBalance ? "MEASURED" : "MODELED",
+        lastSale: subject?.lastSalePrice ? "MEASURED" : "MODELED", estimatedMortgageBalance: balanceSupplied ? "MEASURED" : "MODELED",
         estimatedLTV: "MODELED", usableEquity: "MODELED", propertyType: subject?.propertyType ? "MEASURED" : "MODELED",
         yearBuilt: subject?.yearBuilt ? "MEASURED" : "MODELED",
       },

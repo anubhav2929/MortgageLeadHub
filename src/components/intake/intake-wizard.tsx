@@ -68,6 +68,7 @@ function isValidUsPhone(raw: string): boolean {
 // likely to hand it over once they have already invested the effort.
 const FIELD_STEP: Record<string, number> = {
   stateCode: 1,
+  postalCode: 1,
   timeline: 2,
   missedPayments: 2,
   firstName: 3,
@@ -92,6 +93,7 @@ interface FormState {
   stateCode: string;
   city: string;
   addressLine1: string;
+  postalCode: string;
   occupancy: IntakeInput["occupancy"];
   estimatedValue: string;
   currentBalance: string;
@@ -117,6 +119,7 @@ const INITIAL: FormState = {
   stateCode: "",
   city: "",
   addressLine1: "",
+  postalCode: "",
   occupancy: "PRIMARY",
   estimatedValue: "",
   currentBalance: "",
@@ -304,6 +307,7 @@ export function IntakeWizard({
       if (!form.goal) e.goal = "Select your main goal.";
     } else if (s === 1) {
       if (!form.stateCode) e.stateCode = "Select your property's state.";
+      if (form.postalCode && !/^\d{5}(?:-\d{4})?$/.test(form.postalCode)) e.postalCode = "Enter a valid ZIP code.";
     } else if (s === 2) {
       if (!form.timeline) e.timeline = "Select a timeline.";
       if (!form.missedPayments) e.missedPayments = "Select an answer.";
@@ -348,6 +352,7 @@ export function IntakeWizard({
         stateCode: form.stateCode,
         city: form.city || undefined,
         addressLine1: form.addressLine1.trim() || undefined,
+        postalCode: form.postalCode.trim() || undefined,
         occupancy: form.occupancy,
         estimatedValue: form.estimatedValue ? Number(form.estimatedValue) : undefined,
         currentBalance: form.currentBalance ? Number(form.currentBalance) : undefined,
@@ -415,7 +420,7 @@ export function IntakeWizard({
   }
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden border-white/80 bg-white/95 shadow-[var(--shadow-lg)] backdrop-blur-sm">
       <div className="border-b border-[var(--border)] px-6 py-4">
         <div className="mb-2 flex items-center justify-between text-xs font-medium text-[var(--muted-foreground)]">
           <span>
@@ -554,6 +559,9 @@ export function IntakeWizard({
                   >
                     <Input autoComplete="address-level2" list="intake-city-options" value={form.city} onChange={(e) => update("city", e.target.value)} placeholder={form.stateCode ? cityOptions[0] ?? "City" : "Select a state first"} />
                   </Field>
+                  <Field id="postalCode" label="ZIP code" error={errors.postalCode} hint="Improves public-record and assessor matching.">
+                    <Input autoComplete="postal-code" inputMode="numeric" value={form.postalCode} onChange={(e) => update("postalCode", e.target.value.replace(/[^\d-]/g, "").slice(0, 10))} placeholder="90210" />
+                  </Field>
                   <datalist id="intake-city-options">
                     {cityOptions.map((c) => (
                       <option key={c} value={c} />
@@ -566,7 +574,6 @@ export function IntakeWizard({
                       <option value="INVESTMENT">Investment property</option>
                     </Select>
                   </Field>
-                  <div />
                   <Field id="estimatedValue" label="Estimated value (optional)">
                     <CurrencyInput prefix="$" value={form.estimatedValue} onChange={(v) => update("estimatedValue", v)} placeholder="450,000" />
                   </Field>

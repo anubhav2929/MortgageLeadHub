@@ -127,6 +127,7 @@ export type LeadEventType =
   | "KILL_SWITCH_TOGGLED"
   | "PRIORITY_CALLBACK_REQUESTED"
   | "HOT_LEAD_SCORED"
+  | "PROPERTY_VALUATION_REFRESHED"
   | "AUTOMATED_CADENCE_STEP"
   /** A soft credit inquiry was permitted and ran. */
   | "CREDIT_PULL_COMPLETED"

@@ -19,7 +19,8 @@ export type Action =
   | "MANAGE_TASK"
   | "REQUEST_COMPLIANCE_REVIEW"
   | "VIEW_CALL_CENTER"
-  | "VIEW_MESSAGE_CENTER";
+  | "VIEW_MESSAGE_CENTER"
+  | "RERUN_PROPERTY_VALUATION";
 
 export interface Subject {
   role: Role;
@@ -67,6 +68,7 @@ export function can(user: Subject, action: Action, lead?: Lead): boolean {
     case "VIEW_AUDIT_LOG":
       return role === "ADMIN" || role === "COMPLIANCE";
     case "EDIT_CADENCE_PROMPTS_DISCLOSURES":
+    case "RERUN_PROPERTY_VALUATION":
       return role === "ADMIN";
     case "APPROVE_CADENCE_PROMPTS_DISCLOSURES":
       return role === "ADMIN" || role === "COMPLIANCE";

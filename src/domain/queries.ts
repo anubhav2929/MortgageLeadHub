@@ -1,6 +1,6 @@
 import { computeCompleteness, type CompletenessInputs } from "@/core/completeness";
 import { computeLeadQualityScore, type LeadScoreResult } from "@/core/leadScoring";
-import { getPropertyValuation } from "@/adapters/propertyData";
+import { buildInsufficientPropertyValuation } from "@/adapters/propertyData";
 import { getDb, refreshDb, saveDb, type Database } from "@/domain/store";
 import { evaluateGoLive, summariseGoLive } from "@/core/goLive";
 import { evaluateStaleCall, staleAttemptOutcome } from "@/core/staleCall";
@@ -8,6 +8,7 @@ import { reconcileLiveCalls } from "@/domain/callReconciler";
 import { singleFlight } from "@/core/singleFlight";
 import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import { sameCalendarDay } from "@/core/timezone";
+import { isReusablePropertyValuation } from "@/core/propertyValuationQuality";
 import { maskEmail, maskPhone } from "@/core/rbac";
 import { findPublicStatusLead } from "@/domain/statusAccess";
 import type {
@@ -39,22 +40,23 @@ import type {
   TransferAttempt,
 } from "@/domain/types";
 
-/** Reuses a lead's cached AVM lookup if one exists, else computes and
- *  caches it. Keeps a metered vendor's free-tier quota to ~1 call per
- *  unique property instead of 1 per lead-detail page view. */
-async function getOrCachePropertyValuation(db: Awaited<ReturnType<typeof getDb>>, lead: Lead): Promise<PropertyValuationResult> {
-  if (lead.propertyValuation) return lead.propertyValuation;
-  const valuation = await getPropertyValuation({
+/** Reuses supported evidence, but never performs provider I/O while rendering
+ *  a lead page. Missing/legacy results become an explicit insufficient state;
+ *  the audited Admin action owns external recalculation and its pending UI. */
+async function getOrCachePropertyValuation(lead: Lead): Promise<PropertyValuationResult> {
+  if (isReusablePropertyValuation(lead.propertyValuation)) return lead.propertyValuation!;
+  // Strip a legacy simulated value (or initialize an old lead) immediately.
+  const sanitized = buildInsufficientPropertyValuation({
     addressLine1: lead.addressLine1,
     city: lead.city,
     stateCode: lead.stateCode,
+    postalCode: lead.postalCode,
     estimatedValue: lead.estimatedValue,
     currentBalance: lead.currentBalance,
-    useFreeEvidence: db.config.featureFlags?.freePropertyValuation === true,
   });
-  lead.propertyValuation = valuation;
+  lead.propertyValuation = sanitized;
   await saveDb();
-  return valuation;
+  return sanitized;
 }
 
 const COMPLETENESS_PATHS: Record<keyof CompletenessInputs, string> = {
@@ -280,7 +282,7 @@ export async function getLeadByRef(publicRef: string): Promise<LeadDetail | null
   const conversationTurns = Array.from(db.conversations.values())
     .filter((c) => c.leadId === lead.id)
     .flatMap((c) => c.transcript ?? []);
-  const valuation = await getOrCachePropertyValuation(db, lead);
+  const valuation = await getOrCachePropertyValuation(lead);
   const qualityScore = computeLeadQualityScore(
     {
       stateCode: lead.stateCode,

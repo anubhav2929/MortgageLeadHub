@@ -5,6 +5,7 @@ import { Progress } from "@/components/ui/progress";
 import { ReferralBanner } from "@/components/workspace/referral-banner";
 import { PropertyValuationCard } from "@/components/workspace/property-valuation-card";
 import { AssignOfficerPicker } from "@/components/workspace/assign-officer-picker";
+import { propertyClarifications } from "@/core/propertyValuationQuality";
 import type { LeadScoreResult } from "@/core/leadScoring";
 import { maskEmail, maskPhone } from "@/core/rbac";
 import { formatDateTime, titleCase } from "@/lib/utils";
@@ -61,6 +62,7 @@ export function OverviewTab({
   attemptsToday,
   officers,
   canAssignOfficer,
+  canRerunPropertyValuation,
 }: {
   lead: Lead;
   person?: Person;
@@ -73,6 +75,7 @@ export function OverviewTab({
   qualityScore: LeadScoreResult;
   officers?: Officer[];
   canAssignOfficer?: boolean;
+  canRerunPropertyValuation?: boolean;
   propertyValuation: PropertyValuationResult;
   creditPull?: CreditPullResult;
   completenessScore: number;
@@ -175,18 +178,24 @@ export function OverviewTab({
             />
             <Field
               icon={DollarSign}
-              label="Est. value / balance"
-              value={
-                lead.estimatedValue
-                  ? `$${lead.estimatedValue.toLocaleString()} / $${(lead.currentBalance ?? 0).toLocaleString()}`
-                  : "Not collected"
-              }
+              label="Borrower-reported value"
+              value={lead.estimatedValue ? `$${lead.estimatedValue.toLocaleString()}` : "Not collected"}
+            />
+            <Field
+              icon={DollarSign}
+              label="Current mortgage balance"
+              value={lead.currentBalance !== undefined ? `$${lead.currentBalance.toLocaleString()}` : "Not collected"}
             />
           </CardContent>
         </Card>
 
         <div className="space-y-4">
-          <PropertyValuationCard valuation={propertyValuation} />
+          <PropertyValuationCard
+            valuation={propertyValuation}
+            publicRef={lead.publicRef}
+            canRerun={Boolean(canRerunPropertyValuation)}
+            clarifications={propertyClarifications(lead, propertyValuation)}
+          />
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">

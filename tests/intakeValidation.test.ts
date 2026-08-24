@@ -35,6 +35,11 @@ describe("intakeInputSchema — accepts legitimate submissions", () => {
     expect(intakeInputSchema.safeParse(validInput()).success).toBe(true);
   });
 
+  it("accepts a valid property ZIP code", () => {
+    expect(intakeInputSchema.safeParse(validInput({ postalCode: "90210" })).success).toBe(true);
+    expect(intakeInputSchema.safeParse(validInput({ postalCode: "90210-1234" })).success).toBe(true);
+  });
+
   it("trims surrounding whitespace rather than storing it", () => {
     const parsed = intakeInputSchema.parse(validInput({ firstName: "  Jennifer  " }));
     expect(parsed.firstName).toBe("Jennifer");
@@ -102,6 +107,10 @@ describe("intakeInputSchema — rejects hostile or malformed input", () => {
 
   it("rejects an oversized free-text address", () => {
     expect(intakeInputSchema.safeParse(validInput({ addressLine1: "x".repeat(201) })).success).toBe(false);
+  });
+
+  it("rejects a malformed property ZIP code", () => {
+    expect(intakeInputSchema.safeParse(validInput({ postalCode: "90A10" })).success).toBe(false);
   });
 
   it("reports a usable message for each invalid field", () => {

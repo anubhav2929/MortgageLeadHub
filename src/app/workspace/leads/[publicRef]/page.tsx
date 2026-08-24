@@ -117,6 +117,7 @@ export default async function LeadDetailPage({ params }: PageProps) {
           city: detail.lead.city ?? "",
           stateCode: detail.lead.stateCode,
           addressLine1: detail.lead.addressLine1,
+          postalCode: detail.lead.postalCode,
           intent: detail.lead.intent,
           goal: detail.lead.goal,
           timeline: detail.lead.timeline,
@@ -196,6 +197,7 @@ export default async function LeadDetailPage({ params }: PageProps) {
               attemptsToday={detail.attemptsToday}
               officers={officers}
               canAssignOfficer={canAssignOfficer}
+              canRerunPropertyValuation={canViewPii && can(subject, "RERUN_PROPERTY_VALUATION", rawDetail.lead)}
             />
           </TabsContent>
           <TabsContent value="timeline">

@@ -15,7 +15,7 @@ import { mapWithConcurrency } from "@/core/concurrency";
 import { FIELD_TO_LEAD_PROPERTY, type MappedFieldPath } from "@/core/callInsights";
 import { syncCallState } from "@/domain/queries";
 import { controlLiveCall, type CallControlAction } from "@/adapters/vapiCallControl";
-import { getPropertyValuation } from "@/adapters/propertyData";
+import { buildInsufficientPropertyValuation, getPropertyValuation } from "@/adapters/propertyData";
 import { deletePrivateDocument, uploadPrivateDocument } from "@/adapters/documentStorage";
 import { publishRedditComment, revokeRedditConnection } from "@/adapters/reddit";
 import { searchForSignals } from "@/adapters/leadDiscovery";
@@ -2342,6 +2342,7 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
     stateCode: input.stateCode,
     city: input.city,
     addressLine1: input.addressLine1,
+    postalCode: input.postalCode,
     occupancy: input.occupancy,
     estimatedValue: input.estimatedValue,
     currentBalance: input.currentBalance,
@@ -2385,6 +2386,7 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
   setFormField("borrower.creditBand", input.creditRange);
   if (input.city && input.stateCode) setFormField("property.identified", true, 0.9);
   if (input.addressLine1) setFormField("property.addressLine1", input.addressLine1);
+  if (input.postalCode) setFormField("property.postalCode", input.postalCode);
   if (input.estimatedValue) setFormField("property.estimatedValue", input.estimatedValue);
   if (input.currentBalance) setFormField("loan.currentBalance", input.currentBalance);
 
@@ -2427,13 +2429,15 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
 
   // Scientific lead-quality scoring (Equity Flow Group business plan §5) —
   // routes hot leads to an instant officer alert instead of waiting for the
-  // standard cadence. Uses the AVM's simulated valuation as a fallback for
-  // whatever the borrower didn't self-report.
+  // standard cadence. Uses a real evidence/provider valuation as a fallback
+  // for whatever the borrower didn't self-report; insufficient evidence is
+  // represented explicitly and never replaced with a demo number.
   if (!suppressed) {
     const valuation = await getPropertyValuation({
       addressLine1: input.addressLine1,
       city: input.city,
       stateCode: input.stateCode,
+      postalCode: input.postalCode,
       estimatedValue: input.estimatedValue,
       currentBalance: input.currentBalance,
       useFreeEvidence: db.config.featureFlags?.freePropertyValuation === true,
@@ -3192,6 +3196,80 @@ export async function referLeadToPartnerAction(publicRef: string, partnerId: str
 // what the compliance record says happened.
 // ---------------------------------------------------------------------------
 
+export async function rerunPropertyValuationAction(publicRef: string): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  const lead = await requireLead(publicRef);
+  if (!can(await authorizationSubject(user), "RERUN_PROPERTY_VALUATION", lead)) {
+    await audit(user.id, user.name, "RERUN_PROPERTY_VALUATION", "Lead", lead.id, "DENY");
+    return { ok: false, message: "Only an administrator can rerun property-data checks." };
+  }
+
+  // Public-record lookups and the RentCast fallback can incur provider cost.
+  // Keep the explicit Admin control useful for UAT and corrections without
+  // allowing rapid duplicate clicks (or a replayed action) to fan out calls.
+  const throttle = await consumeRateLimit({
+    scope: "property-valuation-rerun",
+    subject: `${user.id}:${lead.id}`,
+    limit: 5,
+    windowSeconds: 60 * 60,
+  });
+  if (!throttle.allowed) {
+    await audit(user.id, user.name, "RERUN_PROPERTY_VALUATION", "Lead", lead.id, "DENY", {
+      reason: "RATE_LIMITED",
+      retryAfterSeconds: throttle.retryAfterSeconds,
+    });
+    return { ok: false, message: `Property checks were run recently. Try again in ${Math.ceil(throttle.retryAfterSeconds / 60)} minute(s).` };
+  }
+
+  let valuation;
+  try {
+    valuation = await getPropertyValuation({
+      addressLine1: lead.addressLine1,
+      city: lead.city,
+      stateCode: lead.stateCode,
+      postalCode: lead.postalCode,
+      estimatedValue: lead.estimatedValue,
+      currentBalance: lead.currentBalance,
+      // An explicit Admin rerun is the UAT/manual path for the free evidence
+      // chain, so it does not depend on the automatic-intake rollout flag.
+      useFreeEvidence: true,
+    });
+  } catch (error) {
+    await audit(user.id, user.name, "RERUN_PROPERTY_VALUATION", "Lead", lead.id, "DENY", {
+      reason: "PROVIDER_CHECK_FAILED",
+      errorType: error instanceof Error ? error.name : "UnknownError",
+    });
+    return { ok: false, message: "Property checks could not be completed. No saved value was changed; please retry." };
+  }
+
+  lead.propertyValuation = valuation;
+  lead.updatedAt = nowIso();
+  await pushEvent({
+    leadId: lead.id,
+    type: "PROPERTY_VALUATION_REFRESHED",
+    actorType: "ADMIN",
+    actorId: user.id,
+    actorName: user.name,
+    occurredAt: nowIso(),
+    payload: {
+      method: valuation.method,
+      confidence: valuation.confidence,
+      evidenceCount: valuation.evidence?.length ?? 0,
+      sufficient: valuation.method !== "INSUFFICIENT_EVIDENCE",
+    },
+  });
+  await audit(user.id, user.name, "RERUN_PROPERTY_VALUATION", "Lead", lead.id, "ALLOW", {
+    method: valuation.method,
+    confidence: valuation.confidence,
+    evidenceCount: valuation.evidence?.length ?? 0,
+  });
+  await revalidateLead(publicRef);
+
+  return valuation.method === "INSUFFICIENT_EVIDENCE"
+    ? { ok: true, message: "Checks completed, but more property details are required for a supported value." }
+    : { ok: true, message: `Property checks completed using ${valuation.method === "RENTCAST" ? "RentCast" : "approved public evidence"}.` };
+}
+
 export interface EditableLeadFields {
   firstName: string;
   lastName: string;
@@ -3200,6 +3278,7 @@ export interface EditableLeadFields {
   city: string;
   stateCode: string;
   addressLine1?: string;
+  postalCode?: string;
   intent: LoanIntent;
   goal: GoalType;
   timeline: Timeline;
@@ -3229,6 +3308,9 @@ export async function updateLeadDetailsAction(
     return { ok: false, message: "First and last name are required." };
   }
   if (!STATE_NAMES[input.stateCode]) return { ok: false, message: "Select a state we're licensed in." };
+  if (input.postalCode && !/^\d{5}(?:-\d{4})?$/.test(input.postalCode.trim())) {
+    return { ok: false, message: "Enter a valid 5-digit or ZIP+4 property ZIP code." };
+  }
 
   const db = await getDb();
   const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
@@ -3268,6 +3350,8 @@ export async function updateLeadDetailsAction(
 
   track("city", lead.city, input.city.trim());
   track("stateCode", lead.stateCode, input.stateCode);
+  track("addressLine1", lead.addressLine1, input.addressLine1?.trim() || undefined);
+  track("postalCode", lead.postalCode, input.postalCode?.trim() || undefined);
   track("intent", lead.intent, input.intent);
   track("goal", lead.goal, input.goal);
   track("timeline", lead.timeline, input.timeline);
@@ -3279,6 +3363,7 @@ export async function updateLeadDetailsAction(
   lead.city = input.city.trim();
   lead.stateCode = input.stateCode;
   lead.addressLine1 = input.addressLine1?.trim() || undefined;
+  lead.postalCode = input.postalCode?.trim() || undefined;
   lead.intent = input.intent;
   lead.goal = input.goal;
   lead.timeline = input.timeline;
@@ -3289,6 +3374,21 @@ export async function updateLeadDetailsAction(
   lead.updatedAt = nowIso();
 
   if (changes.length === 0) return { ok: true, message: "No changes to save." };
+
+  const valuationInputs = new Set(["city", "stateCode", "addressLine1", "postalCode", "estimatedValue", "currentBalance"]);
+  if (changes.some((field) => valuationInputs.has(field))) {
+    // Never leave a card showing a value calculated for the previous address,
+    // borrower estimate, or balance. External checks run only when an Admin
+    // explicitly starts them, so saving this edit never blocks on a provider.
+    lead.propertyValuation = buildInsufficientPropertyValuation({
+      addressLine1: lead.addressLine1,
+      city: lead.city,
+      stateCode: lead.stateCode,
+      postalCode: lead.postalCode,
+      estimatedValue: lead.estimatedValue,
+      currentBalance: lead.currentBalance,
+    });
+  }
 
   await pushEvent({
     leadId: lead.id,

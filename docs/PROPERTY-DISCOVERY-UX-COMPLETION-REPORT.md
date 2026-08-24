@@ -9,6 +9,8 @@ The free lead-discovery code was not missing; its server action had been coupled
 
 Property valuation is now a multi-source evidence pipeline instead of a single configured endpoint. It normalizes addresses with the US Census Geocoder, uses the no-key ArcGIS public catalog plus optional Brave Search to rank configured official sources, queries multiple allowlisted JSON/ArcGIS record APIs in bounded parallel, time-adjusts recorded sales against the current official FHFA dataset, calculates the value/range/confidence deterministically, and uses RentCast only when the free chain lacks two independent value sources. It never converts a search snippet, Reddit discussion, or LLM response into a property value.
 
+The final lead-detail pass also retires cached legacy `SIMULATED` values. Lead pages replace those records immediately with an explicit insufficient-evidence state and never block rendering on a provider lookup. Administrators can run the real checks from the valuation card, see a stable pending state, and receive a persisted/audited result. Missing or conflicting data produces targeted borrower questions rather than a fabricated value.
+
 CRM tab navigation now changes content optimistically, preserves the URL, reports pending state accessibly, supports arrow/Home/End keyboard navigation, and scrolls horizontally on narrow screens. Route-specific skeletons were added for Leads, Lead Detail, Call Centre, Discovery, Messages, and Tasks.
 
 ## What was completed
@@ -45,6 +47,22 @@ CRM tab navigation now changes content optimistically, preserves the URL, report
 - Corrected UI wording from “comparable sales” to “independent value sources.”
 - Added unit tests for source caps, ArcGIS field validation, FHFA time adjustment, minimum independent evidence, and deterministic weighting.
 - Added a no-key ArcGIS Online catalog discovery pass. It sends only city/state/ZIP, never the street address, and may only reorder sources already approved in the host allowlist.
+- Retired all legacy simulated valuation caches and prevented them from being reused.
+- Added an Admin-only, centrally authorized **Run checks again** action with visible pending/error/success states, audit activity, a five-per-hour per-lead/provider-cost guard, and route revalidation.
+- Removed external provider I/O from lead-page rendering; explicit recalculation owns the network operation and its progress UI.
+- Added deterministic clarification prompts for missing address, city, ZIP, borrower estimate, balance, property type, year built, purchase evidence, and material borrower/source conflicts.
+- Split borrower-reported value and balance into separately labeled lead fields. Missing balance now says **Not collected**, never `$0`; a reported paid-off `$0` balance remains valid measured data.
+- Hide calculated equity and LTV until a borrower-reported balance exists.
+- Added property ZIP to public intake, schema validation, lead editing, normalized valuation input, and cache invalidation.
+- Property/address/value/balance edits invalidate prior evidence immediately and require a fresh audited check.
+
+### Public intake visual completion
+
+- `/apply` now uses the same sticky marketing navigation and legal footer as the public site.
+- Added the homepage hero grid, gradient blooms, secure-inquiry label, explanatory heading, and trust statements around the form.
+- Upgraded the intake card to a high-contrast, translucent hero surface with the existing accessible five-step workflow preserved.
+- Added a validated ZIP field with postal autocomplete and public-record matching guidance.
+- Verified the header, hero, form, footer, intent selection, next-step transition, and ZIP field in a real browser.
 
 ### CRM tabs and loading behavior
 
@@ -132,7 +150,7 @@ Search APIs are treated as discovery/ranking tools, not valuation authorities. T
 
 - TypeScript: passed.
 - ESLint: passed.
-- Vitest: 48 files, 577 tests passed.
+- Vitest: 50 files, 587 tests passed.
 - Rendered browser: all Lead Detail tabs passed; mobile overflow passed; zero console errors.
 - Next.js webpack production build: passed, 44 routes generated.
 - Turbopack: restricted local environment prevented its helper process from binding a port; this is the same environment limitation recorded previously, not a compile failure. The webpack production compiler completed successfully.

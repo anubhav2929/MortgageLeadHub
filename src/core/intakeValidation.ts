@@ -20,6 +20,7 @@ export const intakeInputSchema = z.object({
   stateCode: z.enum(Object.keys(STATE_NAMES) as [string, ...string[]], { message: "Select a state" }),
   city: z.string().trim().max(TEXT_MAX).optional(),
   addressLine1: z.string().trim().max(TEXT_MAX).optional(),
+  postalCode: z.string().trim().regex(/^\d{5}(?:-\d{4})?$/, "Enter a valid ZIP code").optional(),
   occupancy: z.enum(["PRIMARY", "SECOND_HOME", "INVESTMENT", "UNKNOWN"]),
   estimatedValue: z.number().finite().nonnegative().max(100_000_000).optional(),
   currentBalance: z.number().finite().nonnegative().max(100_000_000).optional(),

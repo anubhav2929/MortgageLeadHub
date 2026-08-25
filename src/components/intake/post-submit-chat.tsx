@@ -16,7 +16,7 @@ const GOAL_PHRASE: Record<GoalType, string> = {
   LOWER_PAYMENT: "lower your monthly payment",
   CASH_OUT: "access some cash from your equity",
   SHORTEN_TERM: "shorten your loan term",
-  DEBT_CONSOLIDATION: "consolidate some debt",
+  DEBT_CONSOLIDATION: "simplify your monthly payments",
   OTHER: "get this sorted out",
 };
 

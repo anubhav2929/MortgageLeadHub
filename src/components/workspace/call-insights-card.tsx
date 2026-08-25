@@ -18,6 +18,7 @@ const KIND_META = {
 
 function display(v: unknown): string {
   if (v === undefined || v === null || v === "") return "—";
+  if (v === "DEBT_CONSOLIDATION") return "simplify monthly payments";
   return String(v).replace(/_/g, " ").toLowerCase();
 }
 

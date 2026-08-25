@@ -27,7 +27,7 @@ export default function CashOutCalculatorPage() {
           much you still owe.
         </p>
         <p>
-          People use cash-out refinances for things like debt consolidation, home improvements, or covering a large
+          People use cash-out refinances for things like simplifying monthly payments, home improvements, or covering a large
           expense — but it does increase your loan balance and, usually, your monthly payment, so it&apos;s worth
           comparing against a home equity loan or line of credit before deciding.
         </p>

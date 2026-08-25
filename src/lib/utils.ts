@@ -41,6 +41,7 @@ export function initials(first: string, last: string) {
 }
 
 export function titleCase(s: string) {
+  if (s === "DEBT_CONSOLIDATION") return "Simplify monthly payments";
   return s
     .toLowerCase()
     .split("_")

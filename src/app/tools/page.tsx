@@ -6,7 +6,7 @@ import { seoMetadata } from "@/lib/seo";
 
 export const metadata = seoMetadata({
   title: "Free Mortgage Calculators | Equity Flow Group",
-  description: "Free calculators for refinancing, cash-out equity, mortgage payoff, and debt-to-income — no signup required.",
+  description: "Free calculators for refinancing, cash-out equity, mortgage payoff, and DTI planning — no signup required.",
   path: "/tools",
   keywords: ["mortgage calculators", "refinance calculator", "cash-out calculator", "DTI calculator", "mortgage payoff calculator"],
 });
@@ -33,7 +33,7 @@ const TOOLS = [
   {
     href: "/tools/dti-calculator",
     icon: Scale,
-    title: "Debt-to-income calculator",
+    title: "Mortgage DTI calculator",
     description: "Check your front-end and back-end DTI against typical loan limits.",
   },
 ];

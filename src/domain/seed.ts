@@ -685,12 +685,12 @@ export function seedDatabase(db: Database) {
       escalated: false,
       redactionApplied: true,
       summary:
-        "Borrower wants to consolidate ~$28k of credit card debt via cash-out refi. Primary residence, stable W-2 income (band only). No hardship indicators. Prefers evening callback.",
+        "Borrower wants to address about $28k in credit-card balances through a cash-out refinance. Primary residence, stable W-2 income (band only). No hardship indicators. Prefers evening callback.",
       transcript: [
         { turn: 1, role: "AGENT", text: "Hi, this is Alex from Equity Flow Group calling about the inquiry you submitted online — is this Sarah?", at: minutesAgo(300, now) },
         { turn: 2, role: "BORROWER", text: "Yes, this is Sarah.", at: minutesAgo(299, now) },
         { turn: 3, role: "AGENT", text: "Perfect. Just so you know, this call may be recorded, and you can ask for a human at any time. What's the main reason you're looking into this?", at: minutesAgo(299, now) },
-        { turn: 4, role: "BORROWER", text: "I've got some credit card debt piling up, I wanted to see about pulling equity out to pay it down.", at: minutesAgo(298, now) },
+        { turn: 4, role: "BORROWER", text: "I've got some credit-card balances piling up, and I wanted to see about using equity to pay them down.", at: minutesAgo(298, now) },
         { turn: 5, role: "AGENT", text: "Got it — do you currently live at the property on file, and is it your primary residence?", at: minutesAgo(296, now) },
         { turn: 6, role: "BORROWER", text: "Yep, primary residence, been here 6 years.", at: minutesAgo(296, now) },
         { turn: 7, role: "AGENT", text: "Roughly how much are you hoping to access, and what's the balance on your current mortgage?", at: minutesAgo(294, now) },

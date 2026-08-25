@@ -17,7 +17,9 @@ const CREDIT = ["EXCELLENT_740_PLUS", "GOOD_680_739", "FAIR_620_679", "BELOW_620
 const OCCUPANCY = ["PRIMARY", "SECOND_HOME", "INVESTMENT", "UNKNOWN"] as const;
 const WINDOWS = ["MORNING", "AFTERNOON", "EVENING", "ANY"] as const;
 
-const pretty = (v: string) => v.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+const pretty = (v: string) => v === "DEBT_CONSOLIDATION"
+  ? "Simplify monthly payments"
+  : v.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
 
 function Row({ children }: { children: React.ReactNode }) {
   return <div className="grid gap-3 sm:grid-cols-2">{children}</div>;

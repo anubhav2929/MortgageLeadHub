@@ -75,7 +75,7 @@ const PHRASES: Record<string, string> = {
   EXPLORING: "still exploring",
   SECOND_HOME: "second home",
   CASH_OUT: "cash-out refinance",
-  DEBT_CONSOLIDATION: "consolidate debt",
+  DEBT_CONSOLIDATION: "simplify my monthly payments",
   LOWER_PAYMENT: "lower my payment",
   SHORTEN_TERM: "shorten my term",
   ONE_TO_TWO: "one or two",

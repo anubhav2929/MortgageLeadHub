@@ -37,6 +37,7 @@ const SECTIONS: { title: string; fields: string[] }[] = [
 function displayValue(v: unknown): string {
   if (v === null || v === undefined) return "—";
   if (typeof v === "boolean") return v ? "Yes" : "No";
+  if (v === "DEBT_CONSOLIDATION") return "SIMPLIFY MONTHLY PAYMENTS";
   return String(v).replace(/_/g, " ");
 }
 

@@ -62,7 +62,7 @@ export const DISCOVERY_SUBREDDITS: { name: string; weight: number }[] = [
   { name: "MilitaryFinance", weight: 0.8 },
   { name: "VeteransBenefits", weight: 0.7 },
 
-  // Personal finance — lower density, high absolute volume. The debt-payoff
+  // Personal finance — lower density, high absolute volume. The balance-payoff
   // subs matter specifically because cash-out and consolidation questions
   // surface there before they ever reach a mortgage sub.
   { name: "personalfinance", weight: 0.7 },

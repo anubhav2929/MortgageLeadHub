@@ -3,26 +3,26 @@ import { DtiCalculator } from "@/components/marketing/tools/dti-calculator";
 import { seoMetadata } from "@/lib/seo";
 
 export const metadata = seoMetadata({
-  title: "Debt-to-Income (DTI) Calculator for Mortgages | Equity Flow Group",
+  title: "Mortgage DTI Calculator | Equity Flow Group",
   description:
-    "Free debt-to-income calculator for mortgage refinancing. Enter your income, housing payment, and other debts to see your front-end and back-end DTI.",
+    "Free mortgage DTI calculator. Enter your income, housing payment, and other monthly obligations to see your front-end and back-end ratios.",
   path: "/tools/dti-calculator",
-  keywords: ["debt-to-income calculator", "mortgage DTI calculator", "front-end DTI", "back-end DTI"],
+  keywords: ["mortgage DTI calculator", "monthly payment ratio", "front-end DTI", "back-end DTI"],
 });
 
 export default function DtiCalculatorPage() {
   return (
     <ToolPageShell
       eyebrow="Free calculator"
-      title="Debt-to-income (DTI) calculator"
-      description="Lenders use your debt-to-income ratio to gauge how comfortably you can take on a mortgage payment. See where you stand."
+      title="Mortgage DTI calculator"
+      description="Lenders use DTI to gauge how comfortably you can take on a mortgage payment. See where you stand."
     >
       <DtiCalculator />
       <div className="mt-10 space-y-4 text-[14px] leading-relaxed text-[var(--mkt-body)]">
         <h2 className="text-[18px] font-semibold text-[var(--mkt-ink)]">Front-end vs. back-end DTI</h2>
         <p>
           Front-end DTI only counts your housing payment (principal, interest, taxes, and insurance) against your
-          gross monthly income. Back-end DTI adds in every other recurring debt — car payments, student loans,
+          gross monthly income. Back-end DTI adds every other recurring obligation — car payments, student loans,
           minimum credit card payments — for a fuller picture of your monthly obligations.
         </p>
         <p>

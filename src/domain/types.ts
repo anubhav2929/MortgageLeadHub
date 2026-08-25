@@ -467,7 +467,7 @@ export interface SystemConfig {
 
 // Max points per lead-quality-score component (Equity Flow Group business
 // plan, July 2026: S_Equity + S_Margin + S_Compliance + S_Behavior = 100).
-// Admin-adjustable so priorities can pivot between a debt-consolidation
+// Admin-adjustable so priorities can pivot between a payment-simplification
 // cycle and a rate/term refi boom without a code change.
 export interface ScoringWeights {
   equity: number;

@@ -87,7 +87,7 @@ function scoreEquity(estimatedValue: number | undefined, mortgageBalance: number
   return { points: 0, ltv };
 }
 
-/** Cash-out / debt consolidation carries the highest commission + urgency;
+/** Cash-out / payment simplification carries the highest commission + urgency;
  *  home equity / second-lien products next; rate & term refi lowest. */
 function scoreMargin(intent: LoanIntent, goal: GoalType, max: number): number {
   const isCashOutOrDebtConsolidation = intent === "CASH_OUT" || goal === "CASH_OUT" || goal === "DEBT_CONSOLIDATION";

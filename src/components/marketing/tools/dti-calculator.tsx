@@ -33,7 +33,7 @@ export function DtiCalculator() {
         {[
           { id: "dti-income", label: "Gross monthly income", value: income, set: setIncome },
           { id: "dti-housing", label: "Housing payment (PITI)", value: housing, set: setHousing },
-          { id: "dti-other", label: "Other monthly debts", value: otherDebts, set: setOtherDebts },
+          { id: "dti-other", label: "Other monthly obligations", value: otherDebts, set: setOtherDebts },
         ].map((f) => (
           <div key={f.id}>
             <label htmlFor={f.id} className="mb-1.5 block text-[12.5px] font-medium text-[var(--mkt-ink)]">{f.label}</label>
@@ -60,7 +60,7 @@ export function DtiCalculator() {
               <p className="mt-0.5 text-[22px] font-semibold text-[var(--mkt-ink)]">{result.frontEnd.toFixed(1)}%</p>
             </div>
             <div>
-              <p className="text-[12px] text-[var(--mkt-muted)]">Back-end DTI (all debts)</p>
+              <p className="text-[12px] text-[var(--mkt-muted)]">Back-end DTI (all obligations)</p>
               <p className="mt-0.5 text-[22px] font-semibold text-[var(--mkt-ink)]">{result.backEnd.toFixed(1)}%</p>
             </div>
           </div>

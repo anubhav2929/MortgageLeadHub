@@ -291,7 +291,7 @@ describe("enum values become readable prose", () => {
       intake: { ...base, timeline: "ASAP", goal: "DEBT_CONSOLIDATION", intent: "CASH_OUT" },
     });
     expect(m.text).toMatch(/as soon as possible/);
-    expect(m.text).toMatch(/consolidate debt/);
+    expect(m.text).toMatch(/simplify my monthly payments/);
     expect(m.text).toMatch(/cash-out refinance/);
   });
 });

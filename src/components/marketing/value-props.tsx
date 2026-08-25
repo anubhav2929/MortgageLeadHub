@@ -18,8 +18,8 @@ const PROPS = [
   },
   {
     icon: CreditCard,
-    title: "Consolidate debt",
-    body: "Roll higher-interest credit card or personal debt into one lower-rate payment.",
+    title: "Simplify monthly payments",
+    body: "Use available equity to address higher-interest credit-card or personal balances through one planned payment.",
   },
 ];
 

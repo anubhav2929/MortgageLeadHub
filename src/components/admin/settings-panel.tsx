@@ -116,7 +116,7 @@ export function SettingsPanel({ config, canEdit }: { config: SystemConfig; canEd
   type ScoringWeightKey = keyof SystemConfig["scoringWeights"];
   const SCORING_FIELDS: { key: ScoringWeightKey; label: string; help: string }[] = [
     { key: "equity", label: "Usable equity (LTV)", help: "S_Equity — full marks at LTV ≤70%, partial at 70-80%, none above." },
-    { key: "margin", label: "Product margin", help: "S_Margin — cash-out/debt consolidation scores highest, then home equity, then rate & term." },
+    { key: "margin", label: "Product margin", help: "S_Margin — cash-out and payment simplification score highest, then home equity, then rate & term." },
     { key: "compliance", label: "State licensing match", help: "S_Compliance — full marks in priority-licensed states, partial elsewhere licensed." },
     { key: "behavior", label: "Response urgency & speed", help: "S_Behavior — urgent intent plus a fast intake completion scores highest." },
   ];

@@ -488,7 +488,7 @@ export function IntakeWizard({
                     <option value="LOWER_PAYMENT">Lower my monthly payment</option>
                     <option value="CASH_OUT">Access cash</option>
                     <option value="SHORTEN_TERM">Shorten my loan term</option>
-                    <option value="DEBT_CONSOLIDATION">Consolidate debt</option>
+                    <option value="DEBT_CONSOLIDATION">Simplify monthly payments</option>
                     <option value="OTHER">Other</option>
                   </Select>
                 </Field>

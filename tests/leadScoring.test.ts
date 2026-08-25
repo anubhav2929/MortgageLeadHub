@@ -64,7 +64,7 @@ describe("margin component", () => {
     expect(computeLeadQualityScore(input({ intent: "CASH_OUT" })).breakdown.margin).toBe(25);
   });
 
-  it("treats a debt-consolidation goal as a cash-out-grade opportunity", () => {
+  it("treats a payment-simplification goal as a cash-out-grade opportunity", () => {
     expect(computeLeadQualityScore(input({ goal: "DEBT_CONSOLIDATION" })).breakdown.margin).toBe(25);
   });
 

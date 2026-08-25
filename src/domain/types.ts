@@ -793,7 +793,7 @@ export interface PropertyValuationResult {
 
 export interface PropertyValuationEvidence {
   id: string;
-  kind: "BORROWER_ESTIMATE" | "RECORDED_SALE" | "PUBLIC_RECORD" | "FHFA_HPI" | "ASSESSOR" | "RENTCAST";
+  kind: "BORROWER_ESTIMATE" | "RECORDED_SALE" | "PUBLIC_RECORD" | "CENSUS_MARKET" | "FHFA_HPI" | "ASSESSOR" | "RENTCAST";
   value?: number;
   observedAt?: string;
   retrievedAt: string;

@@ -146,7 +146,7 @@ export const DEFAULT_CONFIG: SystemConfig = {
     callbackScheduling: false,
     normalizedReads: false,
     redditPosting: false,
-    freePropertyValuation: false,
+    freePropertyValuation: true,
     metaCapi: false,
     automatedPowerDialer: false,
   },

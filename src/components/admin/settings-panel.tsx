@@ -215,7 +215,6 @@ export function SettingsPanel({ config, canEdit }: { config: SystemConfig; canEd
             ["callbackScheduling", "In-call callback booking"],
             ["normalizedReads", "Normalized authoritative reads"],
             ["redditPosting", "Approved Reddit publishing"],
-            ["freePropertyValuation", "Free valuation evidence chain"],
             ["metaCapi", "Meta Conversions API"],
             ["automatedPowerDialer", "Automated sequential power dialer"],
           ] as const).map(([key, label]) => (

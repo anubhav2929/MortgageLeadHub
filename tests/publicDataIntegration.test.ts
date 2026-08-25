@@ -1,8 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import { verifyPublicDataIntegration } from "@/adapters/publicData";
 import { verifyPropertyEvidenceConnection } from "@/adapters/propertyData";
+import { findIntegration } from "@/core/integrationRegistry";
 
 describe("public-data provider orchestration", () => {
+  it("exposes property evidence as its own configurable Admin integration", () => {
+    const property = findIntegration("public-data");
+    const discovery = findIntegration("arctic-shift");
+
+    expect(property?.name).toContain("Property Valuation");
+    expect(property?.fields.map((field) => field.key)).toContain("CENSUS_DATA_API_KEY");
+    expect(property?.powers).toContain("independent valuation lane");
+    expect(discovery?.name).toContain("Arctic Shift");
+  });
+
   it("starts Arctic Shift and property evidence concurrently", async () => {
     let active = 0;
     let maxActive = 0;
@@ -53,11 +64,12 @@ describe("public-data provider orchestration", () => {
     const result = await verifyPropertyEvidenceConnection({ fetchImpl, config: {} });
 
     expect(result.ok).toBe(true);
-    expect(maxActive).toBe(3);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(maxActive).toBe(4);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     const calledUrls = fetchMock.mock.calls.flatMap((call) => String(call[0]));
     expect(calledUrls).toEqual(expect.arrayContaining([
       expect.stringContaining("arcgis.com/sharing/rest/search"),
+      expect.stringContaining("www2.census.gov/programs-surveys/acs/summary_file"),
     ]));
     expect(calledUrls).not.toEqual(
       expect.arrayContaining([expect.stringContaining("arctic-shift")])

@@ -44,6 +44,8 @@ export function PropertyValuationCard({
   const evidence = valuation.evidence ?? [];
   const unsupported = valuation.method === "INSUFFICIENT_EVIDENCE" || valuation.method === "SIMULATED" || valuation.simulated;
   const hasReportedBalance = valuation.provenance.estimatedMortgageBalance !== "MODELED";
+  const neighborhoodOnly = evidence.some((item) => item.kind === "CENSUS_MARKET") &&
+    evidence.every((item) => item.kind === "CENSUS_MARKET" || item.kind === "BORROWER_ESTIMATE" || !item.value);
 
   function rerun() {
     startTransition(async () => {
@@ -98,7 +100,7 @@ export function PropertyValuationCard({
             <Home className="h-3.5 w-3.5" /> Property valuation
           </CardTitle>
           <span className="flex items-center gap-1 rounded-full bg-[var(--success-tint)] px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--success)]">
-            <CheckCircle2 className="h-3 w-3" /> {valuation.method === "RENTCAST" ? "Provider estimate" : "Public evidence"}
+            <CheckCircle2 className="h-3 w-3" /> {valuation.method === "RENTCAST" ? "Provider estimate" : neighborhoodOnly ? "Neighborhood benchmark" : "Public evidence"}
           </span>
         </div>
       </CardHeader>
@@ -109,7 +111,10 @@ export function PropertyValuationCard({
           </div>
         )}
         <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-semibold text-[var(--foreground)]">${valuation.estimatedValue.toLocaleString()}</span>
+          <span className="text-2xl font-semibold text-[var(--foreground)]">
+            ${valuation.estimatedValue.toLocaleString()}
+            <Modeled valuation={valuation} field="estimatedValue" />
+          </span>
         </div>
         <p className="text-xs text-[var(--muted-foreground)]">
           Range ${valuation.confidenceLow.toLocaleString()} – ${valuation.confidenceHigh.toLocaleString()} · {valuation.comparableCount} independent value source{valuation.comparableCount === 1 ? "" : "s"}
@@ -150,7 +155,7 @@ export function PropertyValuationCard({
         </div>
         <p className="pt-1 text-[11px] text-[var(--muted-foreground)]">
           {valuation.method === "OPEN_EVIDENCE"
-            ? `Deterministically weighted approved evidence (${valuation.confidence?.toLowerCase()} confidence). ${modeledCount} field${modeledCount === 1 ? "" : "s"} marked "est" were derived rather than supplied by a source.`
+            ? `${neighborhoodOnly ? "Low-confidence planning range using the official Census neighborhood benchmark and any borrower-provided estimate" : "Deterministically weighted approved property evidence"} (${valuation.confidence?.toLowerCase()} confidence). ${modeledCount} field${modeledCount === 1 ? "" : "s"} marked "est" were derived rather than parcel facts.`
             : `Valuation from RentCast. ${modeledCount} field${modeledCount === 1 ? "" : "s"} marked "est" were derived rather than supplied by the provider.`}
         </p>
         {valuation.disclaimer && <p className="text-[11px] text-[var(--muted-foreground)]">{valuation.disclaimer}</p>}

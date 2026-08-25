@@ -2440,7 +2440,10 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
       postalCode: input.postalCode,
       estimatedValue: input.estimatedValue,
       currentBalance: input.currentBalance,
-      useFreeEvidence: db.config.featureFlags?.freePropertyValuation === true,
+      // Public evidence is now the always-on primary lane. The previous
+      // rollout flag left production leads permanently on an unconfigured
+      // RentCast-only path, which is why the detail card kept failing.
+      useFreeEvidence: true,
     });
     // Cache on the lead itself so later reads (lead detail page, quality
     // re-scoring) reuse this instead of re-hitting a metered AVM vendor.

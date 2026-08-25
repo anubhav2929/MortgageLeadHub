@@ -20,7 +20,7 @@ import { ALL_INTEGRATION_KEYS, INTEGRATIONS, isSecretKey } from "@/core/integrat
 import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import { getRedditAccessToken } from "@/adapters/reddit";
 import { verifyArcticShiftConnection } from "@/adapters/leadDiscovery";
-import { verifyPublicDataIntegration } from "@/adapters/publicData";
+import { verifyPropertyEvidenceConnection } from "@/adapters/propertyData";
 
 export interface ActionResult {
   ok: boolean;
@@ -72,7 +72,7 @@ export async function getIntegrationStatusesAction(): Promise<{
     vapi: caps.hasVoiceAgent,
     rentcast: caps.hasPropertyData,
     "arctic-shift": caps.hasLeadDiscovery,
-    "public-data": caps.hasLeadDiscovery,
+    "public-data": true,
     isoftpull: caps.hasCredit,
     reddit:
       (await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) === "true" &&
@@ -209,7 +209,7 @@ export async function saveIntegrationKeysAction(
       vapi: caps.hasVoiceAgent,
       rentcast: caps.hasPropertyData,
       "arctic-shift": caps.hasLeadDiscovery,
-      "public-data": caps.hasLeadDiscovery,
+      "public-data": true,
       isoftpull: caps.hasCredit,
       reddit:
         (await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) === "true" &&
@@ -312,7 +312,7 @@ async function runIntegrationTest(integrationId: string): Promise<TestResult> {
         return verifyArcticShiftConnection();
       }
       case "public-data": {
-        return verifyPublicDataIntegration();
+        return verifyPropertyEvidenceConnection();
       }
       case "nvidia": {
         const key = await getConfigValue("NVIDIA_API_KEY");

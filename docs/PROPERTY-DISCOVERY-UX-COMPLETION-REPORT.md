@@ -1,13 +1,13 @@
 # Property Valuation, Lead Discovery, and CRM Navigation Completion Report
 
-**Completion date:** August 24, 2026
-**Scope:** Free property evidence, public lead discovery restoration, tab/navigation UX, configuration, and regression verification
+**Completion date:** August 25, 2026
+**Scope:** Free property evidence, public lead discovery restoration, consent UX, post-inquiry trust UX, configuration, and regression verification
 
 ## Executive result
 
 The free lead-discovery code was not missing; its server action had been coupled to Reddit OAuth and therefore could no longer reach the existing free Arctic Shift adapter. Retrieval and publishing are now separate. Arctic Shift is restored as the no-auth, read-only source that populates the human-review queue without a Reddit account. Direct Reddit publishing still requires written commercial approval, OAuth, subreddit-rule confirmation, and an explicit human Publish action.
 
-Property valuation is now a multi-source evidence pipeline instead of a single configured endpoint. It normalizes addresses with the US Census Geocoder, uses the no-key ArcGIS public catalog plus optional Brave Search to rank configured official sources, queries multiple allowlisted JSON/ArcGIS record APIs in bounded parallel, time-adjusts recorded sales against the current official FHFA dataset, calculates the value/range/confidence deterministically, and uses RentCast only when the free chain lacks two independent value sources. It never converts a search snippet, Reddit discussion, or LLM response into a property value.
+Property valuation is now a multi-source evidence pipeline instead of a single configured endpoint. It normalizes addresses and locates Census geography with the US Census Geocoder, safely auto-discovers compatible hosted ArcGIS assessor layers, uses the official keyless ACS table-based summary file for a nationwide tract benchmark (with an optional free API key for a faster direct query), queries configured allowlisted JSON/ArcGIS record APIs in bounded parallel, time-adjusts recorded sales against the current official FHFA dataset, calculates the value/range/confidence deterministically, and uses RentCast as the final AVM fallback. It never converts a search snippet, Reddit discussion, or LLM response into a property value.
 
 The final lead-detail pass also retires cached legacy `SIMULATED` values. Lead pages replace those records immediately with an explicit insufficient-evidence state and never block rendering on a provider lookup. Administrators can run the real checks from the valuation card, see a stable pending state, and receive a persisted/audited result. Missing or conflicting data produces targeted borrower questions rather than a fabricated value.
 
@@ -20,7 +20,7 @@ CRM tab navigation now changes content optimistically, preserves the URL, report
 - Restored Arctic Shift as the primary free, no-auth, read-only discovery source, matching the previously working product behavior.
 - Removed the accidental `DISCOVERY_ARCHIVE_APPROVED` runtime gate that blocked existing installations even though Arctic Shift requires no credentials.
 - Restored a dedicated **Lead discovery (Arctic Shift)** card in Admin → Integrations with a real connection test.
-- Added Arctic Shift as the shared public-conversation search lane inside **Public Search & Property Records** without duplicating its client or treating discussion content as property evidence.
+- Kept Arctic Shift lead discovery and property evidence as separate, concurrently safe lanes. Neither integration’s health or runtime operation blocks the other, and discussion content is never treated as property evidence.
 - Added concurrent, failure-isolated health orchestration for Arctic Shift public search and the Census/FHFA/allowlisted property-evidence lane.
 - Removed the accidental dependency between retrieval and Reddit publishing.
 - Preserved human review, freshness filtering, subreddit scoping, local intent scoring, URL deduplication, and AI-assisted triage.
@@ -31,6 +31,10 @@ CRM tab navigation now changes content optimistically, preserves the URL, report
 ### Multi-source free property valuation
 
 - Census address normalization and geocoding remain the first step.
+- Removed the stale intake rollout condition that silently forced production leads onto an unconfigured RentCast-only path. The public-evidence lane is now the always-on primary path for intake and administrator reruns.
+- Added automatic discovery of compatible public ArcGIS FeatureServer layers. Only HTTPS `*.arcgis.com` services are considered, and a layer must expose a safe address field plus a recognized numeric value or sale field before the street address can be queried.
+- Expanded safe schema recognition for common county field variants such as `SITE_ADDR`, `SITUS_ADDR`, `TOTAL_VAL`, `MARKET_VAL`, `SALE_AMT`, `DEED_DATE`, and `YR_BUILT`.
+- Added a cached, size-limited reader for the official Census ACS table-based summary file. This provides the tract benchmark without any account or key. Optional `CENSUS_DATA_API_KEY` and `CENSUS_ACS_YEAR` Admin fields select the smaller direct API response. The result is always a clearly labeled, low-confidence neighborhood planning range—not parcel evidence or an appraisal.
 - Added `PROPERTY_PUBLIC_RECORD_SOURCES_JSON` for up to eight public-record adapters.
 - Supports:
   - generic JSON address-query APIs;
@@ -46,7 +50,7 @@ CRM tab navigation now changes content optimistically, preserves the URL, report
 - Added evidence/methodology disclosure to the valuation card, including value, source, weight, observation date, and contextual notes.
 - Corrected UI wording from “comparable sales” to “independent value sources.”
 - Added unit tests for source caps, ArcGIS field validation, FHFA time adjustment, minimum independent evidence, and deterministic weighting.
-- Added a no-key ArcGIS Online catalog discovery pass. It sends only city/state/ZIP, never the street address, and may only reorder sources already approved in the host allowlist.
+- The ArcGIS catalog search receives locality only. A street address is sent only to a schema-validated hosted layer or an explicitly allowlisted configured API.
 - Retired all legacy simulated valuation caches and prevented them from being reused.
 - Added an Admin-only, centrally authorized **Run checks again** action with visible pending/error/success states, audit activity, a five-per-hour per-lead/provider-cost guard, and route revalidation.
 - Removed external provider I/O from lead-page rendering; explicit recalculation owns the network operation and its progress UI.
@@ -63,6 +67,14 @@ CRM tab navigation now changes content optimistically, preserves the URL, report
 - Upgraded the intake card to a high-contrast, translucent hero surface with the existing accessible five-step workflow preserved.
 - Added a validated ZIP field with postal autocomplete and public-record matching guidance.
 - Verified the header, hero, form, footer, intent selection, next-step transition, and ZIP field in a real browser.
+- Added a post-confirmation trust experience inside the completion chat: expandable licensed-human, privacy/consent, and no-obligation explanations; a three-step “what happens next” path; and direct links to calculators and mortgage education.
+
+### Analytics consent repair
+
+- Replaced hydration-sensitive consent initialization with a React external-store subscription.
+- Both **Allow analytics** and **Decline** now update immediately, persist to a first-party cookie and local-storage fallback, and survive reload.
+- Denial remains the default: no Google Analytics or Meta script is loaded until an explicit grant.
+- Browser verification exercised both choices. Decline produced `denied` in both stores with no analytics scripts; Allow produced `granted`; the banner disappeared immediately and remained dismissed after reload.
 
 ### CRM tabs and loading behavior
 
@@ -88,13 +100,14 @@ CRM tab navigation now changes content optimistically, preserves the URL, report
 
 For discovery, go to **Admin → Integrations → Lead discovery (Arctic Shift)**. No account, API key, or saved setting is required. Click **Test connection** to make a live read-only health request, then open **Lead Discovery** and click **Run discovery**.
 
-For property valuation, go to **Admin → Integrations → Public Search & Property Records**.
+For property valuation, go to **Admin → Integrations → Free Property Valuation & Public Records**. This card and its connection test are independent from the Arctic Shift lead-discovery card.
 
-1. Optionally enter `BRAVE_SEARCH_API_KEY`. The valuation chain still uses Census, FHFA, and configured records without this key.
-2. Enter every permitted API host in `PROPERTY_RECORD_ALLOWLIST`, comma separated.
-3. Enter source definitions in `PROPERTY_PUBLIC_RECORD_SOURCES_JSON`.
-4. Click **Save**, then **Test connection**.
-5. Go to **Admin → Settings → Production rollout flags** and enable **Free valuation evidence chain** after UAT on the approved address set.
+1. No Census credential is required: the official ACS table-based summary file is the built-in nationwide tract fallback. Optionally enter a free `CENSUS_DATA_API_KEY` for a faster direct API query. Leave `CENSUS_ACS_YEAR` blank to use the tested default.
+2. Optionally enter `BRAVE_SEARCH_API_KEY` as a second official-source ranking signal.
+3. For additional county APIs, enter every permitted host in `PROPERTY_RECORD_ALLOWLIST`, comma separated.
+4. Enter their definitions in `PROPERTY_PUBLIC_RECORD_SOURCES_JSON`.
+5. Configure RentCast in its separate card for the final parcel-level AVM fallback.
+6. Click **Save**, then **Test connection**. No rollout toggle is required; the free lane is always primary.
 
 Example generic JSON source:
 
@@ -150,8 +163,9 @@ Search APIs are treated as discovery/ranking tools, not valuation authorities. T
 
 - TypeScript: passed.
 - ESLint: passed.
-- Vitest: 50 files, 587 tests passed.
-- Rendered browser: all Lead Detail tabs passed; mobile overflow passed; zero console errors.
+- Vitest: 50 files, 591 tests passed.
+- Live read-only valuation UAT: a public Los Angeles government address returned `OPEN_EVIDENCE` with an official ACS 2024 tract value and low-confidence planning range, using no API key and no borrower/client data.
+- Rendered browser: both analytics choices persisted correctly; a complete synthetic five-step inquiry reached the interactive trust panel; all Lead Detail tabs and mobile overflow previously passed; zero application console errors.
 - Next.js webpack production build: passed, 44 routes generated.
 - Turbopack: restricted local environment prevented its helper process from binding a port; this is the same environment limitation recorded previously, not a compile failure. The webpack production compiler completed successfully.
 

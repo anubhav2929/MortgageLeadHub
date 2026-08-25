@@ -248,7 +248,6 @@ export const INTEGRATIONS: IntegrationDef[] = [
     setupSteps: [
       "Nothing to configure — Arctic Shift is a public, no-auth archive and is live by default.",
       "Run Discovery searches recent posts across the curated mortgage and consumer-finance communities, then filters and scores them locally.",
-      "The same adapter also supplies the public-search lane in Public Search & Property Records; there is one Arctic Shift implementation, not two competing clients.",
       "Discovered posts remain review-only signals. They are not callable, textable, or emailable CRM leads because no borrower consent was collected.",
       "Reddit OAuth below is separate and is only required for approved, human-confirmed publishing.",
     ],
@@ -257,12 +256,28 @@ export const INTEGRATIONS: IntegrationDef[] = [
   },
   {
     id: "public-data",
-    name: "Public Search & Property Records",
+    name: "Free Property Valuation & Public Records",
     category: "Data",
     powers:
-      "Two independent read-only lanes: Arctic Shift searches public mortgage conversations, while the no-key ArcGIS catalog, Census, FHFA, optional Brave ranking, and allowlisted assessors supply property evidence. Both lanes can run concurrently; discussion content never becomes a property value.",
+      "An independent valuation lane that normalizes addresses, discovers compatible public ArcGIS assessor layers, uses the official keyless Census ACS summary file for neighborhood housing values, applies FHFA sale adjustments, and falls back to RentCast when configured.",
     requiredKeys: [],
     fields: [
+      {
+        key: "CENSUS_DATA_API_KEY",
+        label: "Census Data API key",
+        secret: true,
+        optional: true,
+        placeholder: "Free key from api.census.gov",
+        help: "Optional faster API route for official tract/ZIP median owner-occupied home values. Without it, the app uses the keyless official ACS summary file.",
+      },
+      {
+        key: "CENSUS_ACS_YEAR",
+        label: "Census ACS vintage",
+        secret: false,
+        optional: true,
+        placeholder: "2024",
+        help: "Leave blank for the tested default. Change only after confirming the newer ACS 5-year table is published.",
+      },
       {
         key: "BRAVE_SEARCH_API_KEY",
         label: "Brave property-source search API key",
@@ -289,15 +304,16 @@ export const INTEGRATIONS: IntegrationDef[] = [
       },
     ],
     setupSteps: [
-      "Arctic Shift public-conversation search is built in and needs no account or key. Its requests are isolated from property valuation requests.",
-      "ArcGIS public-catalog discovery, Census normalization, and FHFA market adjustment are built in. Catalog searches use locality only—not the street address—and can only rank configured sources.",
+      "This lane is independent from Arctic Shift lead discovery; either system can fail or run without blocking the other.",
+      "Census address normalization, safe ArcGIS hosted-layer discovery, and FHFA sale adjustment are built in. Catalog searches receive locality only—not the street address—and only compatible FeatureServer schemas are queried.",
+      "The official keyless ACS summary file provides the nationwide tract benchmark. Optionally save a free Census Data API key to use the smaller direct API response instead.",
       "Optionally add a Brave Search API key as a second source-ranking signal; valuation works without it.",
       "Add each assessor/open-data API host to PROPERTY_RECORD_ALLOWLIST, then add its JSON or ArcGIS source definition.",
-      "Test Connection starts the Arctic Shift and property-evidence checks together and reports each lane independently.",
-      "Only official/allowlisted property facts enter deterministic valuation. Arctic Shift posts remain lead-discovery signals and never influence a dollar estimate.",
+      "Configure RentCast in its separate card for the final AVM fallback when public evidence remains insufficient.",
+      "Only public/allowlisted property facts enter deterministic valuation; search results and discussion content never supply a dollar value.",
     ],
-    docsUrl: "https://api-dashboard.search.brave.com/documentation",
-    freeTier: "Arctic Shift, ArcGIS catalog, Census, and FHFA built in",
+    docsUrl: "https://api.census.gov/data/key_signup.html",
+    freeTier: "Census Geocoder/ACS summary data, ArcGIS discovery, and FHFA built in",
   },
   {
     id: "reddit",

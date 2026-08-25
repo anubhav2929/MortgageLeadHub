@@ -67,7 +67,7 @@ In Admin → Settings, select and save an IANA operational timezone. Database ti
 ## 7. Gated integrations
 
 - Reddit: retain demo discovery until written commercial approval is attached to the launch record, set `REDDIT_COMMERCIAL_APPROVED=true`, complete Admin OAuth, and only then enable `redditPosting`. Every publication remains human-previewed and explicitly approved.
-- Property valuation: configure only allowlisted public-record endpoints and official FHFA data. Benchmark the free chain on the approved UAT address set before leaving `freePropertyValuation` enabled in production; RentCast remains fallback and failures show insufficient evidence.
+- Property valuation: the official free-evidence lane is always primary. Configure only allowlisted public-record endpoints and official FHFA data, benchmark the chain on the approved UAT address set, and keep RentCast as the parcel-level fallback; failures show insufficient evidence rather than a simulated value.
 - Credit: leave `CREDIT_LIVE_APPROVED=false` until vendor access and counsel-approved authorization language are both recorded.
 - Meta/GA: record consent-banner approval and verify request payloads contain no PII before enabling `metaCapi`.
 

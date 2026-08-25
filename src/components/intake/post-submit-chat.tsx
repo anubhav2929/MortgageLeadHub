@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { CheckCircle2, Phone, MessageSquare, Mail, Loader2, Clock, Send } from "lucide-react";
+import { CheckCircle2, Phone, MessageSquare, Mail, Loader2, Clock, Send, UserCheck, ShieldCheck, Scale, ArrowRight } from "lucide-react";
 import {
   initiateBorrowerChannelAction,
   requestPriorityCallbackAction,
@@ -186,6 +186,7 @@ export function PostSubmitChat({
     setStage(null);
     if (yes) {
       await say("Perfect — pick whichever works best for you above and I'll get you moving, or keep chatting with me here.", 550);
+      await say("While you wait, here’s exactly what you can expect from us — clear options, a licensed human, and no pressure to proceed.", 650);
       setStage("done");
     } else {
       await say("No problem — what's the best phone and email to reach you at?", 550);
@@ -345,10 +346,55 @@ export function PostSubmitChat({
           </div>
         )}
         {stage === "done" && (
-          <div className="mt-1 flex items-center gap-2 self-start rounded-xl border border-[var(--success)]/30 bg-[var(--success-tint)] px-3.5 py-2.5 text-[12.5px] font-medium text-[var(--success)]">
-            <CheckCircle2 className="h-4 w-4 shrink-0" />
-            You&apos;re all set — feel free to close this or use the buttons above anytime.
-          </div>
+          <>
+            <div className="mt-1 flex items-center gap-2 self-start rounded-xl border border-[var(--success)]/30 bg-[var(--success-tint)] px-3.5 py-2.5 text-[12.5px] font-medium text-[var(--success)]">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+              You&apos;re all set — your officer can see this conversation and your stated preferences.
+            </div>
+
+            <div className="mt-3 w-full overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
+              <div className="bg-[var(--primary-tint)] px-4 py-4">
+                <p className="text-[13.5px] font-semibold text-[var(--foreground)]">Why borrowers choose Equity Flow Group</p>
+                <p className="mt-1 text-xs leading-relaxed text-[var(--muted-foreground)]">
+                  You stay in control while a licensed professional helps you compare the next step.
+                </p>
+              </div>
+              <div className="grid gap-px bg-[var(--border)] sm:grid-cols-3">
+                <TrustDetail icon={UserCheck} title="Licensed human guidance">
+                  An officer reviews your goal and explains relevant options. You can request a human at any time.
+                </TrustDetail>
+                <TrustDetail icon={ShieldCheck} title="Privacy and consent first">
+                  This inquiry does not trigger a hard credit check. Contact follows the permissions you selected, and you can opt out.
+                </TrustDetail>
+                <TrustDetail icon={Scale} title="Clear comparison, no obligation">
+                  An inquiry is not an approval or commitment. Review terms and formal disclosures before deciding whether to proceed.
+                </TrustDetail>
+              </div>
+              <div className="px-4 py-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">What happens next</p>
+                <ol className="mt-3 grid gap-3 sm:grid-cols-3">
+                  {[
+                    ["1", "We verify the details you reported."],
+                    ["2", "A licensed officer discusses suitable paths."],
+                    ["3", "You decide whether any option is worth pursuing."],
+                  ].map(([number, text]) => (
+                    <li key={number} className="flex gap-2 text-xs leading-relaxed text-[var(--foreground)]">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--primary)] text-[10px] font-semibold text-white">{number}</span>
+                      {text}
+                    </li>
+                  ))}
+                </ol>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <a href="/tools" target="_blank" rel="noreferrer" className="focus-ring inline-flex items-center gap-1.5 rounded-full border border-[var(--border-strong)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] hover:border-[var(--primary)] hover:text-[var(--primary)]">
+                    Explore free calculators <ArrowRight className="h-3.5 w-3.5" />
+                  </a>
+                  <a href="/mortgage-resources" target="_blank" rel="noreferrer" className="focus-ring inline-flex items-center gap-1.5 rounded-full border border-[var(--border-strong)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] hover:border-[var(--primary)] hover:text-[var(--primary)]">
+                    Read mortgage guides <ArrowRight className="h-3.5 w-3.5" />
+                  </a>
+                </div>
+              </div>
+            </div>
+          </>
         )}
       </div>
 
@@ -407,6 +453,27 @@ export function PostSubmitChat({
         )}
       </div>
     </div>
+  );
+}
+
+function TrustDetail({
+  icon: Icon,
+  title,
+  children,
+}: {
+  icon: React.ElementType;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <details className="group bg-[var(--surface)] px-4 py-3.5 open:pb-4">
+      <summary className="focus-ring flex cursor-pointer list-none items-center gap-2 rounded text-xs font-semibold text-[var(--foreground)]">
+        <Icon className="h-4 w-4 shrink-0 text-[var(--primary)]" />
+        <span className="flex-1">{title}</span>
+        <span className="text-base leading-none text-[var(--muted-foreground)] transition-transform group-open:rotate-45">+</span>
+      </summary>
+      <p className="mt-2 text-[11.5px] leading-relaxed text-[var(--muted-foreground)]">{children}</p>
+    </details>
   );
 }
 

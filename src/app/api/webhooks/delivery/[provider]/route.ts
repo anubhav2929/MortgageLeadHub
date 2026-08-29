@@ -23,6 +23,7 @@ import { verifySvixSignature } from "@/core/auth";
 import { applyDeliveryUpdate, type DeliveryProvider, type DeliveryUpdate } from "@/domain/deliveryUpdates";
 import { getAppUrl, getConfigValue } from "@/lib/runtimeConfig";
 import { formParams, verifyTwilioWebhook } from "@/adapters/twilioWebhookAuth";
+import { claimInlineWebhook, enqueueWebhook, settleWebhook, stableWebhookId } from "@/domain/durableQueue";
 
 const SUPPORTED: DeliveryProvider[] = ["twilio", "telnyx", "resend"];
 
@@ -39,6 +40,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
   const rawBody = await request.text();
 
   let update: DeliveryUpdate | null = null;
+  let resendEnvelopeId: string | undefined;
 
   if (provider === "twilio") {
     const requestUrl = new URL(request.url);
@@ -76,7 +78,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
     if (!verified) {
       return NextResponse.json({ ok: false, error: "Invalid signature" }, { status: 401 });
     }
-    const body = JSON.parse(rawBody) as { type?: string; data?: { email_id?: string; bounce?: { message?: string } } };
+    let body: { type?: string; data?: { email_id?: string; bounce?: { message?: string } } };
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
+    }
+    const queued = await enqueueWebhook({
+      provider: "RESEND",
+      providerEventId: stableWebhookId("RESEND", rawBody, request.headers.get("svix-id")),
+      eventType: body.type ?? "unknown",
+      source: "primary",
+      payload: body,
+    });
+    resendEnvelopeId = queued.id;
+    if (!(await claimInlineWebhook(queued.id))) return NextResponse.json({ ok: true, duplicate: true });
     if (body.type && body.data?.email_id) {
       update = {
         providerMessageId: body.data.email_id,
@@ -89,9 +105,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
   if (!update) {
     // Acknowledge with 200 so the provider doesn't retry a payload we will
     // never be able to parse — a retry storm helps nobody.
+    if (resendEnvelopeId) await settleWebhook(resendEnvelopeId, "QUARANTINED", "Unparseable delivery payload");
     return NextResponse.json({ ok: true, ignored: "unparseable payload" });
   }
 
   const result = await applyDeliveryUpdate(provider, update);
+  if (resendEnvelopeId) await settleWebhook(resendEnvelopeId, "COMPLETED");
   return NextResponse.json({ ok: true, ...result });
 }

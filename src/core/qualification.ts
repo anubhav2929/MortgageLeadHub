@@ -76,7 +76,16 @@ export function seedAnswersFromSnapshot(snapshot: LeadContextSnapshot, now: stri
 }
 
 export function nextQualificationQuestion(progress: QualificationProgress): QualificationQuestion | undefined {
-  const answered = new Set(progress.answers.filter((answer) => !answer.conflict && present(answer.value)).map((answer) => answer.questionId));
+  // Snapshot values are context, not evidence that the borrower confirmed the
+  // answer during this call. Treating FORM/VERIFIED_FIELD seeds as completed
+  // was the reason Vapi skipped required questions whenever intake already
+  // contained a value. Only an explicit, accepted statement in this session
+  // advances the server-owned sequence.
+  const answered = new Set(
+    progress.answers
+      .filter((answer) => answer.source === "BORROWER_STATED" && !answer.conflict && present(answer.value))
+      .map((answer) => answer.questionId)
+  );
   const id = progress.requiredQuestionIds.find((questionId) => !answered.has(questionId));
   return id ? QUALIFICATION_QUESTIONS[id] : undefined;
 }

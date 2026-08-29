@@ -13,6 +13,16 @@ export interface SendEmailInput {
   text: string;
   idempotencyKey: string;
   from?: string;
+  /** Adds a per-lead Reply-To alias when RESEND_REPLY_TO_EMAIL is configured,
+   * so a response is matched to the exact inquiry instead of guessing by the
+   * sender address when one borrower has multiple leads. */
+  leadPublicRef?: string;
+}
+
+export function buildLeadReplyToAddress(base: string, publicRef: string): string | undefined {
+  const match = base.trim().match(/^([^+@]+)(?:\+[^@]+)?@([^@]+)$/);
+  if (!match || !/^[A-Za-z0-9_-]+$/.test(publicRef)) return undefined;
+  return `${match[1]}+${publicRef}@${match[2]}`;
 }
 
 export async function sendEmail(input: SendEmailInput): Promise<AdapterResult> {
@@ -30,11 +40,15 @@ export async function sendEmail(input: SendEmailInput): Promise<AdapterResult> {
     const from = resolveSenderAddress(input.from, fromEmail);
     const warning = senderConfigWarning(from);
     if (warning) console.warn(`[Resend] ${warning}`);
+    const replyToBase = await getConfigValue("RESEND_REPLY_TO_EMAIL");
+    const replyTo = input.leadPublicRef && replyToBase
+      ? buildLeadReplyToAddress(replyToBase, input.leadPublicRef)
+      : undefined;
 
     const { Resend } = await import("resend");
     const resend = new Resend(apiKey);
     const { data, error } = await resend.emails.send(
-      { from, to: input.to, subject: input.subject, text: input.text },
+      { from, to: input.to, subject: input.subject, text: input.text, ...(replyTo ? { replyTo } : {}) },
       { idempotencyKey: input.idempotencyKey }
     );
     if (error) throw new Error(error.message);

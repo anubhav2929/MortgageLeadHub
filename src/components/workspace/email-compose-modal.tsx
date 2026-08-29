@@ -8,10 +8,11 @@ import { Modal } from "@/components/ui/modal";
 import { Input, Label, Select, Textarea } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
 import { generateDraftAction, getComposeContextAction, sendEmailAction } from "@/domain/actions";
-import type { LoanIntent } from "@/domain/types";
+import { LEAD_STAGE_LABELS, LEAD_STAGE_TEMPLATE_IDS, renderLeadStageTemplate } from "@/core/outreachTemplates";
+import type { LeadState, LoanIntent } from "@/domain/types";
 
 type Mode = "template" | "custom";
-type TemplateId = "ai" | "intro" | "checkin" | "nudge";
+type TemplateId = "ai" | LeadState;
 
 interface Draft {
   subject: string;
@@ -25,33 +26,19 @@ interface ComposeContext {
   officerFirstName: string;
   senderName: string;
   senderEmail: string;
+  state: LeadState;
 }
 
-const INTENT_LABEL: Record<LoanIntent, string> = {
-  REFINANCE: "refinance",
-  CASH_OUT: "cash-out refinance",
-  HOME_EQUITY: "home equity",
-  UNKNOWN: "financing",
-};
-
-function staticTemplate(id: Exclude<TemplateId, "ai">, ctx: ComposeContext): Draft {
-  const label = INTENT_LABEL[ctx.intent];
-  if (id === "intro") {
-    return {
-      subject: `Following up on your ${label} inquiry`,
-      body: `Hi ${ctx.toName},\n\nThanks for reaching out about your ${label} — I'd like to walk you through your options and answer any questions. Do you have a few minutes this week for a quick call?\n\nBest,\n${ctx.officerFirstName}\n${ctx.senderName}`,
-    };
-  }
-  if (id === "checkin") {
-    return {
-      subject: `Quick check-in on your ${label}`,
-      body: `Hi ${ctx.toName},\n\nJust checking in — rates and options can shift week to week, so I wanted to see if now's a good time to revisit your ${label}. Happy to run the numbers whenever works for you.\n\nBest,\n${ctx.officerFirstName}\n${ctx.senderName}`,
-    };
-  }
-  return {
-    subject: `Still here when you're ready`,
-    body: `Hi ${ctx.toName},\n\nI haven't been able to reach you about your ${label} inquiry — no pressure, just wanted to leave the door open. Reply here or call anytime and I'll pick up where we left off.\n\nBest,\n${ctx.officerFirstName}\n${ctx.senderName}`,
-  };
+function stageTemplate(id: LeadState, ctx: ComposeContext): Draft {
+  const template = renderLeadStageTemplate({
+    state: id,
+    channel: "EMAIL",
+    firstName: ctx.toName,
+    intent: ctx.intent,
+    officerFirstName: ctx.officerFirstName,
+    senderName: ctx.senderName,
+  });
+  return { subject: template.subject ?? "Following up on your inquiry", body: template.body };
 }
 
 /** Mounted only while open (parent conditionally renders) so each open is a
@@ -79,9 +66,10 @@ export function EmailComposeModal({ publicRef, onClose }: { publicRef: string; o
     Promise.all([getComposeContextAction(publicRef), generateDraftAction(publicRef, "EMAIL")]).then(([context, draftResult]) => {
       const initial = { subject: draftResult.subject ?? "Following up on your inquiry", body: draftResult.body };
       setCtx(context);
+      setTemplateId(context.state);
       setToEmail(context.toEmail);
       setAiDraft(initial);
-      setDraft(initial);
+      setDraft(stageTemplate(context.state, context));
       setAiSimulated(draftResult.simulated);
       setLoading(false);
     });
@@ -92,13 +80,13 @@ export function EmailComposeModal({ publicRef, onClose }: { publicRef: string; o
     if (next === "custom") {
       setDraft(customDraft);
     } else {
-      setDraft(templateId === "ai" ? aiDraft : ctx ? staticTemplate(templateId, ctx) : aiDraft);
+      setDraft(templateId === "ai" ? aiDraft : ctx ? stageTemplate(templateId, ctx) : aiDraft);
     }
   }
 
   function selectTemplate(id: TemplateId) {
     setTemplateId(id);
-    setDraft(id === "ai" ? aiDraft : ctx ? staticTemplate(id, ctx) : aiDraft);
+    setDraft(id === "ai" ? aiDraft : ctx ? stageTemplate(id, ctx) : aiDraft);
   }
 
   function updateDraft(field: "subject" | "body", value: string) {
@@ -128,7 +116,7 @@ export function EmailComposeModal({ publicRef, onClose }: { publicRef: string; o
           <Button variant="ghost" size="sm" onClick={onClose}>
             Cancel
           </Button>
-          <Button size="sm" loading={sending} disabled={loading || !toEmail.includes("@") || !draft.body.trim() || !draft.subject.trim()} onClick={send}>
+          <Button size="sm" loading={sending} disabled={loading || !toEmail.includes("@") || !draft.body.trim() || !draft.subject.trim() || (templateId !== "ai" && !renderLeadStageTemplate({ state: templateId, channel: "EMAIL", firstName: ctx?.toName ?? "there", intent: ctx?.intent ?? "UNKNOWN", officerFirstName: ctx?.officerFirstName ?? "Officer", senderName: ctx?.senderName ?? "Equity Flow Group" }).sendable)} onClick={send}>
             <Send className="h-3.5 w-3.5" /> Send
           </Button>
         </>
@@ -165,9 +153,9 @@ export function EmailComposeModal({ publicRef, onClose }: { publicRef: string; o
               <Label>Template</Label>
               <Select value={templateId} onChange={(e) => selectTemplate(e.target.value as TemplateId)}>
                 <option value="ai">{aiSimulated ? "AI draft (simulated)" : "AI draft"}</option>
-                <option value="intro">Introduction / first contact</option>
-                <option value="checkin">Rate check-in</option>
-                <option value="nudge">Nudge — haven&apos;t connected yet</option>
+                {LEAD_STAGE_TEMPLATE_IDS.map((state) => (
+                  <option key={state} value={state}>{state === ctx?.state ? "Recommended — " : ""}{LEAD_STAGE_LABELS[state]}</option>
+                ))}
               </Select>
             </div>
           )}

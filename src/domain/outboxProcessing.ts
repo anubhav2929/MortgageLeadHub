@@ -102,6 +102,7 @@ async function processInquiryEmail(job: OutboxJob): Promise<void> {
   const result = await sendEmail({
     to: person.email, subject: payload.subject, text: payload.body, idempotencyKey: job.idempotencyKey,
     from: `${db.config.senderName} <${db.config.senderEmail}>`,
+    leadPublicRef: lead.publicRef,
   });
   const existingAttempt = db.attempts.find((item) => item.idempotencyKey === job.idempotencyKey);
   const attemptId = existingAttempt?.id ?? newId("attempt");

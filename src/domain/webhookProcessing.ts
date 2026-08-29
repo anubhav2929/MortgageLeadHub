@@ -9,6 +9,7 @@ interface TelnyxPayload {
       id?: string;
       direction?: string;
       text?: string;
+      autoresponse_type?: string;
       from?: { phone_number?: string };
       to?: { status?: string }[];
       errors?: { code?: string; detail?: string }[];
@@ -27,6 +28,7 @@ async function processTelnyx(envelope: WebhookEnvelope): Promise<void> {
       from: payload.from.phone_number,
       body: payload.text,
       providerMessageId: payload.id ?? envelope.providerEventId,
+      providerManagedResponse: /^(STOP|START|HELP)$/i.test(payload.autoresponse_type ?? ""),
     });
     return;
   }

@@ -18,9 +18,10 @@ export interface SendSmsInput {
   to: string;
   body: string;
   idempotencyKey: string;
-  /** Callback confirmations/reminders require a provider that honors an
-   * idempotency key at its network boundary. Twilio's Messages API does not
-   * provide that guarantee, so those durable jobs fail closed to Telnyx. */
+  /** Callback confirmations/reminders are restricted to the configured
+   * Telnyx campaign. Application idempotency is enforced by the durable
+   * outbox; the Telnyx Messages API does not advertise a provider-side
+   * idempotency-key contract. */
   requireIdempotentProvider?: boolean;
 }
 
@@ -54,11 +55,12 @@ async function sendViaTelnyx(input: SendSmsInput, apiKey: string, from: string):
     const webhooks = await telnyxWebhookUrls();
     const res = await fetch("https://api.telnyx.com/v2/messages", {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "Idempotency-Key": input.idempotencyKey },
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         from,
         to: input.to,
         text: input.body,
+        auto_detect: true,
         ...(profileId ? { messaging_profile_id: profileId } : {}),
         // A configured messaging profile is the source of truth for inbound
         // and delivery webhooks. Without one, apply the same signed primary
@@ -111,7 +113,7 @@ export async function sendSms(input: SendSmsInput): Promise<AdapterResult> {
   const twilioFrom = await getConfigValue("TWILIO_PHONE_NUMBER");
   if (sid && token && twilioFrom) {
     if (input.requireIdempotentProvider) {
-      return adapterFailure({ class: "PERMANENT", message: "Callback SMS requires Telnyx provider idempotency.", affectsAllLeads: true });
+      return adapterFailure({ class: "PERMANENT", message: "Callback SMS requires the configured Telnyx campaign and durable outbox.", affectsAllLeads: true });
     }
     return sendViaTwilio(input, sid, token, twilioFrom);
   }

@@ -27,6 +27,10 @@ export interface InboundSmsInput {
   from: string;
   body: string;
   providerMessageId?: string;
+  /** Telnyx Advanced Opt-Out may have already sent the carrier-configured
+   * STOP/START/HELP response. In that case we update local policy state but
+   * must not send a second, contradictory acknowledgement. */
+  providerManagedResponse?: boolean;
 }
 
 export type InboundSmsOutcome =
@@ -94,12 +98,13 @@ export async function ingestInboundSms(input: InboundSmsInput): Promise<InboundS
       });
     }
 
-    // Carriers require exactly one confirmation and nothing after it. This is
-    // sent directly rather than through PolicyGate, which would now (rightly)
-    // refuse it — the suppression we just wrote is what it would refuse on.
-    await sendSms({ to: phone, body: OPT_OUT_CONFIRMATION_TEXT, idempotencyKey: newId("idem") });
-
     await saveDb();
+    // Persist suppression before any network call. Telnyx Advanced Opt-Out
+    // sends its own configured response and tells us via autoresponse_type;
+    // only providers without that signal need the application acknowledgement.
+    if (!input.providerManagedResponse) {
+      await sendSms({ to: phone, body: OPT_OUT_CONFIRMATION_TEXT, idempotencyKey: newId("idem") });
+    }
     return { handled: true, intent, leadsAffected: matches.length };
   }
 
@@ -127,7 +132,9 @@ export async function ingestInboundSms(input: InboundSmsInput): Promise<InboundS
 
   // ---- HELP -----------------------------------------------------------
   if (intent === "HELP") {
-    await sendSms({ to: phone, body: HELP_REPLY_TEXT, idempotencyKey: newId("idem") });
+    if (!input.providerManagedResponse) {
+      await sendSms({ to: phone, body: HELP_REPLY_TEXT, idempotencyKey: newId("idem") });
+    }
     await saveDb();
     return { handled: true, intent, leadsAffected: matches.length };
   }

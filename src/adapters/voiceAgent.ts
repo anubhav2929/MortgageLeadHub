@@ -138,13 +138,11 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
   const intentLabel = input.intent.replace("_", " ").toLowerCase();
   const goalLabel = input.goal.replace("_", " ").toLowerCase();
   const webhookSecret = await getConfigValue("VAPI_WEBHOOK_SECRET");
-  const allowLegacyWebhookAuth = (await getConfigValue("VAPI_ALLOW_LEGACY_WEBHOOK_AUTH")) === "true";
   const webhookUrl = `${await getAppUrl()}/api/webhooks/vapi`;
   const server = {
     url: webhookUrl,
     credentialId: profile.webhookCredentialId,
     secret: profile.webhookCredentialId ? undefined : webhookSecret,
-    headers: allowLegacyWebhookAuth && !profile.webhookCredentialId && webhookSecret ? { "x-vapi-secret": webhookSecret } : undefined,
   };
   const trustedConversationParameter = [{ key: "conversationId", value: input.conversationId }];
   const functionTool = (name: string, description: string, parameters: Record<string, unknown>) => ({
@@ -261,6 +259,7 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
         phoneNumberId: await getConfigValue("VAPI_PHONE_NUMBER_ID"),
         customer: { number: input.phoneE164 },
         ...(input.useSquad ? { squad } : { assistant: {
+          ...commonAssistant,
           firstMessage: input.priorContext
             ? `Hi ${input.firstName}, it's Equity Flow Group following up on our earlier messages about your ${intentLabel} — is now a good time?`
             : `Hi ${input.firstName}, this is a quick follow-up on your ${intentLabel} inquiry — got a couple minutes?`,
@@ -272,11 +271,13 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
                 role: "system",
                 content:
                   VOICE_AGENT_SYSTEM_PROMPT(input.firstName, intentLabel, goalLabel) +
+                  ` ${initialPrompt} Before every qualification question, call get_next_question. Ask exactly the returned prompt, wait for the explicit answer, and then call record_qualification_answer with that same questionId. The server sequence is authoritative: never choose, reorder, combine, or skip a question yourself. A knownAnswer is context for confirmation, not permission to skip. When complete, explain only the returned deterministic outcome, then offer a permitted transfer or callback.` +
                   (input.priorContext
-                    ? `\n\nThis is a continuing conversation, not a first contact. Here is what has already been exchanged with ${input.firstName} on other channels, oldest first:\n${input.priorContext}\n\nAcknowledge it naturally. Do not re-ask anything they have already answered, and do not introduce yourself as if this were the first time you have been in touch.`
+                    ? `\n\nThis is a continuing conversation, not a first contact. Here is what has already been exchanged with ${input.firstName} on other channels, oldest first:\n${input.priorContext}\n\nAcknowledge it naturally and do not contradict it. Required server questions must still be confirmed during this call, even when the context contains an earlier value.`
                     : ""),
               },
             ],
+            tools: [getNextQuestionTool, recordAnswerTool, requestTransferTool, getSlotsTool, bookCallbackTool],
           },
           // Vapi's OWN voices — no third-party credential required.
           //
@@ -307,20 +308,6 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
           // status-update is what actually drives the call through
           // queued -> ringing -> in-progress; without it the session stays on
           // whatever we optimistically set when we placed the call.
-          serverMessages: profile.serverMessages,
-          startSpeakingPlan: profile.startSpeakingPlan,
-          stopSpeakingPlan: profile.stopSpeakingPlan,
-          maxDurationSeconds: profile.maxDurationSeconds,
-          server: {
-            url: webhookUrl,
-            // `secret` alone makes Vapi send x-vapi-signature (an HMAC), NOT
-            // x-vapi-secret. Sending the plaintext header explicitly as well
-            // means the callback authenticates whichever style the account
-            // uses. The receiver accepts both — see the webhook route.
-            credentialId: profile.webhookCredentialId,
-            secret: profile.webhookCredentialId ? undefined : webhookSecret,
-            headers: allowLegacyWebhookAuth && !profile.webhookCredentialId && webhookSecret ? { "x-vapi-secret": webhookSecret } : undefined,
-          },
         } }),
         metadata: { leadId: input.leadId, conversationId: input.conversationId },
       }),

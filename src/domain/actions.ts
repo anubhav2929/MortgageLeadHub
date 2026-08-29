@@ -41,6 +41,7 @@ import { getDb, newId, nowIso, refreshDb, saveDb, withLeadLock, type Database } 
 import { getAppUrl, getConfigValue } from "@/lib/runtimeConfig";
 import { formatDateTime } from "@/lib/utils";
 import { isValidIanaTimezone } from "@/core/timezone";
+import { redactRestrictedText } from "@/core/sensitiveText";
 import { callItemHasSettled, nextPendingDialItem } from "@/core/dialingQueue";
 import { consumeRateLimit } from "@/domain/rateLimit";
 import { enqueueOutbox } from "@/domain/durableQueue";
@@ -1560,6 +1561,7 @@ export async function getComposeContextAction(publicRef: string): Promise<{
   officerFirstName: string;
   senderName: string;
   senderEmail: string;
+  state: Lead["state"];
 }> {
   const user = await getCurrentUser();
   const lead = await requireLead(publicRef);
@@ -1576,6 +1578,7 @@ export async function getComposeContextAction(publicRef: string): Promise<{
     officerFirstName: user.name.split(" ")[0],
     senderName: db.config.senderName,
     senderEmail: db.config.senderEmail,
+    state: lead.state,
   };
 }
 
@@ -1587,6 +1590,7 @@ export async function generateDraftAction(publicRef: string, channel: "EMAIL" | 
   }
   const db = await getDb();
   const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
+  const priorContext = redactRestrictedText(buildBriefForLead(db, lead)).text || undefined;
 
   if (channel === "EMAIL") {
     return generateOutreachContent({
@@ -1596,17 +1600,19 @@ export async function generateDraftAction(publicRef: string, channel: "EMAIL" | 
       goal: lead.goal,
       officerFirstName: user.name.split(" ")[0],
       isFirstContact: !lead.firstContactAt,
+      priorContext,
     });
   }
   const content = await generateOutreachContent({
-    channel: "VOICE",
+    channel: "SMS",
     firstName: person?.firstName ?? "there",
     intent: lead.intent,
     goal: lead.goal,
     officerFirstName: user.name.split(" ")[0],
     isFirstContact: !lead.firstContactAt,
+    priorContext,
   });
-  return { body: content.body.length > 160 ? content.body.slice(0, 157) + "..." : content.body, simulated: content.simulated };
+  return { body: clampSms(content.body), simulated: content.simulated };
 }
 
 export async function sendEmailAction(publicRef: string, subject: string, body: string, toEmail?: string): Promise<ActionResult> {
@@ -1648,6 +1654,7 @@ export async function sendEmailAction(publicRef: string, subject: string, body: 
     text: body,
     idempotencyKey,
     from: `${db.config.senderName} <${db.config.senderEmail}>`,
+    leadPublicRef: lead.publicRef,
   });
 
   lead.attemptsTotal += 1;
@@ -2979,7 +2986,7 @@ async function deliverOutreachLocked(
     const statusToken = issueStatusToken(lead);
     const statusUrl = `${await getAppUrl()}/status/${statusToken}`;
     const emailBody = `${content.body}\n\nTrack your inquiry anytime: ${statusUrl}`;
-    result = await sendEmail({ to: person?.email ?? "", subject, text: emailBody, idempotencyKey, from: `${db.config.senderName} <${db.config.senderEmail}>` });
+    result = await sendEmail({ to: person?.email ?? "", subject, text: emailBody, idempotencyKey, from: `${db.config.senderName} <${db.config.senderEmail}>`, leadPublicRef: lead.publicRef });
     body = emailBody;
   }
 

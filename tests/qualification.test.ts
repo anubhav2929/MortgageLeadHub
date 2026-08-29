@@ -10,10 +10,18 @@ const snapshot: LeadContextSnapshot = {
 };
 
 describe("server-owned qualification sequencing", () => {
-  it("prefers verified values and asks only the next unanswered question", () => {
+  it("uses verified values as context but still requires current-call confirmation", () => {
     const answers = seedAnswersFromSnapshot(snapshot, snapshot.createdAt);
     expect(answers.find((item) => item.questionId === "timeline")?.value).toBe("1_3_MONTHS");
     const progress: QualificationProgress = { leadId: "lead", conversationId: "conv", snapshotId: "ctx", answers, requiredQuestionIds: ["timeline", "transfer_consent"], updatedAt: snapshot.createdAt };
+    expect(nextQualificationQuestion(progress)?.id).toBe("timeline");
+
+    progress.answers.push({
+      id: "current-call", leadId: "lead", conversationId: "conv", questionId: "timeline",
+      fieldPath: "borrower.timeline", value: "1_3_MONTHS", confidence: 1,
+      source: "BORROWER_STATED", transcriptTurnRefs: [2], conflict: false,
+      capturedAt: snapshot.createdAt,
+    });
     expect(nextQualificationQuestion(progress)?.id).toBe("transfer_consent");
   });
 

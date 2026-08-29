@@ -522,7 +522,9 @@ export async function generateOutreachContent(input: OutreachContentInput): Prom
     user:
       `Write a ${CHANNEL_ARTEFACT[input.channel]} from loan officer ${input.officerFirstName} to ${input.firstName} ` +
       `about a ${intentLabel} inquiry with goal ${goalLabel}. This is ${input.isFirstContact ? "first contact" : "a follow-up"}.` +
-      (input.priorContext ? `\nExisting context; do not repeat or contradict it:\n${input.priorContext}` : "") +
+      (input.priorContext
+        ? `\nExisting cross-channel context, oldest first. Continue from it, do not repeat questions already answered, and address the borrower's latest unresolved query when one is present. Never invent an answer: if a rate, approval, legal, tax, or case-specific answer needs a licensed officer, acknowledge the question and offer that follow-up.\n${input.priorContext}`
+        : "") +
       (input.channel === "EMAIL" ? '\nReturn {"subject":"...","body":"..."}.' : '\nReturn {"body":"..."}.'),
     maxOutputTokens: 400,
     validate: (value) => {

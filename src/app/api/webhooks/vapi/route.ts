@@ -6,11 +6,10 @@
 // on end-of-call-report runs the transcript through the exact same
 // extraction/promotion pipeline the manual "Run AI extraction" button uses.
 
-import { createHmac } from "node:crypto";
 import { after, NextResponse } from "next/server";
 import { pushEvent, runExtractionForConversation } from "@/domain/actions";
 import { newId, nowIso, refreshDb, saveDb } from "@/domain/store";
-import { safeCompare } from "@/core/auth";
+import { verifyVapiWebhookAuth } from "@/core/vapiWebhookAuth";
 import { isAnsweredOutcome } from "@/core/deliveryStatus";
 import { advanceCallStatus, classifyEndedReason, mapVapiCallStatus } from "@/core/vapiLifecycle";
 import { transition, InvalidTransitionError } from "@/core/stateMachine";
@@ -21,9 +20,11 @@ import { generateCallWrapUp } from "@/domain/callWrapUp";
 import { controlLiveCall } from "@/adapters/vapiCallControl";
 import {
   bookCallbackForConversation,
+  buildLeadContextSnapshot,
   createTransferAttempt,
   getCallbackSlotsForConversation,
   getNextQuestion,
+  initializeQualification,
   recordQualificationAnswer,
   resolveTransferDestination,
 } from "@/domain/voiceWorkflow";
@@ -37,6 +38,13 @@ interface VapiToolCall {
   arguments?: unknown;
   parameters?: unknown;
   function?: { name?: string; arguments?: unknown; parameters?: unknown };
+  toolCall?: {
+    id?: string;
+    name?: string;
+    parameters?: unknown;
+    arguments?: unknown;
+    function?: { name?: string; arguments?: unknown; parameters?: unknown };
+  };
 }
 
 interface VapiServerMessage {
@@ -80,7 +88,15 @@ const QUESTION_IDS = new Set<QualificationQuestionId>([
 ]);
 
 function toolArguments(call: VapiToolCall): Record<string, unknown> {
-  const value = call.function?.arguments ?? call.function?.parameters ?? call.arguments ?? call.parameters ?? {};
+  const value = call.toolCall?.function?.arguments
+    ?? call.toolCall?.function?.parameters
+    ?? call.toolCall?.arguments
+    ?? call.toolCall?.parameters
+    ?? call.function?.arguments
+    ?? call.function?.parameters
+    ?? call.arguments
+    ?? call.parameters
+    ?? {};
   if (typeof value === "string") {
     try {
       const parsed: unknown = JSON.parse(value);
@@ -93,7 +109,7 @@ function toolArguments(call: VapiToolCall): Record<string, unknown> {
 }
 
 function toolName(call: VapiToolCall): string {
-  return call.function?.name ?? call.name ?? "";
+  return call.toolCall?.function?.name ?? call.toolCall?.name ?? call.function?.name ?? call.name ?? "";
 }
 
 async function processToolCalls(message: VapiServerMessage, conversationId: string) {
@@ -102,11 +118,11 @@ async function processToolCalls(message: VapiServerMessage, conversationId: stri
   if (!conversation) throw new Error(`Unknown conversation ${conversationId}`);
   conversation.lastSignalAt = nowIso();
   const calls = message.toolCallList ?? message.toolWithToolCallList ?? [];
-  const results: Array<{ name: string; toolCallId: string; result: string }> = [];
+  const results: Array<{ name: string; toolCallId: string; result?: string; error?: string }> = [];
 
   for (const call of calls) {
     const name = toolName(call);
-    const toolCallId = call.id ?? stableWebhookId("VAPI", JSON.stringify(call));
+    const toolCallId = call.toolCall?.id ?? call.id ?? stableWebhookId("VAPI", JSON.stringify(call));
     const args = toolArguments(call);
     try {
       let output: unknown;
@@ -181,7 +197,7 @@ async function processToolCalls(message: VapiServerMessage, conversationId: stri
       results.push({
         name,
         toolCallId,
-        result: JSON.stringify({ ok: false, error: error instanceof Error ? error.message : "Tool execution failed." }),
+        error: error instanceof Error ? error.message : "Tool execution failed.",
       });
     }
   }
@@ -196,50 +212,23 @@ async function processToolCalls(message: VapiServerMessage, conversationId: stri
  * a webhook that can suppress a borrower or inject transcript text is worth
  * protecting from a timing oracle.
  */
-function isAuthenticVapiRequest(request: Request, rawBody: string, secret: string, allowPlaintext: boolean): boolean {
-  const timestamp = request.headers.get("x-vapi-timestamp");
-  if (timestamp) {
-    const seconds = Number(timestamp);
-    if (!Number.isFinite(seconds) || Math.abs(Date.now() / 1000 - seconds) > 300) return false;
-  }
-  const plaintext = request.headers.get("x-vapi-secret");
-  if (allowPlaintext && plaintext && safeCompare(plaintext, secret)) return true;
-
-  const signature = request.headers.get("x-vapi-signature");
-  if (!signature) return false;
-
-  const expected = createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
-  // Some senders prefix the algorithm; compare against the hex either way.
-  const supplied = signature.includes("=") ? signature.split("=").pop()! : signature;
-  return safeCompare(supplied.trim().toLowerCase(), expected);
-}
-
 export async function POST(request: Request) {
   const vapiSecret = await getConfigValue("VAPI_WEBHOOK_SECRET");
-  const allowLegacy = (await getConfigValue("VAPI_ALLOW_LEGACY_WEBHOOK_AUTH")) === "true";
 
   // Read the body as text first: HMAC verification needs the exact bytes, and
   // re-serialising a parsed object would not reproduce them.
   const rawBody = await request.text();
 
   // ---------------------------------------------------------------------
-  // Vapi authenticates in TWO different ways and we must accept both.
-  //
-  // Setting `server.secret` does NOT make Vapi send `x-vapi-secret`. By
-  // default it sends `x-vapi-signature`, an HMAC-SHA256 of the raw body keyed
-  // with that secret. Checking only for the plaintext header meant the header
-  // was simply absent, so EVERY status-update and end-of-call-report was
-  // rejected 401 — which is why calls placed fine and then never produced a
-  // transcript or advanced past "Calling".
-  //
-  // We now also send the plaintext header explicitly via `server.headers`
-  // (see adapters/voiceAgent.ts), so both paths work regardless of which
-  // behaviour the account is on.
+  // Vapi recommends an account-managed Bearer Custom Credential. Existing
+  // assistants may still send X-Vapi-Secret, and an explicitly configured
+  // HMAC credential is supported with a replay window. All comparisons are
+  // constant-time; see core/vapiWebhookAuth.ts.
   // ---------------------------------------------------------------------
-  if (!vapiSecret || !isAuthenticVapiRequest(request, rawBody, vapiSecret, allowLegacy)) {
+  if (!vapiSecret || !verifyVapiWebhookAuth(request.headers, rawBody, vapiSecret)) {
     console.error(
       vapiSecret
-        ? "[vapi-webhook] rejected: neither x-vapi-secret nor a valid x-vapi-signature matched VAPI_WEBHOOK_SECRET"
+        ? "[vapi-webhook] rejected: Vapi secret, Bearer credential, and signature checks failed"
         : "[vapi-webhook] rejected: VAPI_WEBHOOK_SECRET is not configured"
     );
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
@@ -322,6 +311,15 @@ export async function POST(request: Request) {
             providerCallId: message.call.id,
             contextSnapshot: { matchedBy: "exact_e164" },
           });
+          const inboundSnapshot = buildLeadContextSnapshot({
+            db,
+            lead,
+            person: matches[0],
+            conversationId,
+            promptVersionId: "prompt_inbound_v2",
+            profileVersionId: "vapi_inbound",
+          });
+          initializeQualification(db, inboundSnapshot);
           await saveDb();
         }
       }

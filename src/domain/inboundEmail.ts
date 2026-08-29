@@ -15,6 +15,7 @@ import { getDb, newId, nowIso, saveDb } from "@/domain/store";
 
 export interface InboundEmailInput {
   fromEmail: string;
+  toEmails?: string[];
   subject: string;
   text: string;
 }
@@ -28,20 +29,31 @@ function extractEmailAddress(raw: string): string {
   return (match ? match[1] : raw).trim().toLowerCase();
 }
 
-export async function ingestInboundEmail(input: InboundEmailInput): Promise<{ matched: boolean }> {
+export async function ingestInboundEmail(input: InboundEmailInput): Promise<{ matched: boolean; reason?: "unknown_sender" | "ambiguous_sender" }> {
   const fromEmail = extractEmailAddress(input.fromEmail);
   const db = await getDb();
 
-  const person = Array.from(db.people.values()).find((p) => p.email.trim().toLowerCase() === fromEmail);
+  const aliasToken = input.toEmails
+    ?.map(extractEmailAddress)
+    .map((address) => address.match(/^[^+@]+\+([A-Za-z0-9_-]+)@/)?.[1])
+    .find(Boolean);
+  const aliasLead = aliasToken
+    ? Array.from(db.leads.values()).find((candidate) => candidate.publicRef === aliasToken)
+    : undefined;
+  const senderMatches = Array.from(db.people.values()).filter((p) => p.email.trim().toLowerCase() === fromEmail);
+  const person = aliasLead
+    ? Array.from(db.people.values()).find((candidate) => candidate.leadId === aliasLead.id && candidate.role === "PRIMARY")
+    : senderMatches.length === 1 ? senderMatches[0] : undefined;
   if (!person) {
-    console.log("[inbound-email] no lead matches sender — dropped");
-    return { matched: false };
+    const reason = senderMatches.length > 1 ? "ambiguous_sender" : "unknown_sender";
+    console.log(`[inbound-email] ${reason.replace("_", " ")} — dropped`);
+    return { matched: false, reason };
   }
 
   const lead = db.leads.get(person.leadId);
   if (!lead) {
     console.log(`[inbound-email] person ${person.id} has no lead record — dropped`);
-    return { matched: false };
+    return { matched: false, reason: "unknown_sender" };
   }
 
   const body = input.text.trim();

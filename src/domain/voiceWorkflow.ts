@@ -69,6 +69,34 @@ export function initializeQualification(db: Database, snapshot: LeadContextSnaps
   return progress;
 }
 
+function spokenKnownValue(questionId: QualificationQuestionId, value: unknown): string {
+  if ((questionId === "estimated_value" || questionId === "mortgage_balance") && typeof value === "number") {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
+  }
+  const labels: Record<string, string> = {
+    ASAP: "as soon as possible", "1_3_MONTHS": "one to three months", "3_6_MONTHS": "three to six months",
+    EXPLORING: "still exploring", PRIMARY: "your primary home", SECOND_HOME: "a second home", INVESTMENT: "an investment property",
+    EXCELLENT_740_PLUS: "740 or higher", GOOD_680_739: "680 to 739", FAIR_620_679: "620 to 679", BELOW_620: "below 620",
+    LOWER_PAYMENT: "lowering the monthly payment", CASH_OUT: "accessing funds", SHORTEN_TERM: "shortening the loan term", OTHER: "another goal",
+  };
+  return labels[String(value)] ?? String(value).replaceAll("_", " ").toLowerCase();
+}
+
+function confirmationPrompt(questionId: QualificationQuestionId, value: unknown): string {
+  const spoken = spokenKnownValue(questionId, value);
+  const leadIn: Record<QualificationQuestionId, string> = {
+    timeline: `You previously said your timing was ${spoken}`,
+    property_address: `I have the property address as ${spoken}`,
+    occupancy: `I have this listed as ${spoken}`,
+    estimated_value: `I have your estimated property value as about ${spoken}`,
+    mortgage_balance: `I have the current mortgage balance as about ${spoken}`,
+    cash_goal: `I have your main goal as ${spoken}`,
+    credit_range: `I have your broad credit range as ${spoken}`,
+    transfer_consent: `I have your transfer preference as ${spoken}`,
+  };
+  return `${leadIn[questionId]}. Is that still correct?`;
+}
+
 export function getNextQuestion(db: Database, conversationId: string) {
   const progress = db.qualificationProgress.get(conversationId);
   if (!progress) throw new Error("Qualification session was not initialized.");
@@ -76,7 +104,24 @@ export function getNextQuestion(db: Database, conversationId: string) {
   progress.nextQuestionId = question?.id;
   progress.updatedAt = nowIso();
   if (!question) progress.completedAt ??= nowIso();
-  return question ? { complete: false, question } : { complete: true, decision: db.qualificationDecisions.get(conversationId) };
+  if (!question) return { complete: true, decision: db.qualificationDecisions.get(conversationId) };
+
+  // The newest form/verified value is supplied only to phrase a confirmation.
+  // It never marks the question complete; the borrower still has to confirm or
+  // correct it and record_qualification_answer must accept that exact turn.
+  const known = [...progress.answers]
+    .reverse()
+    .find((answer) => answer.questionId === question.id && answer.source !== "BORROWER_STATED" && !answer.conflict);
+  const knownValue = known?.value;
+  const prompt = known
+    ? confirmationPrompt(question.id, knownValue)
+    : question.prompt;
+  return {
+    complete: false,
+    question: { ...question, prompt },
+    knownAnswer: known ? { value: knownValue, source: known.source } : undefined,
+    instruction: "Ask exactly this one question. Do not combine it with another question. Record only the borrower's explicit confirmation or correction.",
+  };
 }
 
 export function recordQualificationAnswer(db: Database, input: {
@@ -91,6 +136,14 @@ export function recordQualificationAnswer(db: Database, input: {
     : undefined;
   if (existingAnswer) {
     return { answer: existingAnswer, nextQuestion: nextQualificationQuestion(progress), decision: db.qualificationDecisions.get(input.conversationId) };
+  }
+  const expectedQuestion = nextQualificationQuestion(progress);
+  if (!expectedQuestion || expectedQuestion.id !== input.questionId) {
+    throw new Error(
+      expectedQuestion
+        ? `Out-of-sequence answer rejected. Ask ${expectedQuestion.id} next.`
+        : "The required qualification sequence is already complete."
+    );
   }
   const question = QUALIFICATION_QUESTIONS[input.questionId];
   const value = normalizeQualificationAnswer(input.questionId, input.value);

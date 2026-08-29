@@ -102,7 +102,7 @@ export async function claimWebhookBatch(limit = 20): Promise<WebhookEnvelope[]> 
     }>(
       `WITH claimed AS (
          SELECT id FROM webhook_inbox
-         WHERE provider <> 'VAPI' AND status IN ('PENDING', 'RETRY') AND next_attempt_at <= now()
+         WHERE provider = 'TELNYX' AND status IN ('PENDING', 'RETRY') AND next_attempt_at <= now()
          ORDER BY received_at FOR UPDATE SKIP LOCKED LIMIT $1
        )
        UPDATE webhook_inbox w SET status = 'PROCESSING', locked_at = now(), attempt_count = attempt_count + 1

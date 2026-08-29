@@ -53,7 +53,12 @@ export interface DeliveryFailure {
  * This is materially different from a bad number: it creates a global STOP
  * suppression and must never be routed into a "verify contact data" task. */
 export function isCarrierOptOutFailure(failure: DeliveryFailure): boolean {
-  return failure.providerCode === "21610" || failure.providerCode === "40300";
+  if (failure.providerCode === "21610") return true;
+  // Telnyx has used 40300 for more than one rejection context. In a delivery
+  // event it can mean STOP, while an immediate Messages API response can use
+  // it when the sending number is not attached to a messaging profile. Never
+  // suppress a borrower from the numeric code alone.
+  return failure.providerCode === "40300" && /\bstop\b|opt(?:ed)?[ -]?out|unsubscribe/i.test(failure.message);
 }
 
 // Provider error codes that mean "this destination will never work".
@@ -86,18 +91,37 @@ const TWILIO_CONFIGURATION = new Set([
 const TELNYX_PERMANENT = new Set([
   "40001", // not routable / invalid destination
   "40003", // permanently blocked as spam
-  "40300", // recipient sent STOP
+  "40008", // carrier could not deliver
+  "40012", // carrier rejected the destination number
   "40310", // invalid destination address
   "40314", // permanent recipient rejection
   "40322", // permanently invalid recipient
+  "42201", // invalid destination in a synchronous API request
 ]);
 
 const TELNYX_CONFIGURATION = new Set([
   "10001", // unauthorized
   "40010", // sending number is not registered for 10DLC
+  "40013", // invalid/inactive source number
+  "40015", // Telnyx compliance filter requires operator action
+  "40017", // carrier content/compliance rejection
+  "40019", // invalid 10DLC tagging/campaign assignment
+  "40020", // traffic/compliance suspension
+  "40301", // sender registration required
+  "40302", // messaging profile disabled
   "40305", // invalid from address / number not on messaging profile
+  "40306", // alpha sender is not configured
+  "40307", // alpha sender does not match the profile
+  "40309", // destination is not allowed by the profile
+  "40319", // incompatible sender/profile message type
+  "40321", // no usable number in the configured pool
+  "40325", // invalid alpha sender
   "40329", // toll-free sender not verified
+  "40330", // toll-free sender not provisioned
+  "40333", // messaging-profile spend limit reached
   "47000", // 10DLC campaign required
+  "42200", // invalid/inactive source number in a synchronous API request
+  "42202", // request body is too long
 ]);
 
 /**
@@ -128,6 +152,11 @@ export function classifyFailure(
       if (TWILIO_PERMANENT.has(code)) return { class: "PERMANENT", providerCode: code, message, affectsAllLeads: false };
     }
     if (provider === "telnyx") {
+      if (code === "40300") {
+        return /\bstop\b|opt(?:ed)?[ -]?out|unsubscribe/i.test(message)
+          ? { class: "PERMANENT", providerCode: code, message, affectsAllLeads: false }
+          : { class: "CONFIGURATION", providerCode: code, message, affectsAllLeads: true };
+      }
       if (TELNYX_CONFIGURATION.has(code)) return { class: "CONFIGURATION", providerCode: code, message, affectsAllLeads: true };
       if (TELNYX_PERMANENT.has(code)) return { class: "PERMANENT", providerCode: code, message, affectsAllLeads: false };
     }
@@ -156,6 +185,33 @@ export function classifyFailure(
   }
 
   return { class: "TRANSIENT", providerCode: code, message, affectsAllLeads: false };
+}
+
+/** Classify an immediate provider HTTP rejection. Unlike a later carrier
+ * delivery event, a 4xx response means the request was never accepted. Most
+ * 4xx responses require an operator to fix the account, sender, profile, or
+ * request; blindly retrying them only repeats the same invalid request. */
+export function classifyHttpFailure(
+  provider: DeliveryProviderId,
+  status: number,
+  providerCode: string | undefined,
+  message: string
+): DeliveryFailure {
+  const classified = classifyFailure(provider, providerCode, message);
+  if (classified.class !== "TRANSIENT") return classified;
+
+  if (status === 408 || status === 429 || status >= 500) return classified;
+
+  const lower = message.toLowerCase();
+  if (/invalid (?:to|destination|recipient)|destination number|not routable|landline/.test(lower)) {
+    return { class: "PERMANENT", providerCode, message, affectsAllLeads: false };
+  }
+
+  if (status >= 400 && status < 500) {
+    return { class: "CONFIGURATION", providerCode, message, affectsAllLeads: true };
+  }
+
+  return classified;
 }
 
 // --- Provider status → canonical outcome ------------------------------------
@@ -339,12 +395,16 @@ export function countsAgainstAttemptCap(outcome: AttemptOutcome): boolean {
 /** Human-readable, operator-facing summary for the attempt timeline. */
 export function describeFailure(channel: Channel, failure: DeliveryFailure): string {
   const label = channel === "VOICE" ? "Call" : channel === "SMS" ? "Text" : "Email";
+  const code = failure.providerCode ? ` Provider code: ${failure.providerCode}.` : "";
+  const providerDetail = failure.message.startsWith("Telnyx API")
+    ? ` ${failure.message.replace(/\+[1-9]\d{7,14}/g, (phone) => `+••••${phone.slice(-4)}`).slice(0, 600)}`
+    : "";
   switch (failure.class) {
     case "PERMANENT":
-      return `${label} could not be delivered to this contact — the address or number is invalid or has opted out. Marked undeliverable; try another channel.`;
+      return `${label} could not be delivered to this contact — the address or number is invalid or has opted out. Marked undeliverable; try another channel.${code}${providerDetail}`;
     case "CONFIGURATION":
-      return `${label} failed because of a provider configuration problem. This affects all leads — an administrator needs to check Admin → Integrations.`;
+      return `${label} failed because of a provider configuration problem. This affects all leads — an administrator needs to check Admin → Integrations.${code}${providerDetail}`;
     case "TRANSIENT":
-      return `${label} failed temporarily and will be retried automatically.`;
+      return `${label} failed temporarily and will be retried automatically.${code}${providerDetail}`;
   }
 }

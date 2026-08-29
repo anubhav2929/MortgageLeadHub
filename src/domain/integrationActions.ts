@@ -17,11 +17,12 @@ import { getDb, nowIso, saveDb } from "@/domain/store";
 import { audit } from "@/domain/audit";
 import { encryptSecret, isSecretStorageEnabled } from "@/core/secretBox";
 import { ALL_INTEGRATION_KEYS, INTEGRATIONS, isSecretKey } from "@/core/integrationRegistry";
-import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
+import { getAppUrl, getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import { getRedditAccessToken } from "@/adapters/reddit";
 import { verifyArcticShiftConnection } from "@/adapters/leadDiscovery";
 import { verifyPropertyEvidenceConnection } from "@/adapters/propertyData";
 import { normalizePublicAppUrl } from "@/core/publicUrl";
+import { normalizePhone } from "@/core/intakeNormalization";
 
 export interface ActionResult {
   ok: boolean;
@@ -181,6 +182,16 @@ export async function saveIntegrationKeysAction(
       value = normalized.url;
     }
 
+    if (key === "TELNYX_PHONE_NUMBER" || key === "TWILIO_PHONE_NUMBER") {
+      const normalized = normalizePhone(value);
+      if (!normalized) return { ok: false, message: `${key === "TELNYX_PHONE_NUMBER" ? "Telnyx" : "Twilio"} phone number must be a valid US E.164 number, for example +13165550123.` };
+      value = normalized;
+    }
+
+    if (key === "TELNYX_MESSAGING_PROFILE_ID" && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+      return { ok: false, message: "Telnyx messaging profile ID must be the UUID shown on the Messaging Profile page." };
+    }
+
     // The panel sends back the mask for untouched secret fields. Saving that
     // literally would overwrite a real key with "sk-••••••••4f2a".
     if (value.includes("••")) continue;
@@ -254,15 +265,55 @@ async function runIntegrationTest(integrationId: string): Promise<TestResult> {
       case "telnyx": {
         const key = await getConfigValue("TELNYX_API_KEY");
         const number = await getConfigValue("TELNYX_PHONE_NUMBER");
+        const configuredProfileId = await getConfigValue("TELNYX_MESSAGING_PROFILE_ID");
         const publicKey = await getConfigValue("TELNYX_PUBLIC_KEY");
         if (!key || !number || !publicKey) return { ok: false, message: "API key, sending number, and webhook public key are all required for production two-way SMS." };
-        const res = await fetch("https://api.telnyx.com/v2/phone_numbers?page[size]=1", {
+
+        const numberUrl = new URL("https://api.telnyx.com/v2/phone_numbers");
+        numberUrl.searchParams.set("filter[phone_number]", number);
+        numberUrl.searchParams.set("page[size]", "5");
+        numberUrl.searchParams.set("handle_messaging_profile_error", "true");
+        const res = await fetch(numberUrl, {
           headers: { Authorization: `Bearer ${key}` },
           signal: AbortSignal.timeout(10_000),
         });
-        return res.ok
-          ? { ok: true, message: "Connected to Telnyx." }
-          : { ok: false, message: `Telnyx rejected the key (HTTP ${res.status}).` };
+        if (!res.ok) return { ok: false, message: `Telnyx could not inspect the sending number (HTTP ${res.status}). Verify the API key belongs to the same Telnyx account.` };
+
+        const numberPayload = await res.json() as {
+          data?: Array<{ phone_number?: string; status?: string; messaging_profile_id?: string | null }>;
+        };
+        const sendingNumber = numberPayload.data?.find((item) => item.phone_number === number);
+        if (!sendingNumber) return { ok: false, message: "The saved sending number was not found in the API-key account. Use a messaging-capable number owned by this Telnyx account." };
+        if (sendingNumber.status?.toLowerCase() !== "active") return { ok: false, message: `The Telnyx sending number is ${sendingNumber.status ?? "not active"}. Wait for provisioning or activate it before sending.` };
+
+        const assignedProfileId = sendingNumber.messaging_profile_id ?? undefined;
+        if (!assignedProfileId) return { ok: false, message: "The Telnyx number is active but is not assigned to a messaging profile. Assign it under Telnyx → Messaging → Profiles." };
+        if (configuredProfileId && configuredProfileId !== assignedProfileId) {
+          return { ok: false, message: "The CRM messaging profile ID does not match the profile assigned to the Telnyx number. Copy the assigned profile ID into Admin → Integrations → Telnyx." };
+        }
+
+        const profileRes = await fetch(`https://api.telnyx.com/v2/messaging_profiles/${encodeURIComponent(assignedProfileId)}`, {
+          headers: { Authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!profileRes.ok) return { ok: false, message: `The number's messaging profile could not be read (HTTP ${profileRes.status}). Verify that it belongs to the API-key account.` };
+        const profilePayload = await profileRes.json() as {
+          data?: { enabled?: boolean; webhook_api_version?: string; webhook_url?: string | null; webhook_failover_url?: string | null; whitelisted_destinations?: string[] };
+        };
+        const profile = profilePayload.data;
+        if (!profile?.enabled) return { ok: false, message: "The assigned Telnyx messaging profile is disabled. Enable it before sending." };
+        if (profile.whitelisted_destinations?.length && !profile.whitelisted_destinations.includes("US")) {
+          return { ok: false, message: "The assigned Telnyx messaging profile does not allow US destinations. Add US under Allowed destinations." };
+        }
+
+        const appUrl = await getAppUrl();
+        const expectedPrimary = `${appUrl}/api/webhooks/telnyx`;
+        const expectedFailover = `${appUrl}/api/webhooks/telnyx/failover`;
+        if (profile.webhook_api_version !== "2" || profile.webhook_url !== expectedPrimary || profile.webhook_failover_url !== expectedFailover) {
+          return { ok: false, message: `Outbound sender is ready, but two-way SMS is incomplete. Set API v2 POST webhooks to ${expectedPrimary} and ${expectedFailover}.` };
+        }
+
+        return { ok: true, message: "Telnyx is ready: API key valid, number active, profile assignment matches, US messaging allowed, and signed primary/failover webhooks match this domain." };
       }
       case "twilio": {
         const sid = await getConfigValue("TWILIO_ACCOUNT_SID");

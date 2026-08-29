@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyFailure,
+  classifyHttpFailure,
   countsAgainstAttemptCap,
   decideRetry,
   describeFailure,
@@ -84,12 +85,19 @@ describe("classifyFailure — permanent vs transient vs configuration", () => {
   });
 
   it("classifies Telnyx's own permanent and configuration codes", () => {
-    for (const code of ["40001", "40003", "40300", "40310", "40314", "40322"]) {
+    for (const code of ["40001", "40003", "40008", "40012", "40310", "40314", "40322", "42201"]) {
       expect(classifyFailure("telnyx", code, "carrier rejected").class, code).toBe("PERMANENT");
     }
-    for (const code of ["10001", "40010", "40305", "40329", "47000"]) {
+    for (const code of ["10001", "40010", "40013", "40301", "40302", "40305", "40329", "40333", "47000", "42200"]) {
       expect(classifyFailure("telnyx", code, "account problem").class, code).toBe("CONFIGURATION");
     }
+  });
+
+  it("treats Telnyx 40300 without STOP evidence as sender configuration", () => {
+    const result = classifyFailure("telnyx", "40300", "The from number is not assigned to a messaging profile");
+    expect(result.class).toBe("CONFIGURATION");
+    expect(result.affectsAllLeads).toBe(true);
+    expect(isCarrierOptOutFailure(result)).toBe(false);
   });
 
   it("does not confuse Telnyx STOP's HTTP 403 response with account authentication", () => {
@@ -120,6 +128,17 @@ describe("classifyFailure — permanent vs transient vs configuration", () => {
 
   it("does not treat a per-lead failure as affecting everyone", () => {
     expect(classifyFailure("twilio", "21211", "bad number").affectsAllLeads).toBe(false);
+  });
+
+  it("does not retry synchronous Telnyx validation and account failures", () => {
+    expect(classifyHttpFailure("telnyx", 422, undefined, "validation failed").class).toBe("CONFIGURATION");
+    expect(classifyHttpFailure("telnyx", 402, undefined, "payment required").class).toBe("CONFIGURATION");
+    expect(classifyHttpFailure("telnyx", 403, "99999", "request forbidden").class).toBe("CONFIGURATION");
+  });
+
+  it("keeps Telnyx rate limits and server failures retryable", () => {
+    expect(classifyHttpFailure("telnyx", 429, undefined, "too many requests").class).toBe("TRANSIENT");
+    expect(classifyHttpFailure("telnyx", 503, undefined, "service unavailable").class).toBe("TRANSIENT");
   });
 });
 

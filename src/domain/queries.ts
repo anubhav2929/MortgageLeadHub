@@ -455,6 +455,8 @@ export interface FailedAttemptItem {
   leadFullName: string;
   channel: string;
   scheduledFor: string;
+  failureClass?: string;
+  failureMessage?: string;
 }
 
 /** Surfaces real provider failures (Twilio/Resend/Vapi errors) that would
@@ -476,6 +478,12 @@ export async function listRecentFailedAttempts(limit = 10): Promise<FailedAttemp
       leadFullName: person ? `${person.firstName} ${person.lastName}` : "Unknown",
       channel: a.channel,
       scheduledFor: a.scheduledFor,
+      failureClass: a.failureClass,
+      // Provider errors can repeat the sender or borrower number. Admins need
+      // the actionable error, not unmasked contact data in a global panel.
+      failureMessage: a.failureMessage
+        ?.replace(/\+[1-9]\d{7,14}/g, (phone) => `+••••${phone.slice(-4)}`)
+        .slice(0, 500),
     };
   });
 }

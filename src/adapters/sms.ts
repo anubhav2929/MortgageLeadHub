@@ -11,7 +11,7 @@
 // Admin → Integrations takes effect on the very next send with no redeploy.
 
 import { getAppUrl, getConfigValue } from "@/lib/runtimeConfig";
-import { classifyFailure } from "@/core/deliveryStatus";
+import { classifyFailure, classifyHttpFailure } from "@/core/deliveryStatus";
 import { adapterFailure, adapterSuccess, type AdapterResult } from "./result";
 
 export interface SendSmsInput {
@@ -49,8 +49,43 @@ function errorCodeOf(err: unknown): string | undefined {
   return undefined;
 }
 
+const E164 = /^\+[1-9]\d{7,14}$/;
+
+function redactPhoneNumbers(value: string): string {
+  return value.replace(/\+[1-9]\d{7,14}/g, (phone) => `+••••${phone.slice(-4)}`);
+}
+
+function telnyxRemedy(status: number, code: string | undefined, detail: string): string {
+  const lower = detail.toLowerCase();
+  if (status === 402) return "Add funds or raise the account spending limit in Telnyx Billing.";
+  if (code === "40300" && /\bstop\b|opt(?:ed)?[ -]?out/.test(lower)) return "The recipient opted out; do not retry until they send START.";
+  if (code === "40300" || code === "40305" || /messaging profile|not assigned/.test(lower)) {
+    return "Assign the saved sending number to the saved messaging profile in Telnyx.";
+  }
+  if (["40010", "40301", "47000"].includes(code ?? "") || /10dlc|registration required/.test(lower)) {
+    return "Activate the sender's 10DLC campaign (or toll-free verification) and assign the number to it.";
+  }
+  if (code === "40302") return "Enable the messaging profile in Telnyx.";
+  if (code === "40309") return "Allow the destination country in the messaging profile.";
+  if (code === "40329" || code === "40330") return "Complete toll-free verification/provisioning for the sending number.";
+  if (code === "40333") return "Raise or reset the messaging-profile spend limit.";
+  if (status === 401) return "Replace the Telnyx API key with an active key from the same account as the sending number.";
+  if (status === 404) return "Verify that the messaging profile belongs to the API-key account.";
+  if (status === 400 || status === 422) return "Correct the sender, recipient, profile ID, or message validation error shown above.";
+  return "Open Admin → Integrations → Telnyx and run Test connection for the exact readiness check.";
+}
+
 async function sendViaTelnyx(input: SendSmsInput, apiKey: string, from: string): Promise<AdapterResult> {
   try {
+    if (!E164.test(from)) {
+      return adapterFailure({ class: "CONFIGURATION", message: "Telnyx sending number must be E.164, for example +13165550123.", affectsAllLeads: true });
+    }
+    if (!E164.test(input.to)) {
+      return adapterFailure({ class: "PERMANENT", message: "SMS destination is not a valid E.164 phone number.", affectsAllLeads: false });
+    }
+    if (!input.body.trim() || input.body.length > 1_600) {
+      return adapterFailure({ class: "CONFIGURATION", message: "Telnyx SMS text must contain 1 to 1,600 characters.", affectsAllLeads: true });
+    }
     const profileId = await getConfigValue("TELNYX_MESSAGING_PROFILE_ID");
     const webhooks = await telnyxWebhookUrls();
     const res = await fetch("https://api.telnyx.com/v2/messages", {
@@ -72,20 +107,26 @@ async function sendViaTelnyx(input: SendSmsInput, apiKey: string, from: string):
             ? { webhook_url: webhooks.primary, webhook_failover_url: webhooks.failover, use_profile_webhooks: false }
             : {}),
       }),
+      signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) {
       const raw = await res.text();
       let providerCode: string | undefined;
       let providerDetail = raw;
+      let providerTitle = "Request rejected";
       try {
-        const parsed = JSON.parse(raw) as { errors?: Array<{ code?: string; title?: string; detail?: string }> };
+        const parsed = JSON.parse(raw) as { errors?: Array<{ code?: string | number; title?: string; detail?: string }> };
         const first = parsed.errors?.[0];
-        providerCode = first?.code;
-        providerDetail = [first?.title, first?.detail].filter(Boolean).join(": ") || raw;
+        providerCode = first?.code === undefined ? undefined : String(first.code);
+        providerTitle = first?.title || providerTitle;
+        providerDetail = first?.detail || raw;
       } catch {
         // Preserve the raw provider response when it is not JSON.
       }
-      return adapterFailure(classifyFailure("telnyx", providerCode, `Telnyx API returned ${res.status}: ${providerDetail}`));
+      const safeDetail = redactPhoneNumbers(providerDetail).slice(0, 500);
+      const message = `Telnyx API returned HTTP ${res.status}${providerCode ? ` (${providerCode})` : ""}: ${providerTitle}: ${safeDetail} ${telnyxRemedy(res.status, providerCode, providerDetail)}`;
+      console.warn("[Telnyx SMS] request rejected", { status: res.status, providerCode });
+      return adapterFailure(classifyHttpFailure("telnyx", res.status, providerCode, message));
     }
     const data = (await res.json()) as { data?: { id?: string } };
     if (!data.data?.id) throw new Error("Telnyx response missing message id");

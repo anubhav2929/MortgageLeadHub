@@ -124,11 +124,18 @@ export function IntegrationsPanel({
             </p>
             <div className="flex flex-col gap-1.5">
               {recentFailures.slice(0, 6).map((f, i) => (
-                <div key={`${f.leadPublicRef}-${i}`} className="flex items-center justify-between gap-3 text-[12.5px]">
-                  <span className="truncate text-[var(--foreground)]">
-                    {f.leadFullName} · {f.channel.toLowerCase()}
-                  </span>
-                  <span className="shrink-0 text-[var(--muted-foreground)]">{formatDateTime(f.scheduledFor)}</span>
+                <div key={`${f.leadPublicRef}-${i}`} className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-[12.5px]">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="truncate font-medium text-[var(--foreground)]">
+                      {f.leadFullName} · {f.channel.toLowerCase()}
+                    </span>
+                    <span className="shrink-0 text-[var(--muted-foreground)]">{formatDateTime(f.scheduledFor)}</span>
+                  </div>
+                  {f.failureMessage && (
+                    <p className="mt-1 break-words text-[12px] leading-relaxed text-[var(--muted-foreground)]">
+                      {f.failureClass ? `${f.failureClass.toLowerCase()}: ` : ""}{f.failureMessage}
+                    </p>
+                  )}
                 </div>
               ))}
             </div>

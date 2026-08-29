@@ -4,31 +4,26 @@ import { MktFooter } from "@/components/marketing/mkt-footer";
 import { LegalBody } from "@/components/marketing/legal-body";
 import { getLegalPage } from "@/domain/queries";
 import { seoMetadata } from "@/lib/seo";
+import { getConfigValues } from "@/lib/runtimeConfig";
 
 export async function generateMetadata() {
-  const reviewed = await getLegalPage("privacy");
-  return reviewed
-    ? seoMetadata({ title: "Privacy Policy | Equity Flow Group", description: "How Equity Flow Group collects, uses, protects, and retains information provided through mortgage inquiries and communications.", path: "/privacy" })
-    : { title: "Privacy Policy | Equity Flow Group", robots: { index: false, follow: true } };
+  return seoMetadata({ title: "Privacy Policy | Equity Flow Group", description: "How Equity Flow Group collects, uses, protects, and retains information provided through mortgage inquiries and communications.", path: "/privacy" });
 }
 
 export default async function PrivacyPage() {
   // Admin override wins; absent means serve the built-in copy below, so a
   // deployment that never edits this still has a complete page.
   const override = await getLegalPage("privacy");
+  const company = await getConfigValues(["COMPANY_LEGAL_NAME", "COMPANY_SUPPORT_EMAIL", "COMPANY_SUPPORT_PHONE", "COMPANY_BUSINESS_ADDRESS"]);
+  const legalName = company.COMPANY_LEGAL_NAME || "Equity Flow Group";
+  const supportEmail = company.COMPANY_SUPPORT_EMAIL || "inquiry@equityflowgroup.com";
 
   return (
     <div className="mkt flex-1 overflow-y-auto">
       <MktNav />
       <main className="mx-auto max-w-2xl px-6 py-16">
         <h1 className="text-2xl font-semibold text-[var(--mkt-ink)]">Privacy Policy</h1>
-        <p className="mt-2 text-xs text-[var(--mkt-muted)]">Last updated: template — replace before a real launch.</p>
-
-        <div className="mt-6 rounded-[var(--radius-md)] border border-[var(--warning-border)] bg-[var(--warning-tint)] px-4 py-3 text-[13px] leading-relaxed text-[var(--foreground)]">
-          This page is a starting-point template describing what this application actually does with the data it
-          collects. It is not a substitute for review by qualified legal counsel — replace it with your own reviewed
-          policy before handling real borrower data.
-        </div>
+        <p className="mt-2 text-xs text-[var(--mkt-muted)]">Last updated: August 29, 2026</p>
 
         {override ? (
           <LegalBody body={override.body} />
@@ -37,18 +32,28 @@ export default async function PrivacyPage() {
           <section>
             <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">What we collect</h2>
             <p className="mt-2">
-              When you submit the intake form, we collect the contact and property information you provide (name,
-              phone, email, property address, loan goals, and financial details you choose to share). If you contact
-              us afterward — by phone, text, email, or the message box on your status page — we keep a record of
-              that contact so a licensed loan officer can follow up.
+              When you submit an inquiry, {legalName} collects information you provide, including your name, contact
+              details, property information, mortgage goals, preferred contact time, consent selections, and other
+              details you choose to share. We also record the source page, disclosure version, timestamp, IP address,
+              browser information, and communication history needed to document and service your request.
+            </p>
+          </section>
+          <section>
+            <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Where information comes from</h2>
+            <p className="mt-2">
+              Information comes from you when you use the site or communicate with us, from service providers that
+              deliver calls, texts, emails, property information, or security services on our behalf, and from
+              permitted public records when needed to respond to your inquiry. We do not buy contact lists for this
+              text messaging program and do not use scraped contact details for automated outreach.
             </p>
           </section>
           <section>
             <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">How we use it</h2>
             <p className="mt-2">
-              Your information is used to evaluate your inquiry, route it to a licensed loan officer in your state,
-              and follow up with you through the channels you consented to (phone, text, and/or email). We do not
-              sell your information.
+              We use information to respond to your inquiry, preserve context across phone, text, and email, route
+              the inquiry to an appropriately licensed loan officer, schedule requested callbacks, prevent duplicate
+              or unwanted contact, maintain security and audit records, and comply with applicable obligations. We
+              do not sell personal information.
             </p>
           </section>
           {/* Required for 10DLC campaign approval. Carriers review this page
@@ -59,27 +64,45 @@ export default async function PrivacyPage() {
           <section>
             <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Text messaging (SMS)</h2>
             <p className="mt-2">
-              If you consent to text messages, Equity Flow Group sends you messages about the mortgage inquiry you
-              submitted — follow-ups from your loan officer, updates on your file, and replies to questions you ask
-              us. This is a conversational programme, not a marketing list: message frequency varies with your
-              inquiry, and is typically a small number of messages per week.
+              If you separately check the optional text-message consent box, {legalName} may send recurring
+              informational and marketing messages about the mortgage refinance or home-equity inquiry you submitted,
+              including requested follow-ups, answers, and callback confirmations or reminders. Message frequency
+              varies. Message and data rates may apply. Consent is not a condition of obtaining goods or services.
             </p>
             <p className="mt-2">
               <strong className="text-[var(--mkt-ink)]">
                 We do not sell, rent, or share mobile opt-in information or phone numbers with third parties or
                 affiliates for their own marketing purposes.
               </strong>{" "}
-              Your number is used only to contact you about your own inquiry, and is shared with service providers
+              Your number is used only to contact you about your own inquiry and is shared with service providers
               (such as our telephony carrier) solely to deliver those messages on our behalf.
             </p>
             <p className="mt-2">
               Reply <strong className="text-[var(--mkt-ink)]">STOP</strong> to any message to opt out; we will send
-              one confirmation and then stop contacting you on every channel, not only SMS. Reply{" "}
+              one confirmation and then stop text messaging you. Reply{" "}
               <strong className="text-[var(--mkt-ink)]">HELP</strong> for assistance, or email{" "}
-              <a href="mailto:inquiry@equityflowgroup.com" className="font-medium text-[var(--mkt-primary)] hover:underline">
-                inquiry@equityflowgroup.com
+              <a href={`mailto:${supportEmail}`} className="font-medium text-[var(--mkt-primary)] hover:underline">
+                {supportEmail}
               </a>
               . Message and data rates may apply. Carriers are not liable for delayed or undelivered messages.
+            </p>
+          </section>
+          <section>
+            <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Service providers and disclosure</h2>
+            <p className="mt-2">
+              We disclose information to vendors that host the service, deliver communications, provide security or
+              analytics with consent, and support requested mortgage-inquiry functions. They may use the information
+              only to perform services for us. We may also disclose information when required by law, to protect the
+              service and its users, or as part of a business transaction subject to appropriate safeguards.
+            </p>
+          </section>
+          <section>
+            <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Retention and security</h2>
+            <p className="mt-2">
+              We retain inquiry, consent, communication, suppression, and audit records for as long as reasonably
+              necessary for the purposes described here and applicable recordkeeping requirements. We use access
+              controls, encryption, provider signature checks, and activity logging designed to protect information.
+              No security measure can guarantee absolute protection.
             </p>
           </section>
           <section>
@@ -113,8 +136,8 @@ export default async function PrivacyPage() {
           <section>
             <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Contact</h2>
             <p className="mt-2">
-              Questions about this policy or your data can be directed to the loan officer assigned to your inquiry,
-              or through the message box on your status page.
+              Questions or privacy requests can be sent to <a href={`mailto:${supportEmail}`} className="font-medium text-[var(--mkt-primary)] hover:underline">{supportEmail}</a>
+              {company.COMPANY_SUPPORT_PHONE ? ` or ${company.COMPANY_SUPPORT_PHONE}` : ""}. {company.COMPANY_BUSINESS_ADDRESS ? `Mail may be sent to ${company.COMPANY_BUSINESS_ADDRESS}.` : ""}
             </p>
           </section>
         </div>

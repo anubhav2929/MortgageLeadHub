@@ -15,7 +15,11 @@ export async function MktFooter() {
   // Resolved per render rather than at module load, so setting it in
   // Admin → Integrations updates the footer without a redeploy. The fallback
   // is deliberately an obvious placeholder, not a real-looking fake number.
-  const NMLS_ID = (await getConfigValue("COMPANY_NMLS_ID")) || "SET_COMPANY_NMLS_ID";
+  const NMLS_ID = await getConfigValue("COMPANY_NMLS_ID");
+  const legalName = (await getConfigValue("COMPANY_LEGAL_NAME")) || "Equity Flow Group";
+  const supportEmail = await getConfigValue("COMPANY_SUPPORT_EMAIL");
+  const supportPhone = await getConfigValue("COMPANY_SUPPORT_PHONE");
+  const businessAddress = await getConfigValue("COMPANY_BUSINESS_ADDRESS");
   const anyChannelLive = caps.hasSms || caps.hasVoice || caps.hasResend || caps.hasVoiceAgent;
 
   return (
@@ -23,10 +27,12 @@ export async function MktFooter() {
       <div className="mx-auto max-w-6xl px-6 py-12">
         <div className="flex flex-col gap-8 sm:flex-row sm:justify-between">
           <div className="max-w-sm">
-            <p className="text-[14px] font-semibold text-[var(--mkt-ink)]">Equity Flow Group</p>
+            <p className="text-[14px] font-semibold text-[var(--mkt-ink)]">{legalName}</p>
             <p className="mt-2 text-[12.5px] leading-relaxed text-[var(--mkt-muted)]">
-              Equity Flow Group Lending, NMLS #{NMLS_ID}. Equal Housing Lender. Licensed in {LICENSED_STATES_LABEL}.
+              {NMLS_ID ? `NMLS #${NMLS_ID}. ` : ""}Equal Housing Lender. Licensed in {LICENSED_STATES_LABEL}.
             </p>
+            {businessAddress && <p className="mt-2 text-[12px] text-[var(--mkt-muted)]">{businessAddress}</p>}
+            {(supportEmail || supportPhone) && <p className="mt-1 text-[12px] text-[var(--mkt-muted)]">{supportEmail}{supportEmail && supportPhone ? " · " : ""}{supportPhone}</p>}
           </div>
           <div className="flex gap-10">
             <div>

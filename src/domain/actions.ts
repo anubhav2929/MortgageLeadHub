@@ -49,6 +49,7 @@ import { getRequestContext } from "@/lib/requestContext";
 import { issueStatusToken, matchesStatusToken } from "@/domain/statusAccess";
 import { revealBearerUrl } from "@/core/secretBox";
 import { STATE_NAMES } from "@/domain/stateTimezone";
+import { resolveActiveIntakeDisclosures } from "@/core/intakeDisclosures";
 import { hasSqlDatabase } from "@/domain/sql";
 import {
   createSqlIdentityWithToken,
@@ -2279,6 +2280,7 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
   }
 
   const db = await getDb();
+  const activeDisclosures = resolveActiveIntakeDisclosures(db);
 
   const intakeRequestKey = clientDraftId && /^[A-Za-z0-9_-]{16,64}$/.test(clientDraftId)
     ? createHash("sha256").update(`${clientDraftId}:${phone}`, "utf8").digest("hex")
@@ -2326,11 +2328,12 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
   });
 
   const consentDefs: { scope: ConsentRecord["scope"]; granted: boolean; disclosureVersionId: string }[] = [
-    { scope: "CONTACT_VOICE", granted: input.consents.voice, disclosureVersionId: "disc_tcpa_voice_v2" },
-    { scope: "CONTACT_SMS", granted: input.consents.sms, disclosureVersionId: "disc_tcpa_sms_v3" },
-    { scope: "CONTACT_EMAIL", granted: input.consents.email, disclosureVersionId: "disc_email_v1" },
-    { scope: "RECORDING", granted: input.consents.recording, disclosureVersionId: "disc_recording_v1" },
+    { scope: "CONTACT_VOICE", granted: input.consents.voice, disclosureVersionId: activeDisclosures.CONTACT_VOICE.id },
+    { scope: "CONTACT_SMS", granted: input.consents.sms, disclosureVersionId: activeDisclosures.CONTACT_SMS.id },
+    { scope: "CONTACT_EMAIL", granted: input.consents.email, disclosureVersionId: activeDisclosures.CONTACT_EMAIL.id },
+    { scope: "RECORDING", granted: input.consents.recording, disclosureVersionId: activeDisclosures.RECORDING.id },
   ];
+  const intakeSourceUrl = `${await getAppUrl()}/apply`;
   for (const c of consentDefs) {
     db.consents.push({
       id: newId("consent"),
@@ -2341,7 +2344,7 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
       disclosureVersionId: c.disclosureVersionId,
       exactTextSnapshot: db.disclosures.get(c.disclosureVersionId)?.bodyText ?? "",
       capturedAt: createdAt,
-      sourceUrl: "https://apply.equityflowgroup.com/intake",
+      sourceUrl: intakeSourceUrl,
       ipAddress: requestContext.ipAddress,
       userAgent: requestContext.userAgent,
       sessionId: newId("sess"),

@@ -4,6 +4,7 @@ import { MktFooter } from "@/components/marketing/mkt-footer";
 import { MktNav } from "@/components/marketing/mkt-nav";
 import type { LoanIntent } from "@/domain/types";
 import { seoMetadata } from "@/lib/seo";
+import { getActiveIntakeDisclosures } from "@/domain/queries";
 
 export const metadata = seoMetadata({ title: "Mortgage Refinance & Home Equity Inquiry", description: "Tell Equity Flow Group what you want to accomplish and choose how a licensed loan officer may contact you. This is an inquiry, not a loan application.", path: "/apply" });
 
@@ -14,7 +15,7 @@ interface PageProps {
 const VALID_INTENTS: LoanIntent[] = ["REFINANCE", "HOME_EQUITY", "CASH_OUT"];
 
 export default async function ApplyPage({ searchParams }: PageProps) {
-  const params = await searchParams;
+  const [params, disclosures] = await Promise.all([searchParams, getActiveIntakeDisclosures()]);
   const intent = VALID_INTENTS.includes(params.intent as LoanIntent) ? (params.intent as LoanIntent) : undefined;
 
   return (
@@ -66,6 +67,7 @@ export default async function ApplyPage({ searchParams }: PageProps) {
           </div>
           <div className="mx-auto mt-8 max-w-2xl">
             <IntakeWizard
+              disclosures={disclosures}
               initialIntent={intent}
               initialStateCode={params.stateCode}
               initialEstimatedValue={params.estimatedValue}

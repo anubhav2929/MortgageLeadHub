@@ -9,6 +9,7 @@ import { singleFlight } from "@/core/singleFlight";
 import { getCapabilities, getConfigValue, getPublicUrlResolution } from "@/lib/runtimeConfig";
 import { sameCalendarDay } from "@/core/timezone";
 import { isReusablePropertyValuation } from "@/core/propertyValuationQuality";
+import { resolveActiveIntakeDisclosures } from "@/core/intakeDisclosures";
 import { maskEmail, maskPhone } from "@/core/rbac";
 import { findPublicStatusLead } from "@/domain/statusAccess";
 import type {
@@ -388,6 +389,12 @@ export async function listCadencePlans(): Promise<CadencePlan[]> {
 
 export async function listDisclosures(): Promise<DisclosureVersion[]> {
   return Array.from((await getDb()).disclosures.values());
+}
+
+/** Public-safe disclosure copy for the intake form. No lead or admin data is
+ * exposed; these are the exact approved versions the submit action records. */
+export async function getActiveIntakeDisclosures() {
+  return resolveActiveIntakeDisclosures(await getDb());
 }
 
 export interface SuppressionWithStatus extends Suppression {

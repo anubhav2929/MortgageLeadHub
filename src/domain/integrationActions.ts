@@ -269,22 +269,23 @@ async function runIntegrationTest(integrationId: string): Promise<TestResult> {
         const publicKey = await getConfigValue("TELNYX_PUBLIC_KEY");
         if (!key || !number || !publicKey) return { ok: false, message: "API key, sending number, and webhook public key are all required for production two-way SMS." };
 
-        const numberUrl = new URL("https://api.telnyx.com/v2/phone_numbers");
-        numberUrl.searchParams.set("filter[phone_number]", number);
-        numberUrl.searchParams.set("page[size]", "5");
-        numberUrl.searchParams.set("handle_messaging_profile_error", "true");
-        const res = await fetch(numberUrl, {
+        // This endpoint is messaging-specific. The generic /phone_numbers
+        // list can omit messaging configuration and previously produced the
+        // misleading "not found in this account" result for a number that
+        // Telnyx had already accepted as an outbound sender.
+        const res = await fetch(`https://api.telnyx.com/v2/messaging_phone_numbers/${encodeURIComponent(number)}`, {
           headers: { Authorization: `Bearer ${key}` },
           signal: AbortSignal.timeout(10_000),
         });
-        if (!res.ok) return { ok: false, message: `Telnyx could not inspect the sending number (HTTP ${res.status}). Verify the API key belongs to the same Telnyx account.` };
+        if (res.status === 404) return { ok: false, message: "The saved number is not enabled for messaging in this Telnyx account. Enable SMS and assign it to the intended messaging profile." };
+        if (!res.ok) return { ok: false, message: `Telnyx could not inspect the messaging number (HTTP ${res.status}). Verify the API key belongs to the same Telnyx account.` };
 
         const numberPayload = await res.json() as {
-          data?: Array<{ phone_number?: string; status?: string; messaging_profile_id?: string | null }>;
+          data?: { phone_number?: string; messaging_profile_id?: string | null; messaging_product?: string; features?: { sms?: unknown } };
         };
-        const sendingNumber = numberPayload.data?.find((item) => item.phone_number === number);
-        if (!sendingNumber) return { ok: false, message: "The saved sending number was not found in the API-key account. Use a messaging-capable number owned by this Telnyx account." };
-        if (sendingNumber.status?.toLowerCase() !== "active") return { ok: false, message: `The Telnyx sending number is ${sendingNumber.status ?? "not active"}. Wait for provisioning or activate it before sending.` };
+        const sendingNumber = numberPayload.data;
+        if (!sendingNumber || sendingNumber.phone_number !== number) return { ok: false, message: "Telnyx returned no messaging configuration for the saved sending number." };
+        if (!sendingNumber.features?.sms) return { ok: false, message: "The Telnyx number does not currently have SMS capability enabled." };
 
         const assignedProfileId = sendingNumber.messaging_profile_id ?? undefined;
         if (!assignedProfileId) return { ok: false, message: "The Telnyx number is active but is not assigned to a messaging profile. Assign it under Telnyx → Messaging → Profiles." };
@@ -313,7 +314,31 @@ async function runIntegrationTest(integrationId: string): Promise<TestResult> {
           return { ok: false, message: `Outbound sender is ready, but two-way SMS is incomplete. Set API v2 POST webhooks to ${expectedPrimary} and ${expectedFailover}.` };
         }
 
-        return { ok: true, message: "Telnyx is ready: API key valid, number active, profile assignment matches, US messaging allowed, and signed primary/failover webhooks match this domain." };
+        // A working API key/profile is not enough for US application-to-person
+        // long-code traffic. Error 40010 is emitted when this final assignment
+        // is absent, which is exactly what the integration test must surface.
+        const campaignRes = await fetch(`https://api.telnyx.com/v2/10dlc/phone_number_campaigns/${encodeURIComponent(number)}`, {
+          headers: { Authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (campaignRes.status === 404) {
+          return { ok: false, message: "Telnyx is connected, but this US long-code number is not assigned to a 10DLC campaign. Create an approved campaign and assign this exact number before sending." };
+        }
+        if (!campaignRes.ok) return { ok: false, message: `Telnyx could not verify the number's 10DLC campaign assignment (HTTP ${campaignRes.status}).` };
+        const rawCampaign = await campaignRes.json() as {
+          data?: { assignmentStatus?: string; campaignId?: string; tcrCampaignId?: string; failureReasons?: string };
+          assignmentStatus?: string;
+          campaignId?: string;
+          tcrCampaignId?: string;
+          failureReasons?: string;
+        };
+        const campaign = rawCampaign.data ?? rawCampaign;
+        if (campaign.assignmentStatus !== "ASSIGNED") {
+          const failure = campaign.failureReasons ? ` ${campaign.failureReasons}` : "";
+          return { ok: false, message: `The 10DLC number assignment is ${campaign.assignmentStatus ?? "not assigned"}.${failure}` };
+        }
+
+        return { ok: true, message: `Telnyx is ready: number SMS-enabled, profile/webhooks match, and 10DLC campaign ${campaign.tcrCampaignId ?? campaign.campaignId ?? "assignment"} is ASSIGNED.` };
       }
       case "twilio": {
         const sid = await getConfigValue("TWILIO_ACCOUNT_SID");

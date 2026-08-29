@@ -397,6 +397,10 @@ export const INTEGRATIONS: IntegrationDef[] = [
       { key: "APP_URL", label: "Public app URL", secret: false, optional: true, placeholder: "https://www.equityflowgroup.com", help: "Enter a plain domain or URL, not Markdown. It is normalized to one HTTPS origin. Leave blank on Vercel to use VERCEL_PROJECT_PRODUCTION_URL, which selects the shortest connected production custom domain." },
       { key: "CRON_SECRET", label: "Cron secret", secret: true, optional: true, help: "Required in production — the cadence endpoint refuses to run without it" },
       { key: "COMPANY_NMLS_ID", label: "Company NMLS ID", secret: false, optional: true, help: "Shown in the public footer; a visible placeholder appears until set" },
+      { key: "COMPANY_LEGAL_NAME", label: "Registered legal business name", secret: false, optional: true, help: "Must exactly match the legal name in your 10DLC brand registration and public business records." },
+      { key: "COMPANY_SUPPORT_EMAIL", label: "Public support email", secret: false, optional: true, placeholder: "inquiry@equityflowgroup.com", help: "Use an address on the same domain as the website and 10DLC registration." },
+      { key: "COMPANY_SUPPORT_PHONE", label: "Public support phone", secret: false, optional: true, placeholder: "+19492397627", help: "Displayed in carrier-facing policy/contact information." },
+      { key: "COMPANY_BUSINESS_ADDRESS", label: "Registered business address", secret: false, optional: true, help: "Must match the address used for the 10DLC brand. Displayed on the public site when set." },
       {
         key: "DELIVERY_WEBHOOK_SECRET",
         label: "Delivery webhook secret",

@@ -17,6 +17,7 @@ import { STATE_CITIES, isKnownCity } from "@/domain/stateCities";
 import { cn } from "@/lib/utils";
 import { trackEvent } from "@/lib/analytics";
 import type { LoanIntent } from "@/domain/types";
+import type { PublicIntakeDisclosure } from "@/core/intakeDisclosures";
 
 const STEPS = ["Purpose", "Property", "Your situation", "Contact", "Consent"];
 const DRAFT_KEY = "mlh_intake_draft_v1";
@@ -45,13 +46,6 @@ const INTENT_OPTIONS: { value: LoanIntent; label: string; description: string; i
   { value: "CASH_OUT", label: "Cash-out refinance", description: "Access equity as cash", icon: Wallet },
   { value: "HOME_EQUITY", label: "Home equity", description: "Borrow against your home's value", icon: Home },
 ];
-
-const DISCLOSURES = {
-  voice:
-    "By checking this box, I consent to receive phone calls from Equity Flow Group and its licensed partners about my inquiry, including calls made using an automatic telephone dialing system, an artificial or prerecorded voice, or an AI voice assistant. Calls may be recorded for quality and compliance purposes, and I may request a human representative at any time.",
-  sms: "By checking this box, I consent to receive text messages from Equity Flow Group and its licensed partners about my refinance or home equity inquiry, including messages sent using an automatic telephone dialing system. Message and data rates may apply. Consent is not a condition of purchase. Reply STOP to opt out at any time, HELP for help.",
-  email: "By checking this box, I consent to receive email communications from Equity Flow Group about my inquiry.",
-};
 
 // Mirrors the server's normalizePhone() (submitIntakeAction) so a bad phone
 // number is caught here, on the step where the field is visible — not
@@ -201,10 +195,12 @@ function cloneWithA11y<P extends { id?: string; "aria-invalid"?: boolean; "aria-
 }
 
 export function IntakeWizard({
+  disclosures,
   initialIntent,
   initialStateCode,
   initialEstimatedValue,
 }: {
+  disclosures: Record<"CONTACT_VOICE" | "CONTACT_SMS" | "CONTACT_EMAIL" | "RECORDING", PublicIntakeDisclosure>;
   initialIntent?: LoanIntent;
   initialStateCode?: string;
   initialEstimatedValue?: string;
@@ -645,9 +641,9 @@ export function IntakeWizard({
                 <div className="space-y-3">
                   {(
                     [
-                      { key: "voice" as const, label: "Phone calls (may include an AI assistant, recorded)", text: DISCLOSURES.voice },
-                      { key: "sms" as const, label: "Text messages", text: DISCLOSURES.sms },
-                      { key: "email_" as const, label: "Email", text: DISCLOSURES.email },
+                      { key: "voice" as const, label: "Phone calls (may include an AI assistant, recorded)", text: disclosures.CONTACT_VOICE.bodyText, version: disclosures.CONTACT_VOICE.version },
+                      { key: "sms" as const, label: "Text messages", text: disclosures.CONTACT_SMS.bodyText, version: disclosures.CONTACT_SMS.version },
+                      { key: "email_" as const, label: "Email", text: disclosures.CONTACT_EMAIL.bodyText, version: disclosures.CONTACT_EMAIL.version },
                     ]
                   ).map((c) => (
                     // The disclosure sits OUTSIDE the <label> so its Read more
@@ -663,6 +659,7 @@ export function IntakeWizard({
                         <span className="text-[13px] font-medium text-[var(--foreground)]">{c.label}</span>
                       </label>
                       <ReadMore text={c.text} lines={2} className="mt-1 pl-7" />
+                      <span className="sr-only">Disclosure version {c.version}</span>
                     </div>
                   ))}
                 </div>

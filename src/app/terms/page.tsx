@@ -5,10 +5,7 @@ import { getLegalPage } from "@/domain/queries";
 import { seoMetadata } from "@/lib/seo";
 
 export async function generateMetadata() {
-  const reviewed = await getLegalPage("terms");
-  return reviewed
-    ? seoMetadata({ title: "Terms of Service | Equity Flow Group", description: "Terms governing use of the Equity Flow Group mortgage education, inquiry, status, and communications services.", path: "/terms" })
-    : { title: "Terms of Service | Equity Flow Group", robots: { index: false, follow: true } };
+  return seoMetadata({ title: "Terms of Service | Equity Flow Group", description: "Terms governing use of the Equity Flow Group mortgage education, inquiry, status, and communications services.", path: "/terms" });
 }
 
 export default async function TermsPage() {
@@ -21,17 +18,20 @@ export default async function TermsPage() {
       <MktNav />
       <main className="mx-auto max-w-2xl px-6 py-16">
         <h1 className="text-2xl font-semibold text-[var(--mkt-ink)]">Terms of Service</h1>
-        <p className="mt-2 text-xs text-[var(--mkt-muted)]">Last updated: template — replace before a real launch.</p>
-
-        <div className="mt-6 rounded-[var(--radius-md)] border border-[var(--warning-border)] bg-[var(--warning-tint)] px-4 py-3 text-[13px] leading-relaxed text-[var(--foreground)]">
-          This page is a starting-point template. It is not a substitute for review by qualified legal counsel —
-          replace it with your own reviewed terms before a real launch.
-        </div>
+        <p className="mt-2 text-xs text-[var(--mkt-muted)]">Last updated: August 29, 2026</p>
 
         {override ? (
           <LegalBody body={override.body} />
         ) : (
         <div className="mt-8 space-y-6 text-[13.5px] leading-relaxed text-[var(--mkt-body)]">
+          <section>
+            <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Using this service</h2>
+            <p className="mt-2">
+              You may use this site to review educational information, submit a mortgage inquiry, communicate about
+              that inquiry, and use preliminary calculators. Provide accurate information, use the service only for
+              lawful purposes, and do not attempt to interfere with its security or operation.
+            </p>
+          </section>
           <section>
             <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Not a loan application</h2>
             <p className="mt-2">
@@ -56,6 +56,18 @@ export default async function TermsPage() {
               <strong className="text-[var(--mkt-ink)]">HELP</strong> for assistance. Carriers are not liable for
               delayed or undelivered messages. We do not sell or share mobile opt-in information with third parties
               for their own marketing.
+            </p>
+            <p className="mt-2">
+              Text-message consent is optional, unchecked by default, and separate from submitting an inquiry. You
+              may also use our <a href="/unsubscribe" className="font-medium text-[var(--mkt-primary)] hover:underline">online opt-out page</a>.
+            </p>
+          </section>
+          <section>
+            <h2 className="text-[15px] font-semibold text-[var(--mkt-ink)]">Educational estimates</h2>
+            <p className="mt-2">
+              Calculators, property-value ranges, and other automated results are informational estimates, not
+              appraisals, underwriting decisions, rate locks, or offers. Actual eligibility, value, rates, fees, and
+              terms require verification by the applicable licensed professionals and providers.
             </p>
           </section>
           <section>

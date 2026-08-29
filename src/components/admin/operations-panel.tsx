@@ -14,6 +14,8 @@ export function OperationsPanel({ diagnostics }: { diagnostics: OperationalDiagn
           </CardHeader>
           <CardContent className="space-y-3 text-[13px]">
             <div><Badge tone={diagnostics.telnyxSignedWebhooksReady ? "success" : "warning"}>{diagnostics.telnyxSignedWebhooksReady ? "Signature ready" : "Public key missing"}</Badge></div>
+            <div><p className="text-xs text-[var(--muted-foreground)]">Effective production origin ({diagnostics.publicUrlSource})</p><code className="break-all">{diagnostics.publicAppUrl}</code></div>
+            {diagnostics.publicUrlWarning && <p className="rounded-[var(--radius-sm)] border border-[var(--warning-border)] bg-[var(--warning-tint)] px-2.5 py-2 text-xs">{diagnostics.publicUrlWarning}</p>}
             <div><p className="text-xs text-[var(--muted-foreground)]">Primary</p><code className="break-all">{diagnostics.telnyxPrimaryUrl}</code></div>
             <div><p className="text-xs text-[var(--muted-foreground)]">Failover</p><code className="break-all">{diagnostics.telnyxFailoverUrl}</code></div>
           </CardContent>

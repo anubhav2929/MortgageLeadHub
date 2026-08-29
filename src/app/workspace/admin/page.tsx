@@ -231,6 +231,16 @@ export default async function AdminPage() {
                 storageEnabled={integrationData.storageEnabled}
                 canEdit={user.role === "ADMIN"}
                 recentFailures={recentFailures}
+                publicEndpoints={{
+                  appUrl: operations!.publicAppUrl,
+                  source: operations!.publicUrlSource,
+                  warning: operations!.publicUrlWarning,
+                  telnyxPrimary: operations!.telnyxPrimaryUrl,
+                  telnyxFailover: operations!.telnyxFailoverUrl,
+                  vapi: operations!.vapiWebhookUrl,
+                  resendDelivery: operations!.resendDeliveryUrl,
+                  resendInbound: operations!.resendInboundUrl,
+                }}
               />
             ) : (
               <EmptyState icon={ShieldX} title="Admin only" description="Provider API keys can only be viewed and changed by an Admin." />

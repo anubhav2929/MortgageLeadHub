@@ -32,7 +32,7 @@ import { buildBriefForLead } from "@/domain/leadContext";
 import { type VoiceMechanism } from "@/core/callStrategy";
 import { placeOutboundCall } from "@/domain/voiceOrchestrator";
 import { bookCallbackForConversation } from "@/domain/voiceWorkflow";
-import { countsAgainstAttemptCap, decideRetry, describeFailure, shouldSuppressChannel, type DeliveryFailure } from "@/core/deliveryStatus";
+import { countsAgainstAttemptCap, decideRetry, describeFailure, isCarrierOptOutFailure, shouldSuppressChannel, type DeliveryFailure } from "@/core/deliveryStatus";
 import { computeOfficerLoadToday } from "@/domain/queries";
 import { buildGateInput, evaluateForLead } from "@/domain/gateHelpers";
 import { getCurrentUser } from "@/domain/session";
@@ -154,7 +154,7 @@ export interface ActionResult {
 async function recordSendFailure(
   db: Database,
   lead: Lead,
-  person: { id: string; dataQualityFlags?: string[] } | undefined,
+  person: { id: string; phoneE164?: string; dataQualityFlags?: string[] } | undefined,
   channel: Channel,
   failure: DeliveryFailure,
   actor?: { id: string; name: string },
@@ -181,6 +181,33 @@ async function recordSendFailure(
     occurredAt: nowIso(),
     payload: { failureClass: failure.class, providerCode: failure.providerCode, message: failure.message },
   });
+
+  if (channel === "SMS" && person?.phoneE164 && isCarrierOptOutFailure(failure)) {
+    if (!db.suppressions.has(person.phoneE164)) {
+      db.suppressions.set(person.phoneE164, {
+        id: newId("supp"),
+        phoneE164: person.phoneE164,
+        reason: "OPT_OUT_STOP",
+        scope: "GLOBAL",
+        createdAt: nowIso(),
+        expiresAt: null,
+      });
+    }
+    if (!["SUPPRESSED", "CLOSED_WON", "CLOSED_LOST"].includes(lead.state)) {
+      lead.state = "SUPPRESSED";
+      lead.updatedAt = nowIso();
+    }
+    await pushEvent({
+      leadId: lead.id,
+      type: "OPT_OUT_RECEIVED",
+      actorType: "PROVIDER",
+      actorName: "SMS carrier",
+      channel: "SMS",
+      occurredAt: nowIso(),
+      payload: { reason: "OPT_OUT_STOP", source: "carrier_send_rejection", providerCode: failure.providerCode },
+    });
+    return;
+  }
 
   if (shouldSuppressChannel(failure)) {
     // A permanently undeliverable address is a fact about the borrower's
@@ -2773,7 +2800,7 @@ export async function submitBorrowerMessageAction(publicRef: string, statusToken
     officerFirstName: officer?.name.split(" ")[0],
     // Same context the phone agent gets, including the intake form — the
     // borrower must not have to repeat on chat what they said on a call.
-    priorContext: buildBriefForLead(db, lead) || undefined,
+    priorContext: redactRestrictedText(buildBriefForLead(db, lead)).text || undefined,
   });
 
   if (!answer.simulated) {
@@ -2890,7 +2917,7 @@ async function deliverOutreachLocked(
   // Everything already said to this borrower, on every channel — so the
   // fourth touch doesn't re-introduce us or contradict what they told us on
   // a different channel. See core/conversationThread.ts.
-  const priorContext = buildBriefForLead(db, lead);
+  const priorContext = redactRestrictedText(buildBriefForLead(db, lead)).text;
 
   // VOICE goes through the orchestrator so an automated call is the same
   // conversational agent an officer would get from the Call button — not the

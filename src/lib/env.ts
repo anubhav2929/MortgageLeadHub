@@ -5,6 +5,7 @@
 // no code changes.
 
 import { z } from "zod";
+import { resolvePublicAppUrl } from "@/core/publicUrl";
 
 // Vercel's Postgres integrations commonly expose POSTGRES_URL, while Neon,
 // Supabase, and manually configured projects tend to use DATABASE_URL. Accept
@@ -33,9 +34,19 @@ const envSchema = z.object({
   NVIDIA_MODEL: z.string().optional(),
   RESEND_API_KEY: z.string().optional(),
   RESEND_FROM_EMAIL: z.string().optional(),
+  RESEND_REPLY_TO_EMAIL: z.string().optional(),
+  RESEND_WEBHOOK_SECRET: z.string().optional(),
   RESEND_INBOUND_WEBHOOK_SECRET: z.string().optional(),
   VAPI_API_KEY: z.string().optional(),
   VAPI_PHONE_NUMBER_ID: z.string().optional(),
+  VAPI_ASSISTANT_NAME: z.string().optional(),
+  VAPI_VOICE_PROVIDER: z.string().optional(),
+  VAPI_VOICE_ID: z.string().optional(),
+  VAPI_VOICE_MODEL: z.string().optional(),
+  VAPI_TRANSCRIBER_PROVIDER: z.string().optional(),
+  VAPI_TRANSCRIBER_MODEL: z.string().optional(),
+  VAPI_MODEL_PROVIDER: z.string().optional(),
+  VAPI_MODEL: z.string().optional(),
   VAPI_WEBHOOK_SECRET: z.string().optional(),
   VAPI_WEBHOOK_CREDENTIAL_ID: z.string().optional(),
   VAPI_ALLOW_LEGACY_WEBHOOK_AUTH: z.string().optional(),
@@ -67,9 +78,19 @@ const parsed = envSchema.safeParse({
   NVIDIA_MODEL: process.env.NVIDIA_MODEL,
   RESEND_API_KEY: process.env.RESEND_API_KEY,
   RESEND_FROM_EMAIL: process.env.RESEND_FROM_EMAIL,
+  RESEND_REPLY_TO_EMAIL: process.env.RESEND_REPLY_TO_EMAIL,
+  RESEND_WEBHOOK_SECRET: process.env.RESEND_WEBHOOK_SECRET,
   RESEND_INBOUND_WEBHOOK_SECRET: process.env.RESEND_INBOUND_WEBHOOK_SECRET,
   VAPI_API_KEY: process.env.VAPI_API_KEY,
   VAPI_PHONE_NUMBER_ID: process.env.VAPI_PHONE_NUMBER_ID,
+  VAPI_ASSISTANT_NAME: process.env.VAPI_ASSISTANT_NAME,
+  VAPI_VOICE_PROVIDER: process.env.VAPI_VOICE_PROVIDER,
+  VAPI_VOICE_ID: process.env.VAPI_VOICE_ID,
+  VAPI_VOICE_MODEL: process.env.VAPI_VOICE_MODEL,
+  VAPI_TRANSCRIBER_PROVIDER: process.env.VAPI_TRANSCRIBER_PROVIDER,
+  VAPI_TRANSCRIBER_MODEL: process.env.VAPI_TRANSCRIBER_MODEL,
+  VAPI_MODEL_PROVIDER: process.env.VAPI_MODEL_PROVIDER,
+  VAPI_MODEL: process.env.VAPI_MODEL,
   VAPI_WEBHOOK_SECRET: process.env.VAPI_WEBHOOK_SECRET,
   VAPI_WEBHOOK_CREDENTIAL_ID: process.env.VAPI_WEBHOOK_CREDENTIAL_ID,
   VAPI_ALLOW_LEGACY_WEBHOOK_AUTH: process.env.VAPI_ALLOW_LEGACY_WEBHOOK_AUTH,
@@ -94,25 +115,27 @@ export const env = parsed.success ? parsed.data : envSchema.parse({});
  *  for the Vapi webhook callback URL. Falls back to Vercel's auto-populated
  *  VERCEL_URL, then localhost for dev. */
 export function getAppUrl(): string {
-  if (env.APP_URL) return env.APP_URL.replace(/\/$/, "");
-  if (env.VERCEL_URL) return `https://${env.VERCEL_URL}`;
-  return "http://localhost:3000";
+  return resolvePublicAppUrl({
+    configured: env.APP_URL,
+    vercelProductionUrl: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+    vercelDeploymentUrl: env.VERCEL_URL,
+  }).url;
 }
 
 export const capabilities = {
   hasDatabase: Boolean(env.DATABASE_URL),
   hasTwilio: Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_PHONE_NUMBER),
-  hasTelnyx: Boolean(env.TELNYX_API_KEY && env.TELNYX_PHONE_NUMBER),
+  hasTelnyx: Boolean(env.TELNYX_API_KEY && env.TELNYX_PHONE_NUMBER && env.TELNYX_PUBLIC_KEY),
   hasOpenAi: Boolean(env.OPENAI_API_KEY),
   // Either carrier lights up SMS/voice; adapters/sms.ts and adapters/voice.ts
   // prefer Telnyx when both are configured (cheaper, native 10DLC — see the
   // vendor comparison in DEPLOY.md), falling back to Twilio, then simulated.
   hasAnthropic: Boolean(env.ANTHROPIC_API_KEY),
   hasNvidia: Boolean(env.NVIDIA_API_KEY),
-  hasResend: Boolean(env.RESEND_API_KEY),
+  hasResend: Boolean(env.RESEND_API_KEY && env.RESEND_FROM_EMAIL),
   // Requires the webhook secret too, same fail-closed pattern as
   // hasLiveVoiceAgent — the inbound route rejects everything without it.
-  hasInboundEmail: Boolean(env.RESEND_API_KEY && env.RESEND_INBOUND_WEBHOOK_SECRET),
+  hasInboundEmail: Boolean(env.RESEND_API_KEY && env.RESEND_FROM_EMAIL && env.RESEND_REPLY_TO_EMAIL && env.RESEND_INBOUND_WEBHOOK_SECRET),
   hasVoiceAgent: Boolean(env.VAPI_API_KEY || env.RETELL_API_KEY),
   // The full, genuinely-callable Vapi setup — see adapters/voiceAgent.ts.
   hasLiveVoiceAgent: Boolean(env.VAPI_API_KEY && env.VAPI_PHONE_NUMBER_ID && env.VAPI_WEBHOOK_SECRET),
@@ -133,11 +156,11 @@ export function announceCapabilitiesOnce() {
         ? "LIVE (Telnyx)"
         : capabilities.hasTwilio
           ? "LIVE (Twilio)"
-          : "simulated — set TELNYX_API_KEY/TELNYX_PHONE_NUMBER or TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN/TWILIO_PHONE_NUMBER"
+          : "simulated — set TELNYX_API_KEY/TELNYX_PHONE_NUMBER/TELNYX_PUBLIC_KEY or the three Twilio credentials"
     }`,
     `AI gateway: ${capabilities.hasOpenAi ? "LIVE (OpenAI configured)" : capabilities.hasAnthropic ? "LIVE (Anthropic configured)" : capabilities.hasNvidia ? "LIVE (NVIDIA configured)" : "unavailable — configure an AI provider"}`,
-    `Email (Resend): ${capabilities.hasResend ? "LIVE" : "simulated — set RESEND_API_KEY"}`,
-    `Inbound email (Resend receiving): ${capabilities.hasInboundEmail ? "LIVE — webhook wired at /api/webhooks/resend-inbound" : "not configured — set RESEND_INBOUND_WEBHOOK_SECRET and add the webhook in the Resend dashboard (see DEPLOY.md)"}`,
+    `Email (Resend): ${capabilities.hasResend ? "LIVE" : "simulated — set RESEND_API_KEY and a verified RESEND_FROM_EMAIL"}`,
+    `Inbound email (Resend receiving): ${capabilities.hasInboundEmail ? "LIVE — webhook wired at /api/webhooks/resend-inbound" : "not configured — set RESEND_FROM_EMAIL, RESEND_REPLY_TO_EMAIL, RESEND_INBOUND_WEBHOOK_SECRET, and add the receiving webhook"}`,
     `Voice AI agent (Vapi): ${capabilities.hasLiveVoiceAgent ? "LIVE — outbound calls + webhook wired" : capabilities.hasVoiceAgent ? "API key present but VAPI_PHONE_NUMBER_ID/VAPI_WEBHOOK_SECRET missing — see adapters/voiceAgent.ts" : "not configured — set VAPI_API_KEY, VAPI_PHONE_NUMBER_ID, VAPI_WEBHOOK_SECRET"}`,
     `Lead discovery: ${capabilities.hasLeadDiscovery ? "LIVE (Arctic Shift read-only archive)" : "unavailable"}`,
     `Property valuation/AVM (RentCast): ${capabilities.hasPropertyData ? "available as an evidence fallback" : "not configured — insufficient evidence is reported instead of a simulated estimate"}`,

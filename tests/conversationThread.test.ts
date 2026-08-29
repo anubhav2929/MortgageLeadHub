@@ -186,6 +186,23 @@ describe("buildConversationBrief", () => {
     expect(brief).toContain("[email] Borrower:");
   });
 
+  it("shares SMS, email, and voice turns in one ordered model context", () => {
+    const brief = buildConversationBrief(buildLeadThread({
+      attempts: [
+        attempt({ id: "sms-out", channel: "SMS", body: "Can we talk tomorrow?", startedAt: "2026-08-11T14:00:00Z" }),
+        attempt({ id: "voice-attempt", channel: "VOICE", body: "Call placed", startedAt: "2026-08-11T16:00:00Z" }),
+      ],
+      conversations: [conversation({ id: "voice", contactAttemptId: "voice-attempt" })],
+      notes: [note({ body: "Tomorrow afternoon works.", createdAt: "2026-08-11T15:00:00Z" })],
+    }));
+
+    expect(brief).toContain("[sms] Us: Can we talk tomorrow?");
+    expect(brief).toContain("[email] Borrower: Tomorrow afternoon works.");
+    expect(brief).toContain("[voice] Borrower: Sure.");
+    expect(brief.indexOf("[sms]")).toBeLessThan(brief.indexOf("[email]"));
+    expect(brief.indexOf("[email]")).toBeLessThan(brief.indexOf("[voice]"));
+  });
+
   it("keeps only the most recent messages", () => {
     const attempts = Array.from({ length: 20 }, (_, i) =>
       attempt({ id: `a${i}`, startedAt: `2026-08-11T${String(i).padStart(2, "0")}:00:00Z`, body: `message ${i}` })

@@ -1,7 +1,7 @@
 import { getRecentAiUsage, type AiUsageSample } from "@/adapters/aiGateway";
 import { getDb } from "@/domain/store";
 import { ensureOperationalSchema, hasSqlDatabase, sqlQuery } from "@/domain/sql";
-import { getAppUrl, getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
+import { getCapabilities, getConfigValue, getPublicUrlResolution } from "@/lib/runtimeConfig";
 import type { InboundCallTriage } from "@/domain/types";
 
 export interface OperationalDiagnostics {
@@ -11,17 +11,24 @@ export interface OperationalDiagnostics {
   aiUsage: AiUsageSample[];
   adminTimezone: string;
   timezoneConfirmed: boolean;
+  publicAppUrl: string;
+  publicUrlSource: string;
+  publicUrlWarning?: string;
   telnyxPrimaryUrl: string;
   telnyxFailoverUrl: string;
+  vapiWebhookUrl: string;
+  resendDeliveryUrl: string;
+  resendInboundUrl: string;
   telnyxSignedWebhooksReady: boolean;
   vapiCredentialReady: boolean;
   capabilities: Awaited<ReturnType<typeof getCapabilities>>;
 }
 
 export async function getOperationalDiagnostics(): Promise<OperationalDiagnostics> {
-  const [db, appUrl, capabilities, telnyxPublicKey, vapiCredential] = await Promise.all([
-    getDb(), getAppUrl(), getCapabilities(), getConfigValue("TELNYX_PUBLIC_KEY"), getConfigValue("VAPI_WEBHOOK_CREDENTIAL_ID"),
+  const [db, publicUrl, capabilities, telnyxPublicKey, vapiCredential] = await Promise.all([
+    getDb(), getPublicUrlResolution(), getCapabilities(), getConfigValue("TELNYX_PUBLIC_KEY"), getConfigValue("VAPI_WEBHOOK_CREDENTIAL_ID"),
   ]);
+  const appUrl = publicUrl.url;
   let queueAvailable = false;
   const webhookCounts: Record<string, number> = {};
   if (hasSqlDatabase()) {
@@ -41,8 +48,16 @@ export async function getOperationalDiagnostics(): Promise<OperationalDiagnostic
     aiUsage: getRecentAiUsage().slice(-30).reverse(),
     adminTimezone: db.config.adminTimezone ?? "UTC",
     timezoneConfirmed: Boolean(db.config.timezoneConfirmed),
+    publicAppUrl: appUrl,
+    publicUrlSource: publicUrl.source,
+    publicUrlWarning: publicUrl.configuredInvalid
+      ? `The saved APP_URL is invalid (${publicUrl.configuredError ?? "invalid value"}); provider URLs are using the Vercel fallback.`
+      : undefined,
     telnyxPrimaryUrl: `${appUrl}/api/webhooks/telnyx`,
     telnyxFailoverUrl: `${appUrl}/api/webhooks/telnyx/failover`,
+    vapiWebhookUrl: `${appUrl}/api/webhooks/vapi`,
+    resendDeliveryUrl: `${appUrl}/api/webhooks/delivery/resend`,
+    resendInboundUrl: `${appUrl}/api/webhooks/resend-inbound`,
     telnyxSignedWebhooksReady: Boolean(telnyxPublicKey),
     vapiCredentialReady: Boolean(vapiCredential),
     capabilities,

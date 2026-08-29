@@ -12,6 +12,7 @@
 
 import { autoAssignOfficer, pushEvent } from "@/domain/actions";
 import { getDb, newId, nowIso, saveDb } from "@/domain/store";
+import type { Lead, Person } from "@/domain/types";
 
 export interface InboundEmailInput {
   fromEmail: string;
@@ -29,23 +30,45 @@ function extractEmailAddress(raw: string): string {
   return (match ? match[1] : raw).trim().toLowerCase();
 }
 
-export async function ingestInboundEmail(input: InboundEmailInput): Promise<{ matched: boolean; reason?: "unknown_sender" | "ambiguous_sender" }> {
+export function matchInboundEmailToPerson(input: {
+  fromEmail: string;
+  toEmails?: string[];
+  people: Person[];
+  leads: Lead[];
+}): { person?: Person; reason?: "unknown_sender" | "ambiguous_sender" } {
   const fromEmail = extractEmailAddress(input.fromEmail);
-  const db = await getDb();
-
   const aliasToken = input.toEmails
     ?.map(extractEmailAddress)
     .map((address) => address.match(/^[^+@]+\+([A-Za-z0-9_-]+)@/)?.[1])
     .find(Boolean);
   const aliasLead = aliasToken
-    ? Array.from(db.leads.values()).find((candidate) => candidate.publicRef === aliasToken)
+    ? input.leads.find((candidate) => candidate.publicRef === aliasToken)
     : undefined;
-  const senderMatches = Array.from(db.people.values()).filter((p) => p.email.trim().toLowerCase() === fromEmail);
-  const person = aliasLead
-    ? Array.from(db.people.values()).find((candidate) => candidate.leadId === aliasLead.id && candidate.role === "PRIMARY")
+  const senderMatches = input.people.filter((person) => person.email.trim().toLowerCase() === fromEmail);
+  const aliasPerson = aliasLead
+    ? input.people.find((candidate) => candidate.leadId === aliasLead.id && candidate.role === "PRIMARY")
+    : undefined;
+  // The +publicRef alias disambiguates multiple inquiries for the same
+  // borrower; it is not authentication. Require the sender to match the
+  // primary person's saved email before attaching their words to AI context.
+  const person = aliasPerson?.email.trim().toLowerCase() === fromEmail
+    ? aliasPerson
     : senderMatches.length === 1 ? senderMatches[0] : undefined;
+  if (person) return { person };
+  return { reason: senderMatches.length > 1 ? "ambiguous_sender" : "unknown_sender" };
+}
+
+export async function ingestInboundEmail(input: InboundEmailInput): Promise<{ matched: boolean; reason?: "unknown_sender" | "ambiguous_sender" }> {
+  const db = await getDb();
+  const match = matchInboundEmailToPerson({
+    fromEmail: input.fromEmail,
+    toEmails: input.toEmails,
+    people: Array.from(db.people.values()),
+    leads: Array.from(db.leads.values()),
+  });
+  const person = match.person;
   if (!person) {
-    const reason = senderMatches.length > 1 ? "ambiguous_sender" : "unknown_sender";
+    const reason = match.reason ?? "unknown_sender";
     console.log(`[inbound-email] ${reason.replace("_", " ")} — dropped`);
     return { matched: false, reason };
   }

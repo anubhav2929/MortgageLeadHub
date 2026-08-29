@@ -49,6 +49,13 @@ export interface DeliveryFailure {
   affectsAllLeads: boolean;
 }
 
+/** A carrier rejection that is itself evidence of a borrower SMS opt-out.
+ * This is materially different from a bad number: it creates a global STOP
+ * suppression and must never be routed into a "verify contact data" task. */
+export function isCarrierOptOutFailure(failure: DeliveryFailure): boolean {
+  return failure.providerCode === "21610" || failure.providerCode === "40300";
+}
+
 // Provider error codes that mean "this destination will never work".
 // Retrying any of these is pure waste and, for 21610 (opted out), is a
 // TCPA violation — the carrier is telling us the borrower revoked consent.
@@ -77,16 +84,20 @@ const TWILIO_CONFIGURATION = new Set([
 ]);
 
 const TELNYX_PERMANENT = new Set([
-  "40001", // invalid destination
-  "40002", // destination unreachable
-  "40008", // blocked by STOP
-  "40010", // landline / not SMS capable
+  "40001", // not routable / invalid destination
+  "40003", // permanently blocked as spam
+  "40300", // recipient sent STOP
+  "40310", // invalid destination address
+  "40314", // permanent recipient rejection
+  "40322", // permanently invalid recipient
 ]);
 
 const TELNYX_CONFIGURATION = new Set([
   "10001", // unauthorized
-  "40300", // number not owned
-  "40305", // 10DLC not registered
+  "40010", // sending number is not registered for 10DLC
+  "40305", // invalid from address / number not on messaging profile
+  "40329", // toll-free sender not verified
+  "47000", // 10DLC campaign required
 ]);
 
 /**
@@ -108,6 +119,20 @@ export function classifyFailure(
     return { class: "TRANSIENT", message, affectsAllLeads: false };
   }
 
+  // Prefer a provider's structured code over generic HTTP text. Telnyx STOP
+  // is code 40300 and is returned with HTTP 403; treating the string "403"
+  // first would incorrectly turn a borrower opt-out into an account outage.
+  if (code) {
+    if (provider === "twilio") {
+      if (TWILIO_CONFIGURATION.has(code)) return { class: "CONFIGURATION", providerCode: code, message, affectsAllLeads: true };
+      if (TWILIO_PERMANENT.has(code)) return { class: "PERMANENT", providerCode: code, message, affectsAllLeads: false };
+    }
+    if (provider === "telnyx") {
+      if (TELNYX_CONFIGURATION.has(code)) return { class: "CONFIGURATION", providerCode: code, message, affectsAllLeads: true };
+      if (TELNYX_PERMANENT.has(code)) return { class: "PERMANENT", providerCode: code, message, affectsAllLeads: false };
+    }
+  }
+
   // Auth failures are recognisable across every vendor and always mean the
   // credential in the admin panel is wrong or revoked.
   if (/unauthorized|authentication|invalid api key|forbidden|401|403/.test(lower)) {
@@ -118,17 +143,6 @@ export function classifyFailure(
   // only response, and marking it permanent would kill a working channel.
   if (/rate limit|too many requests|429/.test(lower)) {
     return { class: "TRANSIENT", providerCode: code, message, affectsAllLeads: false };
-  }
-
-  if (code) {
-    if (provider === "twilio") {
-      if (TWILIO_CONFIGURATION.has(code)) return { class: "CONFIGURATION", providerCode: code, message, affectsAllLeads: true };
-      if (TWILIO_PERMANENT.has(code)) return { class: "PERMANENT", providerCode: code, message, affectsAllLeads: false };
-    }
-    if (provider === "telnyx") {
-      if (TELNYX_CONFIGURATION.has(code)) return { class: "CONFIGURATION", providerCode: code, message, affectsAllLeads: true };
-      if (TELNYX_PERMANENT.has(code)) return { class: "PERMANENT", providerCode: code, message, affectsAllLeads: false };
-    }
   }
 
   // Resend reports bounces as text rather than numeric codes.

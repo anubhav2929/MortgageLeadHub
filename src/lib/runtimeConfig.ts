@@ -19,6 +19,7 @@
 
 import { getDb } from "@/domain/store";
 import { decryptSecret } from "@/core/secretBox";
+import { resolvePublicAppUrl, type PublicUrlResolution } from "@/core/publicUrl";
 
 /** One provider value. Database (admin-entered) wins over env, so a key set
  *  in the panel overrides a stale deploy-time variable rather than being
@@ -81,12 +82,15 @@ export interface RuntimeCapabilities {
 /** Freshly computed on every call. Cheap — the store is already in memory
  *  after first load, so this is a handful of Map lookups plus a decrypt. */
 export async function getCapabilities(): Promise<RuntimeCapabilities> {
-  const hasTelnyx = await hasAll(["TELNYX_API_KEY", "TELNYX_PHONE_NUMBER"]);
+  // "Live" means production two-way messaging, not merely that the send API
+  // can accept a request. Requiring the verification key prevents automated
+  // cadence from running while inbound STOP and delivery truth are unverifiable.
+  const hasTelnyx = await hasAll(["TELNYX_API_KEY", "TELNYX_PHONE_NUMBER", "TELNYX_PUBLIC_KEY"]);
   const hasTwilio = await hasAll(["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"]);
   const hasOpenAi = await hasAll(["OPENAI_API_KEY"]);
   const hasAnthropic = await hasAll(["ANTHROPIC_API_KEY"]);
   const hasNvidia = await hasAll(["NVIDIA_API_KEY"]);
-  const hasResend = await hasAll(["RESEND_API_KEY"]);
+  const hasResend = await hasAll(["RESEND_API_KEY", "RESEND_FROM_EMAIL"]);
 
   // Telnyx voice needs strictly more than Telnyx SMS: TeXML fetches the call
   // script over HTTP rather than accepting it inline, which requires a TeXML
@@ -107,7 +111,7 @@ export async function getCapabilities(): Promise<RuntimeCapabilities> {
     hasNvidia,
     hasAnyLlm: hasOpenAi || hasAnthropic || hasNvidia,
     hasResend,
-    hasInboundEmail: hasResend && (await hasAll(["RESEND_INBOUND_WEBHOOK_SECRET"])),
+    hasInboundEmail: hasResend && (await hasAll(["RESEND_REPLY_TO_EMAIL", "RESEND_INBOUND_WEBHOOK_SECRET"])),
     hasVoiceAgent: await hasAll(["VAPI_API_KEY", "VAPI_PHONE_NUMBER_ID", "VAPI_WEBHOOK_SECRET"]),
     hasPartialVoiceAgent:
       (await hasAll(["VAPI_API_KEY"])) && !(await hasAll(["VAPI_PHONE_NUMBER_ID", "VAPI_WEBHOOK_SECRET"])),
@@ -122,10 +126,19 @@ export async function getCapabilities(): Promise<RuntimeCapabilities> {
   };
 }
 
-/** Public base URL for email links and webhook callbacks. */
-export async function getAppUrl(): Promise<string> {
+/** Public base URL resolution for diagnostics and all provider callbacks. */
+export async function getPublicUrlResolution(): Promise<PublicUrlResolution> {
   const configured = await getConfigValue("APP_URL");
-  if (configured) return configured.replace(/\/$/, "");
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return "http://localhost:3000";
+  return resolvePublicAppUrl({
+    configured,
+    vercelProductionUrl: process.env.VERCEL_PROJECT_PRODUCTION_URL,
+    vercelDeploymentUrl: process.env.VERCEL_URL,
+  });
+}
+
+/** Always returns a syntactically valid origin, even if a legacy Admin value
+ * is malformed. This keeps metadata and webhook generation available while
+ * the Admin corrects the stored field. */
+export async function getAppUrl(): Promise<string> {
+  return (await getPublicUrlResolution()).url;
 }

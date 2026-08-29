@@ -4,6 +4,7 @@ import {
   countsAgainstAttemptCap,
   decideRetry,
   describeFailure,
+  isCarrierOptOutFailure,
   isTerminalOutcome,
   mapProviderStatus,
   shouldApplyStatus,
@@ -83,16 +84,28 @@ describe("classifyFailure — permanent vs transient vs configuration", () => {
   });
 
   it("classifies Telnyx's own permanent and configuration codes", () => {
-    for (const code of ["40001", "40002", "40008", "40010"]) {
+    for (const code of ["40001", "40003", "40300", "40310", "40314", "40322"]) {
       expect(classifyFailure("telnyx", code, "carrier rejected").class, code).toBe("PERMANENT");
     }
-    for (const code of ["10001", "40300", "40305"]) {
+    for (const code of ["10001", "40010", "40305", "40329", "47000"]) {
       expect(classifyFailure("telnyx", code, "account problem").class, code).toBe("CONFIGURATION");
     }
   });
 
+  it("does not confuse Telnyx STOP's HTTP 403 response with account authentication", () => {
+    const result = classifyFailure("telnyx", "40300", "Telnyx API returned 403: Blocked due to STOP message");
+    expect(result.class).toBe("PERMANENT");
+    expect(result.affectsAllLeads).toBe(false);
+    expect(isCarrierOptOutFailure(result)).toBe(true);
+  });
+
+  it("distinguishes carrier STOP evidence from an invalid destination", () => {
+    expect(isCarrierOptOutFailure(classifyFailure("twilio", "21610", "opted out"))).toBe(true);
+    expect(isCarrierOptOutFailure(classifyFailure("twilio", "21211", "invalid number"))).toBe(false);
+  });
+
   it("does not apply one carrier's codes to another carrier", () => {
-    // 40008 is a Telnyx STOP code; it means nothing to Twilio and must not be
+    // A Telnyx delivery code means nothing to Twilio and must not be
     // silently treated as a permanent opt-out there.
     expect(classifyFailure("twilio", "40008", "unrelated").class).toBe("TRANSIENT");
   });

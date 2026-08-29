@@ -73,7 +73,20 @@ async function sendViaTelnyx(input: SendSmsInput, apiKey: string, from: string):
             : {}),
       }),
     });
-    if (!res.ok) throw new Error(`Telnyx API returned ${res.status}: ${await res.text()}`);
+    if (!res.ok) {
+      const raw = await res.text();
+      let providerCode: string | undefined;
+      let providerDetail = raw;
+      try {
+        const parsed = JSON.parse(raw) as { errors?: Array<{ code?: string; title?: string; detail?: string }> };
+        const first = parsed.errors?.[0];
+        providerCode = first?.code;
+        providerDetail = [first?.title, first?.detail].filter(Boolean).join(": ") || raw;
+      } catch {
+        // Preserve the raw provider response when it is not JSON.
+      }
+      return adapterFailure(classifyFailure("telnyx", providerCode, `Telnyx API returned ${res.status}: ${providerDetail}`));
+    }
     const data = (await res.json()) as { data?: { id?: string } };
     if (!data.data?.id) throw new Error("Telnyx response missing message id");
     return adapterSuccess(data.data.id);

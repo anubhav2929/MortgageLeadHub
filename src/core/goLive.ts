@@ -35,6 +35,8 @@ export interface GoLiveInput {
   hasDeliveryWebhookSecret: boolean;
   hasInboundSmsSecret: boolean;
   hasAppUrl: boolean;
+  appUrlSource?: string;
+  appUrlWarning?: string;
   hasCreditCheck: boolean;
   /** When the cadence engine last actually ran. Undefined = never. */
   lastCadenceRunAt?: string;
@@ -188,7 +190,7 @@ export function evaluateGoLive(input: GoLiveInput): ReadinessItem[] {
     label: "Public URL for callbacks",
     status: input.hasAppUrl ? "LIVE" : "DEGRADED",
     detail: input.hasAppUrl
-      ? "Webhook and call-script URLs are built from your configured public URL."
+      ? `${input.appUrlWarning ? `${input.appUrlWarning} ` : ""}Webhook and call-script URLs use the ${input.appUrlSource === "vercel-production" ? "connected Vercel production domain" : input.appUrlSource === "configured" ? "configured canonical origin" : "deployment origin"}.`
       : "Falling back to the deployment URL or localhost. Vapi and carrier callbacks cannot reach localhost, so calls would place but never report an outcome.",
     missingKeys: input.hasAppUrl ? [] : ["APP_URL"],
     remedy: input.hasAppUrl ? undefined : "Set APP_URL to your public https:// origin.",

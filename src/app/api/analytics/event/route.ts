@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { consumeRateLimit } from "@/domain/rateLimit";
 import { getDb } from "@/domain/store";
-import { getConfigValue } from "@/lib/runtimeConfig";
+import { getAppUrl, getConfigValue } from "@/lib/runtimeConfig";
 import { getRequestContext } from "@/lib/requestContext";
 import { GENERIC_ANALYTICS_EVENTS } from "@/core/analyticsPrivacy";
 
@@ -19,7 +19,7 @@ export async function POST(request: Request) {
   const db = await getDb();
   if (db.config.featureFlags?.metaCapi !== true) return NextResponse.json({ ok: true, disabled: true });
   const [pixelId, token, graphVersion, appUrl] = await Promise.all([
-    getConfigValue("META_PIXEL_ID"), getConfigValue("META_CAPI_ACCESS_TOKEN"), getConfigValue("META_GRAPH_API_VERSION"), getConfigValue("APP_URL"),
+    getConfigValue("META_PIXEL_ID"), getConfigValue("META_CAPI_ACCESS_TOKEN"), getConfigValue("META_GRAPH_API_VERSION"), getAppUrl(),
   ]);
   if (!pixelId || !token || !graphVersion || !/^v\d+\.\d+$/.test(graphVersion)) return NextResponse.json({ ok: true, disabled: true });
   const referer = request.headers.get("referer");
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
   try {
     if (referer) {
       const url = new URL(referer);
-      const canonicalOrigin = appUrl ? new URL(appUrl).origin : new URL(request.url).origin;
+      const canonicalOrigin = new URL(appUrl).origin;
       if (url.origin === canonicalOrigin && (url.pathname === "/apply" || url.pathname === "/" || url.pathname.startsWith("/tools"))) sourceUrl = `${canonicalOrigin}${url.pathname}`;
     }
   } catch {

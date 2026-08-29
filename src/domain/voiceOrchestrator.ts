@@ -241,6 +241,8 @@ export async function placeOutboundCall(
     leadId: lead.id,
     conversationId,
     firstName: person?.firstName ?? "there",
+    lastName: person?.lastName,
+    city: lead.city,
     intent: lead.intent,
     goal: lead.goal,
     phoneE164: person?.phoneE164 ?? "",

@@ -15,6 +15,7 @@
 
 import {
   classifyFailure,
+  isCarrierOptOutFailure,
   isTerminalOutcome,
   mapProviderStatus,
   shouldApplyStatus,
@@ -78,8 +79,32 @@ export async function applyDeliveryUpdate(
       lead.attemptsToday = Math.max(0, lead.attemptsToday - 1);
       lead.updatedAt = nowIso();
 
-      if (shouldSuppressChannel(failure)) {
-        const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
+      const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
+      if (attempt.channel === "SMS" && person?.phoneE164 && isCarrierOptOutFailure(failure)) {
+        if (!db.suppressions.has(person.phoneE164)) {
+          db.suppressions.set(person.phoneE164, {
+            id: newId("supp"),
+            phoneE164: person.phoneE164,
+            reason: "OPT_OUT_STOP",
+            scope: "GLOBAL",
+            createdAt: nowIso(),
+            expiresAt: null,
+          });
+        }
+        if (!["SUPPRESSED", "CLOSED_WON", "CLOSED_LOST"].includes(lead.state)) {
+          lead.state = "SUPPRESSED";
+          lead.updatedAt = nowIso();
+        }
+        await pushEvent({
+          leadId: lead.id,
+          type: "OPT_OUT_RECEIVED",
+          actorType: "PROVIDER",
+          actorName: provider,
+          channel: "SMS",
+          occurredAt: nowIso(),
+          payload: { reason: "OPT_OUT_STOP", source: "carrier_delivery_rejection", providerCode: failure.providerCode },
+        });
+      } else if (shouldSuppressChannel(failure)) {
         if (person) {
           const flag = attempt.channel === "EMAIL" ? "EMAIL_UNDELIVERABLE" : "PHONE_UNDELIVERABLE";
           person.dataQualityFlags = Array.from(new Set([...(person.dataQualityFlags ?? []), flag]));

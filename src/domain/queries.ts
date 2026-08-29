@@ -6,7 +6,7 @@ import { evaluateGoLive, summariseGoLive } from "@/core/goLive";
 import { evaluateStaleCall, staleAttemptOutcome } from "@/core/staleCall";
 import { reconcileLiveCalls } from "@/domain/callReconciler";
 import { singleFlight } from "@/core/singleFlight";
-import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
+import { getCapabilities, getConfigValue, getPublicUrlResolution } from "@/lib/runtimeConfig";
 import { sameCalendarDay } from "@/core/timezone";
 import { isReusablePropertyValuation } from "@/core/propertyValuationQuality";
 import { maskEmail, maskPhone } from "@/core/rbac";
@@ -662,7 +662,7 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
  * nothing automatic ever fires.
  */
 export async function getGoLiveReadiness() {
-  const [caps, db] = await Promise.all([getCapabilities(), getDb()]);
+  const [caps, db, publicUrl] = await Promise.all([getCapabilities(), getDb(), getPublicUrlResolution()]);
   const has = async (k: string) => Boolean(await getConfigValue(k));
 
   const items = evaluateGoLive({
@@ -670,7 +670,9 @@ export async function getGoLiveReadiness() {
     hasCronSecret: await has("CRON_SECRET"),
     hasDeliveryWebhookSecret: (await has("TELNYX_PUBLIC_KEY")) || caps.hasTwilio,
     hasInboundSmsSecret: (await has("TELNYX_PUBLIC_KEY")) || caps.hasTwilio,
-    hasAppUrl: (await has("APP_URL")) || Boolean(process.env.VERCEL_URL),
+    hasAppUrl: publicUrl.source !== "localhost",
+    appUrlSource: publicUrl.source,
+    appUrlWarning: publicUrl.configuredInvalid ? "The saved APP_URL is invalid; the stable Vercel production domain is being used instead." : undefined,
     hasCreditCheck: (await has("ISOFTPULL_API_KEY")) && (await has("ISOFTPULL_API_SECRET")) && (await getConfigValue("CREDIT_LIVE_APPROVED")) === "true",
     lastCadenceRunAt: db.lastCadenceRunAt,
     now: new Date(),

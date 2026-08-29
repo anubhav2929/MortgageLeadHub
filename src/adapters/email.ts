@@ -39,7 +39,10 @@ export async function sendEmail(input: SendEmailInput): Promise<AdapterResult> {
     // RESEND_FROM_EMAIL dead config and sent everything from a fake domain.
     const from = resolveSenderAddress(input.from, fromEmail);
     const warning = senderConfigWarning(from);
-    if (warning) console.warn(`[Resend] ${warning}`);
+    if (warning) {
+      console.error(`[Resend] ${warning}`);
+      return adapterFailure({ class: "CONFIGURATION", message: warning, affectsAllLeads: true });
+    }
     const replyToBase = await getConfigValue("RESEND_REPLY_TO_EMAIL");
     const replyTo = input.leadPublicRef && replyToBase
       ? buildLeadReplyToAddress(replyToBase, input.leadPublicRef)

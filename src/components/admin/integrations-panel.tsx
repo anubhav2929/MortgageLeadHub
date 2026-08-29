@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, ChevronDown, ChevronRight, CircleDashed, ExternalLink, Loader2, Lock, Plug, ShieldAlert, Sparkles } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Copy, ExternalLink, Loader2, Lock, Plug, ShieldAlert, Sparkles } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { INTEGRATIONS, isSecretKey, type IntegrationCategory } from "@/core/inte
 import { saveIntegrationKeysAction, testIntegrationAction, type IntegrationStatus } from "@/domain/integrationActions";
 import { formatDateTime } from "@/lib/utils";
 import type { FailedAttemptItem } from "@/domain/queries";
+import { normalizePublicAppUrl } from "@/core/publicUrl";
 
 const CATEGORY_ORDER: IntegrationCategory[] = ["Messaging", "AI", "Voice AI", "Data", "Platform"];
 
@@ -20,11 +21,22 @@ export function IntegrationsPanel({
   storageEnabled,
   canEdit,
   recentFailures,
+  publicEndpoints,
 }: {
   statuses: IntegrationStatus[];
   storageEnabled: boolean;
   canEdit: boolean;
   recentFailures: FailedAttemptItem[];
+  publicEndpoints: {
+    appUrl: string;
+    source: string;
+    warning?: string;
+    telnyxPrimary: string;
+    telnyxFailover: string;
+    vapi: string;
+    resendDelivery: string;
+    resendInbound: string;
+  };
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const statusById = new Map(statuses.map((s) => [s.id, s]));
@@ -82,6 +94,20 @@ export function IntegrationsPanel({
                   open={openId === def.id}
                   onToggle={() => setOpenId(openId === def.id ? null : def.id)}
                   canEdit={canEdit && storageEnabled}
+                  endpoints={
+                    def.id === "telnyx" ? [
+                      { label: "Webhook URL", url: publicEndpoints.telnyxPrimary },
+                      { label: "Webhook Failover URL", url: publicEndpoints.telnyxFailover },
+                    ] : def.id === "vapi" ? [
+                      { label: "Server and tool webhook URL", url: publicEndpoints.vapi },
+                    ] : def.id === "resend" ? [
+                      { label: "Delivery webhook URL", url: publicEndpoints.resendDelivery },
+                      { label: "Inbound email webhook URL", url: publicEndpoints.resendInbound },
+                    ] : def.id === "platform" ? [
+                      { label: `Effective production origin (${publicEndpoints.source})`, url: publicEndpoints.appUrl },
+                    ] : undefined
+                  }
+                  endpointWarning={def.id === "platform" ? publicEndpoints.warning : undefined}
                 />
               ))}
             </div>
@@ -119,17 +145,22 @@ function IntegrationRow({
   open,
   onToggle,
   canEdit,
+  endpoints,
+  endpointWarning,
 }: {
   def: (typeof INTEGRATIONS)[number];
   status?: IntegrationStatus;
   open: boolean;
   onToggle: () => void;
   canEdit: boolean;
+  endpoints?: Array<{ label: string; url: string }>;
+  endpointWarning?: string;
 }) {
   const { push } = useToast();
   const router = useRouter();
   const [isSaving, startSave] = useTransition();
   const [testing, setTesting] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
     for (const f of def.fields) init[f.key] = status?.fields.find((x) => x.key === f.key)?.display ?? "";
@@ -140,10 +171,29 @@ function IntegrationRow({
   const isPlatform = def.id === "platform";
 
   function save() {
+    const nextValues = { ...values };
+    if (def.id === "platform" && nextValues.APP_URL?.trim()) {
+      const normalized = normalizePublicAppUrl(nextValues.APP_URL);
+      if (normalized.ok) {
+        nextValues.APP_URL = normalized.url;
+        setValues(nextValues);
+      }
+    }
     startSave(async () => {
-      const result = await saveIntegrationKeysAction(def.id, values);
+      const result = await saveIntegrationKeysAction(def.id, nextValues);
       push({ title: result.message, tone: result.ok ? "success" : "danger" });
+      if (result.ok) router.refresh();
     });
+  }
+
+  async function copyEndpoint(url: string) {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedUrl(url);
+      window.setTimeout(() => setCopiedUrl((current) => current === url ? null : current), 1600);
+    } catch {
+      push({ title: "Could not copy automatically. Select the URL and copy it manually.", tone: "danger" });
+    }
   }
 
   async function runTest() {
@@ -290,6 +340,34 @@ function IntegrationRow({
             </div>
 
             <div className="rounded-[var(--radius-md)] bg-[var(--background)] p-4">
+              {endpoints && endpoints.length > 0 && (
+                <div className="mb-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3.5">
+                  <p className="text-[12px] font-semibold text-[var(--foreground)]">Current production URLs</p>
+                  <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--muted-foreground)]">
+                    Generated from the effective public origin. Copy these exact HTTPS values into the provider dashboard.
+                  </p>
+                  {endpointWarning && (
+                    <p className="mt-2 rounded-[var(--radius-sm)] border border-[var(--warning-border)] bg-[var(--warning-tint)] px-2.5 py-2 text-[11.5px] text-[var(--foreground)]">
+                      {endpointWarning}
+                    </p>
+                  )}
+                  <div className="mt-3 space-y-2.5">
+                    {endpoints.map((endpoint) => (
+                      <div key={endpoint.label}>
+                        <p className="text-[11px] font-medium text-[var(--muted-foreground)]">{endpoint.label}</p>
+                        <div className="mt-1 flex items-center gap-2">
+                          <code className="min-w-0 flex-1 break-all rounded-[var(--radius-sm)] bg-[var(--background)] px-2.5 py-2 text-[11.5px] text-[var(--foreground)]">
+                            {endpoint.url}
+                          </code>
+                          <Button variant="ghost" size="sm" onClick={() => copyEndpoint(endpoint.url)} aria-label={`Copy ${endpoint.label}`}>
+                            {copiedUrl === endpoint.url ? <Check className="h-3.5 w-3.5 text-[var(--success)]" /> : <Copy className="h-3.5 w-3.5" />}
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <p className="mb-2.5 text-[12px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">
                 How to set this up
               </p>

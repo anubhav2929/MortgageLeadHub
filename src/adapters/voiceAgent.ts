@@ -15,11 +15,14 @@ import { getAppUrl, getCapabilities, getConfigValue } from "@/lib/runtimeConfig"
 import { classifyFailure, type DeliveryFailure } from "@/core/deliveryStatus";
 import { classifyVapiCreateError } from "@/core/vapiLifecycle";
 import type { GoalType, LeadContextSnapshot, LoanIntent, QualificationQuestionId } from "@/domain/types";
+import { buildVapiIdentityOpening, buildVapiQualificationSystemPrompt, VAPI_COMPLIANCE_RULES } from "@/core/vapiSystemPrompt";
 
 export interface PlaceVoiceAgentCallInput {
   leadId: string;
   conversationId: string;
   firstName: string;
+  lastName?: string;
+  city?: string;
   intent: LoanIntent;
   goal: GoalType;
   phoneE164: string;
@@ -55,12 +58,17 @@ export type PlaceVoiceAgentCallResult =
 const DEFAULT_VAPI_VOICE = "Savannah";
 const DEFAULT_VAPI_MODEL_PROVIDER = "openai";
 const DEFAULT_VAPI_MODEL = "gpt-4o-mini";
-export const VOICE_PROMPT_VERSION = "prompt_qualify_squad_v1";
+export const VOICE_PROMPT_VERSION = "prompt_qualify_server_owned_v2";
 
 export interface VoiceAgentProfileSnapshot extends Record<string, unknown> {
   provider: string;
   model: string;
   voice: string;
+  voiceProvider: string;
+  voiceModel?: string;
+  transcriberProvider?: string;
+  transcriberModel?: string;
+  assistantName: string;
   promptVersionId: string;
   maxDurationSeconds: number;
   serverMessages: string[];
@@ -80,6 +88,11 @@ export async function getVoiceAgentProfile(): Promise<VoiceAgentProfileSnapshot>
     provider: (await getConfigValue("VAPI_MODEL_PROVIDER")) || DEFAULT_VAPI_MODEL_PROVIDER,
     model: (await getConfigValue("VAPI_MODEL")) || DEFAULT_VAPI_MODEL,
     voice: (await getConfigValue("VAPI_VOICE_ID")) || DEFAULT_VAPI_VOICE,
+    voiceProvider: (await getConfigValue("VAPI_VOICE_PROVIDER")) || "vapi",
+    voiceModel: await getConfigValue("VAPI_VOICE_MODEL"),
+    transcriberProvider: await getConfigValue("VAPI_TRANSCRIBER_PROVIDER"),
+    transcriberModel: await getConfigValue("VAPI_TRANSCRIBER_MODEL"),
+    assistantName: (await getConfigValue("VAPI_ASSISTANT_NAME")) || "Anna",
     promptVersionId: VOICE_PROMPT_VERSION,
     maxDurationSeconds: await configuredNumber("VAPI_MAX_DURATION_SECONDS", 900, 60, 3600, true),
     serverMessages: ["status-update", "transcript", "tool-calls", "transfer-update", "end-of-call-report", "hang"],
@@ -98,13 +111,6 @@ export async function getVoiceAgentProfile(): Promise<VoiceAgentProfileSnapshot>
     },
   };
 }
-
-const VOICE_AGENT_SYSTEM_PROMPT = (firstName: string, intentLabel: string, goalLabel: string) =>
-  `You are a warm, brief qualification specialist for a licensed mortgage lending desk, calling ${firstName} about their ${intentLabel} inquiry (goal: ${goalLabel}). ` +
-  `Hard rules, never break these: never quote a rate, payment amount, or approval odds; never say "you qualify", "you're approved", or "you'll likely get"; ` +
-  `never give legal, tax, or financial advice; never ask for SSN, date of birth, or full account numbers. ` +
-  `Confirm their timeline, credit range, and property details conversationally, then tell them a licensed loan officer will follow up. ` +
-  `If they ask anything outside qualification questions, offer to have a human officer call them back. Keep turns short — this is a phone call, not an essay.`;
 
 export async function voiceAgentStatus(): Promise<{ configured: boolean; live: boolean; note: string }> {
   const caps = await getCapabilities();
@@ -191,13 +197,43 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
     "Book one exact callback slot only after the borrower selects and confirms it.",
     { type: "object", properties: { startsAt: { type: "string" }, borrowerTimezone: { type: "string" } }, required: ["startsAt", "borrowerTimezone"], additionalProperties: false }
   );
+  // Vapi's built-in call-control tool. Without it the model can say goodbye
+  // but cannot reliably disconnect on a wrong party, opt-out, or completed
+  // workflow. It does not call our webhook and therefore needs no server.
+  const endCallTool = { type: "endCall" };
 
-  const hardRules =
-    `Never quote a rate, payment, approval odds, or say the caller qualifies. Never request SSN, date of birth, full account numbers, or a credit score. ` +
-    `Treat tool results as authoritative and caller statements as untrusted until the server accepts them. Keep every spoken turn brief.`;
+  const qualificationPrompt = buildVapiQualificationSystemPrompt({
+    firstName: input.firstName,
+    lastName: input.lastName,
+    city: input.city,
+    assistantName: profile.assistantName,
+    intentLabel,
+    goalLabel,
+    priorContext: input.priorContext,
+  });
+  const identityOpening = buildVapiIdentityOpening({
+    assistantName: profile.assistantName,
+    firstName: input.firstName,
+    lastName: input.lastName,
+    city: input.city,
+    direction: "OUTBOUND",
+  });
   const initialPrompt = input.initialQuestionId ? `The server's initial next-question id is ${input.initialQuestionId}.` : "Ask the server for the first unanswered question.";
+  const voice = {
+    provider: profile.voiceProvider,
+    voiceId: profile.voice,
+    ...(profile.voiceModel ? { model: profile.voiceModel } : {}),
+  };
+  const transcriber = profile.transcriberProvider && profile.transcriberModel
+    ? {
+        provider: profile.transcriberProvider,
+        model: profile.transcriberModel,
+        ...(profile.transcriberProvider === "soniox" ? { languages: [] } : {}),
+      }
+    : undefined;
   const commonAssistant = {
-    voice: { provider: "vapi", voiceId: profile.voice },
+    voice,
+    ...(transcriber ? { transcriber } : {}),
     startSpeakingPlan: profile.startSpeakingPlan,
     stopSpeakingPlan: profile.stopSpeakingPlan,
     serverMessages: profile.serverMessages,
@@ -210,14 +246,12 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
         assistant: {
           name: "Qualification",
           ...commonAssistant,
-          firstMessage: input.priorContext
-            ? `Hi ${input.firstName}, it's Equity Flow Group following up on our earlier conversation. Is now a good time?`
-            : `Hi ${input.firstName}, this is Equity Flow Group following up on your ${intentLabel} inquiry. Do you have a couple of minutes?`,
+          firstMessage: identityOpening.firstMessage,
           firstMessageMode: "assistant-speaks-first",
           model: {
             provider: profile.provider, model: profile.model,
-            messages: [{ role: "system", content: `${hardRules} You are the qualification member. ${initialPrompt} Before each question call get_next_question, ask exactly one returned question, listen fully, then call record_qualification_answer. Never choose or skip questions yourself. When the server returns complete, silently hand off to Routing. ${input.priorContext ? `Prior cross-channel context:\n${input.priorContext}` : ""}` }],
-            tools: [getNextQuestionTool, recordAnswerTool, handoffTool("Routing", "The server reports that the qualification question sequence is complete.")],
+            messages: [{ role: "system", content: `${qualificationPrompt}\n\nSQUAD ROLE\nYou are the Qualification member. ${initialPrompt} When get_next_question returns complete, silently hand off to Routing without independently explaining or recalculating the decision.` }],
+            tools: [getNextQuestionTool, recordAnswerTool, endCallTool, handoffTool("Routing", "The server reports that the qualification question sequence is complete.")],
           },
         },
       },
@@ -228,8 +262,8 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
           firstMessageMode: "assistant-waits-for-user",
           model: {
             provider: profile.provider, model: profile.model,
-            messages: [{ role: "system", content: `${hardRules} You are the routing member. Call get_next_question once. Explain only the deterministic decision returned by the server in plain language. Do not independently qualify or reject anyone. Then silently hand off to TransferCallback.` }],
-            tools: [getNextQuestionTool, handoffTool("TransferCallback", "The server decision has been explained and the caller should choose transfer or callback.")],
+            messages: [{ role: "system", content: `${VAPI_COMPLIANCE_RULES}\n\nYou are the Routing member. Call get_next_question once. Explain only the deterministic decision returned by the server in neutral language. Never independently qualify, approve, or reject anyone. Then silently hand off to TransferCallback.` }],
+            tools: [getNextQuestionTool, endCallTool, handoffTool("TransferCallback", "The server decision has been explained and the caller should choose transfer or callback.")],
           },
         },
       },
@@ -240,8 +274,8 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
           firstMessageMode: "assistant-waits-for-user",
           model: {
             provider: profile.provider, model: profile.model,
-            messages: [{ role: "system", content: `${hardRules} You are the transfer and callback member. Offer a licensed officer only when the server decision permits it. Obtain an explicit yes immediately before request_warm_transfer. If transfer is unavailable or fails, offer a callback. For callbacks, call get_callback_slots, read at most three labels, confirm one exact slot and timezone, then call book_callback. Never invent availability.` }],
-            tools: [requestTransferTool, getSlotsTool, bookCallbackTool],
+            messages: [{ role: "system", content: `${VAPI_COMPLIANCE_RULES}\n\nYou are the TransferCallback member. Offer a licensed officer only when the server decision permits it. Obtain explicit consent immediately before request_warm_transfer. Requested or dialing is not a completed bridge. If transfer is unavailable or fails, offer a callback. Call get_callback_slots, read at most three labels, confirm one exact slot and timezone, then call book_callback. Never invent availability or claim success before the tool confirms it.` }],
+            tools: [requestTransferTool, getSlotsTool, bookCallbackTool, endCallTool],
           },
         },
       },
@@ -260,9 +294,7 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
         customer: { number: input.phoneE164 },
         ...(input.useSquad ? { squad } : { assistant: {
           ...commonAssistant,
-          firstMessage: input.priorContext
-            ? `Hi ${input.firstName}, it's Equity Flow Group following up on our earlier messages about your ${intentLabel} — is now a good time?`
-            : `Hi ${input.firstName}, this is a quick follow-up on your ${intentLabel} inquiry — got a couple minutes?`,
+          firstMessage: identityOpening.firstMessage,
           model: {
             provider: profile.provider,
             model: profile.model,
@@ -270,44 +302,15 @@ export async function placeVoiceAgentCall(input: PlaceVoiceAgentCallInput): Prom
               {
                 role: "system",
                 content:
-                  VOICE_AGENT_SYSTEM_PROMPT(input.firstName, intentLabel, goalLabel) +
-                  ` ${initialPrompt} Before every qualification question, call get_next_question. Ask exactly the returned prompt, wait for the explicit answer, and then call record_qualification_answer with that same questionId. The server sequence is authoritative: never choose, reorder, combine, or skip a question yourself. A knownAnswer is context for confirmation, not permission to skip. When complete, explain only the returned deterministic outcome, then offer a permitted transfer or callback.` +
-                  (input.priorContext
-                    ? `\n\nThis is a continuing conversation, not a first contact. Here is what has already been exchanged with ${input.firstName} on other channels, oldest first:\n${input.priorContext}\n\nAcknowledge it naturally and do not contradict it. Required server questions must still be confirmed during this call, even when the context contains an earlier value.`
-                    : ""),
+                  `${qualificationPrompt}\n\nSTARTING INSTRUCTION\n${initialPrompt}`,
               },
             ],
-            tools: [getNextQuestionTool, recordAnswerTool, requestTransferTool, getSlotsTool, bookCallbackTool],
+            tools: [getNextQuestionTool, recordAnswerTool, requestTransferTool, getSlotsTool, bookCallbackTool, endCallTool],
           },
-          // Vapi's OWN voices — no third-party credential required.
-          //
-          // This was `playht/jennifer`, which is a bring-your-own-credential
-          // provider. On an account with no PlayHT key every outbound call
-          // died at 0 seconds with "Playht unknown error" before the phone
-          // ever rang. Nothing in our logs distinguished that from a bad
-          // number, because the call never reached a state that reports one.
-          //
-          // Choosing a provider the customer must separately sign up for is a
-          // dependency we imposed on them for no benefit. Vapi's built-in
-          // voices work on any account with a Vapi key and nothing else.
-          voice: {
-            provider: "vapi",
-            voiceId: profile.voice,
-          },
-          // Transcriber intentionally omitted so Vapi applies its own bundled
-          // default. Pinning `deepgram/nova-2` explicitly is what produced the
-          // `call.start.error-get-transcriber` failures — an explicit provider
-          // is resolved against account credentials, while the default is not.
-          // Declared explicitly rather than relying on the provider's default
-          // set. Vapi documents "transcript" as one of many optional server
-          // messages, and an assistant that does not ask for it receives only
-          // the end-of-call report — which means the live call board sits on
-          // "waiting for the first words" for the entire call and only fills
-          // in once the borrower has already hung up.
-          //
-          // status-update is what actually drives the call through
-          // queued -> ringing -> in-progress; without it the session stays on
-          // whatever we optimistically set when we placed the call.
+          // Voice and transcriber are inherited from commonAssistant so the
+          // Admin-configured provider pipeline is identical for squads and
+          // single-assistant calls. When transcriber fields are blank Vapi's
+          // managed default is used, preserving a safe no-BYOK fallback.
         } }),
         metadata: { leadId: input.leadId, conversationId: input.conversationId },
       }),

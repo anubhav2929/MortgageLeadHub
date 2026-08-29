@@ -21,6 +21,7 @@ import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import { getRedditAccessToken } from "@/adapters/reddit";
 import { verifyArcticShiftConnection } from "@/adapters/leadDiscovery";
 import { verifyPropertyEvidenceConnection } from "@/adapters/propertyData";
+import { normalizePublicAppUrl } from "@/core/publicUrl";
 
 export interface ActionResult {
   ok: boolean;
@@ -90,7 +91,14 @@ export async function getIntegrationStatusesAction(): Promise<{
       const fromEnv = !stored && Boolean(resolved);
       let display = "";
       if (resolved) {
-        display = isSecretKey(f.key) ? "••••••••" : resolved;
+        if (isSecretKey(f.key)) {
+          display = "••••••••";
+        } else if (f.key === "APP_URL") {
+          const normalized = normalizePublicAppUrl(resolved);
+          display = normalized.ok ? normalized.url : resolved;
+        } else {
+          display = resolved;
+        }
       }
       fields.push({
         key: f.key,
@@ -158,13 +166,19 @@ export async function saveIntegrationKeysAction(
     if (!ALL_INTEGRATION_KEYS.includes(key)) continue;
     if (!def.fields.some((f) => f.key === key)) continue;
 
-    const value = rawValue.trim();
+    let value = rawValue.trim();
 
     // Empty means "clear this key", not "save an empty string" — otherwise a
     // blank field would mask a working env var with an empty override.
     if (!value) {
       if (db.credentials.delete(key)) cleared.push(key);
       continue;
+    }
+
+    if (key === "APP_URL") {
+      const normalized = normalizePublicAppUrl(value);
+      if (!normalized.ok) return { ok: false, message: normalized.reason };
+      value = normalized.url;
     }
 
     // The panel sends back the mask for untouched secret fields. Saving that
@@ -215,6 +229,7 @@ export async function saveIntegrationKeysAction(
         (await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) === "true" &&
         Boolean(Array.from(db.redditConnections.values()).find((item) => !item.revokedAt)),
       analytics: Boolean(await getConfigValue("NEXT_PUBLIC_GA_MEASUREMENT_ID")),
+      platform: true,
     } as Record<string, boolean>)[def.id] ?? false;
 
   return {
@@ -238,7 +253,9 @@ async function runIntegrationTest(integrationId: string): Promise<TestResult> {
     switch (integrationId) {
       case "telnyx": {
         const key = await getConfigValue("TELNYX_API_KEY");
-        if (!key) return { ok: false, message: "No API key saved yet." };
+        const number = await getConfigValue("TELNYX_PHONE_NUMBER");
+        const publicKey = await getConfigValue("TELNYX_PUBLIC_KEY");
+        if (!key || !number || !publicKey) return { ok: false, message: "API key, sending number, and webhook public key are all required for production two-way SMS." };
         const res = await fetch("https://api.telnyx.com/v2/phone_numbers?page[size]=1", {
           headers: { Authorization: `Bearer ${key}` },
           signal: AbortSignal.timeout(10_000),
@@ -283,19 +300,29 @@ async function runIntegrationTest(integrationId: string): Promise<TestResult> {
       }
       case "resend": {
         const key = await getConfigValue("RESEND_API_KEY");
-        if (!key) return { ok: false, message: "No API key saved yet." };
+        const from = await getConfigValue("RESEND_FROM_EMAIL");
+        if (!key || !from) return { ok: false, message: "Resend API key and a From address on a verified domain are both required." };
         const res = await fetch("https://api.resend.com/domains", { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
-        return res.ok
-          ? { ok: true, message: "Connected to Resend." }
-          : { ok: false, message: `Resend rejected the key (HTTP ${res.status}).` };
+        if (!res.ok) return { ok: false, message: `Resend rejected the key (HTTP ${res.status}).` };
+        const payload = await res.json() as { data?: Array<{ name?: string; status?: string }> };
+        const fromDomain = from.match(/@([^>\s]+)>?$/)?.[1]?.toLowerCase();
+        const verified = payload.data?.some((domain) => {
+          const name = domain.name?.toLowerCase();
+          return name && domain.status?.toLowerCase() === "verified" && (fromDomain === name || fromDomain?.endsWith(`.${name}`));
+        });
+        return verified
+          ? { ok: true, message: "Connected to Resend; the configured From domain is verified." }
+          : { ok: false, message: "Connected to Resend, but the configured From address is not on a verified domain." };
       }
       case "vapi": {
         const key = await getConfigValue("VAPI_API_KEY");
-        if (!key) return { ok: false, message: "No API key saved yet." };
-        const res = await fetch("https://api.vapi.ai/phone-number", { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
+        const phoneNumberId = await getConfigValue("VAPI_PHONE_NUMBER_ID");
+        const webhookSecret = await getConfigValue("VAPI_WEBHOOK_SECRET");
+        if (!key || !phoneNumberId || !webhookSecret) return { ok: false, message: "Vapi API key, phone-number ID, and webhook token are all required." };
+        const res = await fetch(`https://api.vapi.ai/phone-number/${encodeURIComponent(phoneNumberId)}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
         return res.ok
-          ? { ok: true, message: "Connected to Vapi." }
-          : { ok: false, message: `Vapi rejected the key (HTTP ${res.status}).` };
+          ? { ok: true, message: "Connected to Vapi; the configured phone-number ID exists." }
+          : { ok: false, message: `Vapi could not verify that phone-number ID (HTTP ${res.status}).` };
       }
       case "rentcast": {
         const key = await getConfigValue("PROPERTY_DATA_API_KEY");

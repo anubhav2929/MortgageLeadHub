@@ -1,46 +1,40 @@
-// The Equity Flow Group mark. A roofline over three rising strokes — the
-// home, and the equity building underneath it. Deliberately stroke-based and
-// geometric so it stays legible at favicon size (16px) as well as on the
-// marketing hero.
-//
-// Drop-in replacement for the lucide icon that used to stand in here, so it
-// takes the same `className` sizing (h-4 w-4, etc.) and inherits `currentColor`
-// from whatever badge it sits inside.
+import { cn } from "@/lib/utils";
 
-export function LogoMark({ className }: { className?: string }) {
+type LogoTone = "brand" | "inverse" | "mono";
+
+const TONES: Record<LogoTone, { deep: string; bright: string; ink: string }> = {
+  brand: { deep: "#0E6B4F", bright: "#22A06B", ink: "#111918" },
+  inverse: { deep: "#FFFFFF", bright: "#75D5AC", ink: "#FFFFFF" },
+  mono: { deep: "currentColor", bright: "currentColor", ink: "currentColor" },
+};
+
+/** Home ownership, rising equity, and a flexible path combined into one mark. */
+export function LogoMark({ className, tone = "brand", title }: { className?: string; tone?: LogoTone; title?: string }) {
+  const colors = TONES[tone];
   return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2.1}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-      aria-hidden="true"
-      focusable="false"
-    >
-      {/* roofline */}
-      <path d="M3.25 10.75 L12 4 L20.75 10.75" />
-      {/* equity rising beneath */}
-      <path d="M7.5 19.25 V16.25" />
-      <path d="M12 19.25 V13.75" />
-      <path d="M16.5 19.25 V11.5" />
+    <svg viewBox="0 0 160 150" className={className} role={title ? "img" : undefined} aria-hidden={title ? undefined : true} aria-label={title} focusable="false">
+      <path d="M25 83V43L80 4l55 39v38" fill="none" stroke={colors.deep} strokeWidth="13" strokeLinejoin="miter" />
+      <path d="M45 102V63h20v39zM72 110V43h20v67zM99 103V25h20v78z" fill={colors.bright} />
+      <path d="M7 104c28-12 43 13 68 12 29-1 37-29 78-31-24 11-32 47-70 51-31 3-48-26-76-32Z" fill={colors.bright} />
+      <path d="M0 105c29-5 48 31 83 31 27 0 48-19 67-34-18 27-40 45-67 47-35 2-56-36-83-44Z" fill={colors.deep} />
     </svg>
   );
 }
 
-/** Mark inside its brand-colored badge — the standard lockup used in nav bars,
- *  the sidebar, and every standalone public page header. */
-export function LogoBadge({ className, markClassName }: { className?: string; markClassName?: string }) {
+/** Responsive lockup with live text for crisp rendering and accessibility. */
+export function LogoLockup({ className, markClassName, wordmarkClassName, tone = "brand" }: { className?: string; markClassName?: string; wordmarkClassName?: string; tone?: LogoTone }) {
+  const colors = TONES[tone];
   return (
-    <span
-      className={
-        className ??
-        "flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-[var(--primary)] text-white"
-      }
-    >
-      <LogoMark className={markClassName ?? "h-[18px] w-[18px]"} />
+    <span className={cn("inline-flex items-center gap-2.5", className)} aria-label="Equity Flow Group">
+      <LogoMark className={cn("h-10 w-10 shrink-0", markClassName)} tone={tone} />
+      <span className={cn("flex min-w-0 flex-col leading-none", wordmarkClassName)} aria-hidden="true">
+        <span className="whitespace-nowrap text-[17px] font-bold tracking-[-0.035em]" style={{ color: colors.ink }}>Equity Flow</span>
+        <span className="mt-1 whitespace-nowrap text-[7px] font-bold tracking-[0.42em]" style={{ color: colors.bright }}>GROUP</span>
+      </span>
     </span>
   );
+}
+
+export function LogoBadge({ className, markClassName }: { className?: string; markClassName?: string }) {
+  return <span className={cn("flex h-10 w-10 shrink-0 items-center justify-center", className)}><LogoMark className={cn("h-9 w-9", markClassName)} /></span>;
 }

@@ -24,12 +24,11 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <>
       <div className="flex items-center justify-between px-5 py-5">
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--primary)] text-white">
-            <LogoMark className="h-4 w-4" />
-          </div>
+        <div className="flex items-center gap-2.5">
+          <LogoMark className="h-9 w-9 shrink-0" />
           <div>
-            <p className="text-[13px] font-semibold leading-tight text-[var(--foreground)]">Equity Flow Group</p>
+            <p className="text-[13px] font-bold leading-tight tracking-[-0.02em] text-[var(--foreground)]">Equity Flow</p>
+            <p className="text-[7px] font-bold leading-tight tracking-[0.32em] text-[var(--brand-bright)]">GROUP</p>
             <p className="text-[11px] leading-tight text-[var(--muted-foreground)]">Officer workspace</p>
           </div>
         </div>

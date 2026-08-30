@@ -9,7 +9,7 @@ function HeroCopyA() {
     <>
       <h1 className="mkt-balance text-[42px] font-semibold leading-[1.1] tracking-tight text-[var(--mkt-ink)] sm:text-[56px]">
         Refinance your rate, or turn your{" "}
-        <span className="bg-gradient-to-br from-[var(--mkt-primary)] to-[#0f9d63] bg-clip-text text-transparent">
+        <span className="bg-gradient-to-br from-[var(--mkt-primary)] to-[var(--mkt-bright)] bg-clip-text text-transparent">
           equity into cash
         </span>
         .
@@ -28,7 +28,7 @@ function HeroCopyB() {
     <>
       <h1 className="mkt-balance text-[42px] font-semibold leading-[1.1] tracking-tight text-[var(--mkt-ink)] sm:text-[56px]">
         See what your home&apos;s{" "}
-        <span className="bg-gradient-to-br from-[var(--mkt-primary)] to-[#0f9d63] bg-clip-text text-transparent">
+        <span className="bg-gradient-to-br from-[var(--mkt-primary)] to-[var(--mkt-bright)] bg-clip-text text-transparent">
           equity
         </span>{" "}
         could do for you.
@@ -53,7 +53,7 @@ export function Hero() {
       />
       <div
         className="pointer-events-none absolute -left-40 top-32 h-[420px] w-[420px] rounded-full opacity-50 blur-3xl"
-        style={{ background: "radial-gradient(circle, #e7f5ec, transparent 72%)" }}
+        style={{ background: "radial-gradient(circle, var(--mkt-primary-tint), transparent 72%)" }}
       />
       <div
         className="pointer-events-none absolute inset-0 opacity-[0.35]"

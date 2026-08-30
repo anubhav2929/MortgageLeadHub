@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getCapabilities, getConfigValue } from "@/lib/runtimeConfig";
 import { STATE_NAMES } from "@/domain/stateTimezone";
+import { LogoLockup } from "@/components/brand/logo";
 
 // Derived from the same STATE_NAMES the intake form uses, instead of a
 // hand-maintained list — the two had already drifted apart once (NV and SC
@@ -27,8 +28,9 @@ export async function MktFooter() {
       <div className="mx-auto max-w-6xl px-6 py-12">
         <div className="flex flex-col gap-8 sm:flex-row sm:justify-between">
           <div className="max-w-sm">
-            <p className="text-[14px] font-semibold text-[var(--mkt-ink)]">{legalName}</p>
-            <p className="mt-2 text-[12.5px] leading-relaxed text-[var(--mkt-muted)]">
+            <LogoLockup markClassName="h-12 w-12" wordmarkClassName="[&>span:first-child]:text-[20px] [&>span:last-child]:text-[8px]" />
+            {legalName !== "Equity Flow Group" && <p className="mt-3 text-[12px] font-medium text-[var(--mkt-body)]">{legalName}</p>}
+            <p className="mt-3 text-[12.5px] leading-relaxed text-[var(--mkt-muted)]">
               {NMLS_ID ? `NMLS #${NMLS_ID}. ` : ""}Equal Housing Lender. Licensed in {LICENSED_STATES_LABEL}.
             </p>
             {businessAddress && <p className="mt-2 text-[12px] text-[var(--mkt-muted)]">{businessAddress}</p>}

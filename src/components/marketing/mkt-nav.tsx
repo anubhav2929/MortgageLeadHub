@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Menu, X } from "lucide-react";
-import { LogoMark } from "@/components/brand/logo";
+import { LogoLockup } from "@/components/brand/logo";
 
 const LINKS = [
   { href: "/#how-it-works", label: "How it works" },
@@ -18,11 +18,8 @@ export function MktNav() {
   return (
     <header className="sticky top-0 z-30 border-b border-[var(--mkt-border)] bg-[var(--mkt-bg)]/90 backdrop-blur">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-        <Link href="/" className="flex shrink-0 items-center gap-2.5" onClick={() => setOpen(false)}>
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--mkt-primary)] text-white">
-            <LogoMark className="h-4 w-4" />
-          </span>
-          <span className="whitespace-nowrap text-[15px] font-semibold text-[var(--mkt-ink)]">Equity Flow Group</span>
+        <Link href="/" className="shrink-0" onClick={() => setOpen(false)} aria-label="Equity Flow Group home">
+          <LogoLockup markClassName="h-10 w-10" />
         </Link>
         <nav className="hidden items-center gap-8 lg:flex">
           {LINKS.map((link) => (

@@ -1,23 +1,23 @@
-import { TrendingDown, Wallet, Timer, CreditCard } from "lucide-react";
+import { BrandIconBadge, FlowIcon, GrowthIcon, HomeEquityIcon, TrustIcon } from "@/components/brand/brand-icons";
 
 const PROPS = [
   {
-    icon: TrendingDown,
+    icon: FlowIcon,
     title: "Lower your payment",
     body: "If rates have dropped since you bought, refinancing could mean real monthly savings.",
   },
   {
-    icon: Wallet,
+    icon: GrowthIcon,
     title: "Access your equity",
     body: "Turn the value you've built into cash for renovations, tuition, or anything else.",
   },
   {
-    icon: Timer,
+    icon: HomeEquityIcon,
     title: "Shorten your term",
     body: "Move from a 30-year to a 15-year loan and own your home outright, sooner.",
   },
   {
-    icon: CreditCard,
+    icon: TrustIcon,
     title: "Simplify monthly payments",
     body: "Use available equity to address higher-interest credit-card or personal balances through one planned payment.",
   },
@@ -40,9 +40,7 @@ export function ValueProps() {
               key={p.title}
               className="rounded-2xl border border-[var(--mkt-border)] bg-white p-6 transition-shadow hover:shadow-[0_12px_32px_-16px_rgba(22,33,27,0.15)]"
             >
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--mkt-primary-tint)]">
-                <p.icon className="h-5 w-5 text-[var(--mkt-primary)]" strokeWidth={1.8} />
-              </div>
+              <BrandIconBadge><p.icon className="h-5 w-5" /></BrandIconBadge>
               <h3 className="mt-4 text-[16px] font-semibold text-[var(--mkt-ink)]">{p.title}</h3>
               <p className="mt-1.5 text-[13.5px] leading-relaxed text-[var(--mkt-body)]">{p.body}</p>
             </div>

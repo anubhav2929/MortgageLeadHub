@@ -29,7 +29,7 @@ export default async function ApplyPage({ searchParams }: PageProps) {
         />
         <div
           className="pointer-events-none absolute -left-40 top-32 h-[420px] w-[420px] rounded-full opacity-50 blur-3xl"
-          style={{ background: "radial-gradient(circle, #e7f5ec, transparent 72%)" }}
+          style={{ background: "radial-gradient(circle, var(--mkt-primary-tint), transparent 72%)" }}
           aria-hidden
         />
         <div

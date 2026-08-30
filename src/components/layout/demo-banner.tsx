@@ -32,7 +32,7 @@ export async function DemoBanner() {
     <div
       role="region"
       aria-label="Environment status"
-      className="flex items-center justify-center gap-2 bg-[#1d1b3a] px-4 py-1.5 text-center text-xs font-medium text-white"
+      className="flex items-center justify-center gap-2 bg-[var(--foreground)] px-4 py-1.5 text-center text-xs font-medium text-white"
     >
       <AlertTriangle
         className={`h-3.5 w-3.5 shrink-0 ${env.level === "DEMO" ? "text-amber-300" : "text-emerald-300"}`}

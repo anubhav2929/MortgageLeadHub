@@ -1,23 +1,23 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f6f7f9;
+  --background: #f7f8f6;
   --surface: #ffffff;
-  --border: #e4e7ec;
-  --border-strong: #d0d5dd;
-  --foreground: #101828;
-  --muted: #475467;
+  --border: #dfe4e1;
+  --border-strong: #c7d0cb;
+  --foreground: #111918;
+  --muted: #4f5d57;
   /* Darkened from #98a2b3 to meet WCAG AA 4.5:1 text contrast (was ~2.4:1 on --background). */
-  --muted-foreground: #5c687c;
+  --muted-foreground: #64706b;
 
-  /* One brand color across the whole product. The workspace used to run on a
-     generic indigo while the marketing site ran on the Equity Flow green —
-     two different brands in one app. These now match --mkt-primary exactly.
-     #0b7a51 clears WCAG AA on white (5.36:1) for text and icon use. */
-  --primary: #0b7a51;
-  --primary-hover: #085e3e;
+  /* Deep green is the accessible interaction color; bright green remains an
+     accent because it is not dark enough for small text on white. */
+  --primary: #0e6b4f;
+  --primary-hover: #0a563f;
   --primary-foreground: #ffffff;
-  --primary-tint: #e7f5ec;
+  --primary-tint: #e6f5ef;
+  --brand-bright: #22a06b;
+  --font-mono-stack: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 
   --success: #067647;
   --success-tint: #ecfdf3;
@@ -43,7 +43,7 @@
   --shadow-sm: 0 1px 3px 0 rgba(16, 24, 40, 0.08), 0 1px 2px -1px rgba(16, 24, 40, 0.06);
   --shadow-md: 0 4px 8px -2px rgba(16, 24, 40, 0.08), 0 2px 4px -2px rgba(16, 24, 40, 0.04);
   --shadow-lg: 0 12px 16px -4px rgba(16, 24, 40, 0.08), 0 4px 6px -2px rgba(16, 24, 40, 0.03);
-  --shadow-focus: 0 0 0 4px rgba(91, 91, 240, 0.15);
+  --shadow-focus: 0 0 0 4px rgba(14, 107, 79, 0.18);
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -59,8 +59,8 @@
   --color-muted: var(--muted);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-satoshi);
+  --font-mono: var(--font-mono-stack);
 }
 
 html {
@@ -70,8 +70,7 @@ html {
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
-  font-feature-settings: "cv11", "ss01";
+  font-family: var(--font-satoshi), ui-sans-serif, system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -132,28 +131,28 @@ body {
 /* next to a real quote form, not an internal ops dashboard.               */
 /* ---------------------------------------------------------------------- */
 .mkt {
-  --mkt-bg: #fbfbf8;
-  --mkt-bg-alt: #f2f5f1;
+  --mkt-bg: #f7f8f6;
+  --mkt-bg-alt: #edf3ef;
   --mkt-card: #ffffff;
-  --mkt-ink: #16211b;
-  --mkt-body: #46524a;
+  --mkt-ink: #111918;
+  --mkt-body: #45524c;
   /* Darkened from #7c8880 to meet WCAG AA 4.5:1 text contrast (was ~3.7:1 on white cards). */
-  --mkt-muted: #656f68;
-  --mkt-border: #e4e8e0;
-  /* Darkened from #0e8f5f (was ~4.1:1 as small text) — reuses the old hover shade, which already met AA. */
-  --mkt-primary: #0b7a51;
-  --mkt-primary-hover: #085e3e;
-  --mkt-primary-tint: #e7f5ec;
-  --mkt-primary-ink: #073a27;
-  --mkt-accent: #eef2ea;
+  --mkt-muted: #64706b;
+  --mkt-border: #dce5df;
+  --mkt-primary: #0e6b4f;
+  --mkt-primary-hover: #0a563f;
+  --mkt-primary-tint: #e6f5ef;
+  --mkt-primary-ink: #073f2f;
+  --mkt-accent: #dff2e9;
+  --mkt-bright: #22a06b;
 
   background: var(--mkt-bg);
   color: var(--mkt-ink);
-  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-satoshi), ui-sans-serif, system-ui, sans-serif;
 }
 
 .mkt-mono {
-  font-family: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  font-family: var(--font-mono-stack);
   font-variant-numeric: tabular-nums;
 }
 

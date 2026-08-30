@@ -44,9 +44,10 @@ describe("selectVoiceStrategy — preference order", () => {
 
   it("names the missing Vapi fields when it is only partly configured", () => {
     // An operator who pasted the API key and saw a robocall needs to be told
-    // which two fields are still missing, not just "configure Vapi".
+    // which saved-assistant fields are still missing, not just "configure Vapi".
     const strategy = selectVoiceStrategy(caps({ hasTwilioVoice: true, hasPartialVoiceAgent: true }));
     expect(strategy.remedy).toMatch(/phone number ID/i);
+    expect(strategy.remedy).toMatch(/assistant ID/i);
     expect(strategy.remedy).toMatch(/webhook secret/i);
   });
 

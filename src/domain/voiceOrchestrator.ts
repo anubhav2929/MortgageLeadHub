@@ -249,7 +249,6 @@ export async function placeOutboundCall(
     priorContext: priorContext || undefined,
     contextSnapshot,
     initialQuestionId: qualification.nextQuestionId,
-    useSquad: db.config.featureFlags?.vapiSquads === true,
   });
 
   const attempt = db.attempts.find((a) => a.id === attemptId);

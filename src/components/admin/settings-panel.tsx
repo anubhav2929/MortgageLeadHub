@@ -208,9 +208,8 @@ export function SettingsPanel({ config, canEdit }: { config: SystemConfig; canEd
             <CardDescription>Advance each capability independently through internal testing, recorded UAT, and production.</CardDescription>
           </div>
         </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-2">
+          <CardContent className="grid gap-3 sm:grid-cols-2">
           {([
-            ["vapiSquads", "Vapi transient squads"],
             ["automaticWarmTransfer", "Automatic warm transfer"],
             ["callbackScheduling", "In-call callback booking"],
             ["normalizedReads", "Normalized authoritative reads"],

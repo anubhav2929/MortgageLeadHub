@@ -33,7 +33,7 @@ No lead, message, consent, document, credential, account, or audit record was de
 
 | Feature | Activation requirement |
 | --- | --- |
-| Vapi squads and automatic warm transfer | Vapi fields, signed webhook credential, licensed officer/central destination, approved-number UAT, then enable flags. |
+| Vapi saved assistant and automatic warm transfer | API key, saved phone/assistant IDs, webhook token, licensed officer/central destination, approved-number UAT, then enable transfer. |
 | Callback scheduling and automated power dialer | Provider configuration, scheduler, approved-number concurrency/failure UAT, then enable flags. |
 | Telnyx SMS | API key/number/public signing key, signed webhooks, approved 10DLC campaign. |
 | Resend | API key, verified sender domain, from address, inbound and delivery webhook secrets. |

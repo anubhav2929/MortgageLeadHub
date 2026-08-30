@@ -141,7 +141,6 @@ export const DEFAULT_CONFIG: SystemConfig = {
     reminderTemplate: "Reminder: your Equity Flow Group callback starts in 15 minutes at {{localTime}}. Reply STOP to opt out.",
   },
   featureFlags: {
-    vapiSquads: false,
     automaticWarmTransfer: false,
     callbackScheduling: false,
     normalizedReads: false,

@@ -20,9 +20,9 @@
 export type VoiceMechanism = "VAPI_AGENT" | "ANNOUNCEMENT" | "SIMULATED";
 
 export interface VoiceCapabilities {
-  /** Vapi API key, phone number id, and webhook secret all present. */
+  /** Vapi API key, phone number id, assistant id, and webhook secret all present. */
   hasVoiceAgent: boolean;
-  /** Vapi key present but the number id and/or webhook secret are missing. */
+  /** Some, but not all, saved-assistant Vapi fields are present. */
   hasPartialVoiceAgent: boolean;
   /** Twilio account sid, auth token, and from-number all present. */
   hasTwilioVoice: boolean;
@@ -58,7 +58,7 @@ export function selectVoiceStrategy(caps: VoiceCapabilities): VoiceStrategy {
       reason:
         "One-way recorded announcement. The borrower cannot respond and nothing is transcribed, so this call will not qualify anyone.",
       remedy: caps.hasPartialVoiceAgent
-        ? "Vapi is partly configured — add the phone number ID and webhook secret in Admin → Integrations to place real conversations instead."
+        ? "Vapi is partly configured — add the saved assistant ID, phone number ID, and webhook secret in Admin → Integrations to place real conversations instead."
         : "Configure Vapi in Admin → Integrations to place real conversations instead.",
     };
   }
@@ -68,7 +68,7 @@ export function selectVoiceStrategy(caps: VoiceCapabilities): VoiceStrategy {
     degraded: true,
     reason: "No voice provider is connected, so nothing was dialled.",
     remedy: caps.hasPartialVoiceAgent
-      ? "Vapi is partly configured — add the missing phone number ID and webhook secret in Admin → Integrations."
+      ? "Vapi is partly configured — add the missing saved assistant ID, phone number ID, and webhook secret in Admin → Integrations."
       : "Add Vapi (preferred) or Twilio credentials in Admin → Integrations.",
   };
 }

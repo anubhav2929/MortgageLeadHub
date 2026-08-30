@@ -35,14 +35,9 @@ Use Admin → Operations to verify the exact URLs, signing readiness, queue stat
 
 ## 4. Vapi compatibility cutover
 
-The initial profile deliberately preserves:
+Create and publish a saved Vapi assistant, then save its ID as `VAPI_ASSISTANT_ID`. Keep the provider/model, voice, transcriber, endpointing, tools, prompt, and server events in that assistant. The CRM call payload references it instead of rebuilding those settings per call.
 
-- Provider/model: `openai` / `gpt-4o-mini`
-- Voice: `Savannah`
-- Existing `VAPI_PHONE_NUMBER_ID`
-- Existing server event set
-
-Create a Vapi Custom Credential for the server URL and set `VAPI_WEBHOOK_CREDENTIAL_ID`. For HMAC, use the same key stored as `VAPI_WEBHOOK_SECRET`, SHA-256, hex encoding, signature header `x-vapi-signature`, optional timestamp header `x-vapi-timestamp`, and the raw request body as the signed payload. Keep `VAPI_ALLOW_LEGACY_WEBHOOK_AUTH=false`; the call payload uses `credentialId` and does not send a plaintext compatibility header.
+Create a Vapi Bearer Custom Credential for the server URL using the same token stored as `VAPI_WEBHOOK_SECRET`, and attach it to the assistant and each CRM tool. The credential ID remains in Vapi and is not stored by the CRM.
 
 Canary one outbound and one inbound call to the designated test number. Verify queued → ringing → connected → ended, one-question cadence, deterministic decision, transcript turns, outcome, summary, action items, and reviewed field candidates. Recording retention is off unless it has been explicitly approved and encrypted storage is ready.
 

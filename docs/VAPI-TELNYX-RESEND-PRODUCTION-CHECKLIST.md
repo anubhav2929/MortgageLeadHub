@@ -33,13 +33,13 @@ This design keeps phone, SMS, and email consistent while preventing a text or em
 - [ ] In **Phone Numbers**, confirm the production number can place outbound calls. Copy its Vapi phone-number **ID**, not only the displayed phone number.
 - [ ] In **API Keys**, create a private server key for this CRM.
 - [ ] In **Credentials**, create a Custom Credential with header `Authorization`, Bearer prefix enabled, and a random token of at least 32 bytes.
-- [ ] In the published inbound assistant, set the Server URL to `https://www.equityflowgroup.com/api/webhooks/vapi` and select that credential.
+- [ ] In the published saved assistant, set the Server URL to `https://www.equityflowgroup.com/api/webhooks/vapi` and select that credential.
 - [ ] Enable server messages `status-update`, `transcript`, `tool-calls`, `transfer-update`, `end-of-call-report`, and `hang`.
 - [ ] Add the five custom tools `get_next_question`, `record_qualification_answer`, `request_warm_transfer`, `get_callback_slots`, and `book_callback`, plus Vapi's built-in `endCall` tool. Each custom tool uses the same CRM webhook and credential.
-- [ ] Use the generic inbound first message: `Thanks for calling Equity Flow Group. This is Anna. May I ask who I'm speaking with?`
-- [ ] Use the reviewed prompt in `docs/VAPI-ASSISTANT-SYSTEM-PROMPT.md`. Publish and assign that version to the inbound number.
+- [ ] Use Vapi dynamic variables in the outbound first message and retain a privacy-safe generic inbound fallback.
+- [ ] Use the reviewed prompt in `docs/VAPI-ASSISTANT-SYSTEM-PROMPT.md`, test it, and publish it.
 - [ ] Start with smart endpointing, `0.8` second wait, two-word interruption threshold, `0.2` second voice threshold, one-second backoff, and a 900-second maximum call duration.
-- [ ] The screenshot pipeline can be mirrored in CRM Admin with transcriber provider `soniox` and model `stt-rt-v5`; set voice provider `11labs` only when using an ElevenLabs voice and copy the exact voice ID/model from the Vapi assistant export. Do not infer the voice ID from its display label.
+- [ ] Configure and test the exact voice, model, and transcriber in the Vapi assistant. The CRM does not duplicate these provider settings.
 - [ ] Do not use the Vapi **Talk** button to validate CRM personalization. It runs the dashboard assistant without a CRM lead. Place the test from a lead or the CRM calling center.
 
 ### Vapi: CRM Admin values
@@ -48,16 +48,12 @@ Save these under **Admin → Integrations → Vapi**:
 
 - `VAPI_API_KEY`: private Vapi key
 - `VAPI_PHONE_NUMBER_ID`: exact production number ID
+- `VAPI_ASSISTANT_ID`: exact published saved-assistant ID
 - `VAPI_WEBHOOK_SECRET`: the same random Bearer token used in Vapi
-- `VAPI_WEBHOOK_CREDENTIAL_ID`: the Custom Credential ID
-- `VAPI_ASSISTANT_NAME`: approved spoken name, such as `Anna`
-- `VAPI_MODEL_PROVIDER` and `VAPI_MODEL`: exact provider/model selected in Vapi
-- `VAPI_VOICE_PROVIDER`, `VAPI_VOICE_ID`, and, when required, `VAPI_VOICE_MODEL`
-- `VAPI_TRANSCRIBER_PROVIDER` and `VAPI_TRANSCRIBER_MODEL`, or leave both blank for Vapi's managed default
 - `WARM_TRANSFER_FALLBACK_NUMBER`: central licensed line used when no eligible assigned officer is available
 - `APP_URL`: `https://www.equityflowgroup.com` when the custom production origin is not already resolved by Vercel
 
-For a CRM outbound lead named John Doe in Wichita, the transient assistant begins: `Hi, this is Anna with Equity Flow Group. Am I speaking with John Doe in Wichita?` It does not disclose the inquiry type before identity is confirmed.
+For a CRM outbound lead named John Doe in Wichita, the saved assistant receives those values through dynamic variables. Its reviewed first message should not disclose the inquiry type before identity is confirmed.
 
 ## Telnyx: account-side setup
 
@@ -134,7 +130,7 @@ Do not configure duplicate schedulers. The database leases and idempotency contr
 
 ## Official references
 
-- [Vapi outbound transient assistants](https://docs.vapi.ai/calls/outbound-calling)
+- [Vapi outbound calling with a saved assistant](https://docs.vapi.ai/calls/outbound-calling)
 - [Vapi dynamic variables](https://docs.vapi.ai/assistants/dynamic-variables)
 - [Vapi server events](https://docs.vapi.ai/server-url/events)
 - [Vapi Soniox transcriber](https://docs.vapi.ai/providers/transcriber/soniox)

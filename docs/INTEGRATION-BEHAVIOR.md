@@ -32,7 +32,7 @@ always says which:
 
 | Configured | Mechanism | What the borrower gets |
 | --- | --- | --- |
-| Vapi (key + number id + webhook secret) | **VAPI_AGENT** | A real conversation. Transcribed back onto the lead, feeds extraction. |
+| Vapi (key + number id + saved assistant id + webhook secret) | **VAPI_AGENT** | A real conversation. Transcribed back onto the lead, feeds extraction. |
 | Twilio only | **ANNOUNCEMENT** (degraded) | A recorded message read at them. One-way, no transcript, qualifies nobody. |
 | Neither | **SIMULATED** | Nothing is dialled. |
 

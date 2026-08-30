@@ -160,7 +160,8 @@ export function classifyEndedReason(endedReason: string | undefined): EndedReaso
  * default and a hard quota wall was retried on every cadence tick.
  */
 export function classifyVapiCreateError(httpStatus: number, body: string): { failureClass: FailureClass; detail: string } {
-  const b = body.toLowerCase();
+  const providerMessage = extractVapiErrorMessage(body);
+  const b = `${body} ${providerMessage}`.toLowerCase();
 
   if (httpStatus === 401 || httpStatus === 403 || /invalid key|unauthorized/.test(b)) {
     return { failureClass: "CONFIGURATION", detail: "Vapi rejected the API key. Check that it is the private key." };
@@ -178,6 +179,9 @@ export function classifyVapiCreateError(httpStatus: number, body: string): { fai
   if (/phonenumberid|phone number/.test(b)) {
     return { failureClass: "CONFIGURATION", detail: "The saved Vapi phone number ID is not valid for this account." };
   }
+  if (/assistantid|assistant id|assistant.*(not found|invalid|unavailable|publish)/.test(b)) {
+    return { failureClass: "CONFIGURATION", detail: "The saved Vapi assistant ID is invalid, unpublished, or unavailable to this account." };
+  }
   if (/concurrency|rate limit|too many/.test(b) || httpStatus === 429) {
     return { failureClass: "TRANSIENT", detail: "Vapi concurrency or rate limit reached — retrying shortly." };
   }
@@ -187,7 +191,31 @@ export function classifyVapiCreateError(httpStatus: number, body: string): { fai
   // A 4xx we do not recognise is far more likely to be our request than a
   // blip, and retrying a malformed request every tick helps nobody.
   if (httpStatus >= 400) {
-    return { failureClass: "CONFIGURATION", detail: `Vapi rejected the request (${httpStatus}).` };
+    return {
+      failureClass: "CONFIGURATION",
+      detail: providerMessage
+        ? `Vapi rejected the request: ${providerMessage}`
+        : `Vapi rejected the request (${httpStatus}) without an error message.`,
+    };
   }
   return { failureClass: "TRANSIENT", detail: `Vapi call creation failed (${httpStatus}).` };
+}
+
+function extractVapiErrorMessage(body: string): string {
+  let candidate = "";
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as Record<string, unknown>;
+      if (typeof record.message === "string") candidate = record.message;
+      else if (Array.isArray(record.message)) candidate = record.message.filter((part): part is string => typeof part === "string").join("; ");
+      else if (typeof record.error === "string") candidate = record.error;
+      else if (record.error && typeof record.error === "object" && typeof (record.error as Record<string, unknown>).message === "string") {
+        candidate = String((record.error as Record<string, unknown>).message);
+      }
+    }
+  } catch {
+    candidate = body;
+  }
+  return candidate.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 600);
 }

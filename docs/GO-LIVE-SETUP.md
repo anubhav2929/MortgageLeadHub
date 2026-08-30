@@ -130,10 +130,10 @@ ones are what TCPA complaints are made of. For automatic calling you need Vapi.
 
 ## Part B — Vapi (the AI agent that actually calls)
 
-You do **not** need to build an assistant in the Vapi dashboard. The app sends
-a transient assistant inline with every call — system prompt, first message,
-voice, transcriber, and its own callback URL. Anything you configure in the
-dashboard would be ignored. Skip straight to the number.
+Build, test, and publish the assistant in Vapi. The CRM intentionally does not
+rebuild its prompt, voice, model, transcriber, tools, or speaking behavior on
+every call. It sends the saved assistant ID, phone-number ID, borrower number,
+bounded dynamic variables, and correlation metadata only.
 
 The order below matters: the Vapi connection only appears in Telnyx's outbound
 profile picker *after* the number import, so doing B5 early means finding an
@@ -296,7 +296,7 @@ ephemeral file storage.
 | Value | Gets you |
 | --- | --- |
 | `TELNYX_API_KEY`, `TELNYX_PHONE_NUMBER` | real SMS |
-| `VAPI_API_KEY`, `VAPI_PHONE_NUMBER_ID`, `VAPI_WEBHOOK_SECRET` | real AI calls |
+| `VAPI_API_KEY`, `VAPI_PHONE_NUMBER_ID`, `VAPI_ASSISTANT_ID`, `VAPI_WEBHOOK_SECRET` | real AI calls through the published saved assistant |
 | `APP_URL` | callbacks can reach you |
 | `DELIVERY_WEBHOOK_SECRET` | legacy callback compatibility only; new provider routes use native signatures |
 | `CRON_SECRET` + a scheduler | anything automatic at all |

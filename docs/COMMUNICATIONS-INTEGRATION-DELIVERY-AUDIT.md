@@ -9,16 +9,15 @@ The application code is ready for controlled production UAT after the account-si
 
 No destructive database operation or schema migration was required for this pass. The fixes use the existing normalized qualification, webhook inbox, attempt, message, and outbox structures, so existing lead data is preserved.
 
-The call-question skipping defect was reproduced in code and fixed. Intake and verified values had been seeded into `QualificationProgress` and counted as completed answers. The server now treats them as context only, asks the borrower to confirm or correct each required value, accepts only the current server-selected question, and rejects out-of-sequence answers. The single-assistant fallback now uses the same five server tools as the squad path, so turning squads off no longer returns question control to the model.
+The call-question skipping defect was reproduced in code and fixed. Intake and verified values had been seeded into `QualificationProgress` and counted as completed answers. The server now treats them as context only, asks the borrower to confirm or correct each required value, accepts only the current server-selected question, and rejects out-of-sequence answers. The saved assistant uses the five server tools, so question control stays server-owned while call creation remains minimal.
 
 ## Completion matrix
 
 | Capability | Code status | Account/UAT status | Delivery decision |
 |---|---|---|---|
-| Vapi outbound transient assistant | Complete | Needs a live approved-number call | Ready for UAT |
+| Vapi outbound saved assistant | Complete | Needs a live approved-number call | Ready for UAT |
 | Server-owned one-question sequence | Complete and tested | Needs recorded scenario UAT | Ready for UAT |
-| Vapi squads/handoffs | Implemented behind feature flag | Enable only after baseline UAT | Controlled rollout |
-| Vapi webhook authentication | Bearer, X-Vapi-Secret, and explicit HMAC supported | Create credential and paste ID/token | Configuration required |
+| Vapi webhook authentication | Bearer, X-Vapi-Secret, and explicit HMAC supported | Attach the Bearer credential in Vapi and save its token in CRM | Configuration required |
 | Vapi dashboard inbound assistant | CRM can initialize an exact caller by E.164 | Dashboard assistant must use the listed tools/server settings | Configuration required |
 | Warm transfer/callback tools | Implemented and policy-gated | Needs licensed destinations, flags, and live bridge test | Configuration required |
 | Telnyx outbound SMS | Implemented using `/v2/messages` | Needs key, number, profile, 10DLC | Configuration required |
@@ -38,13 +37,13 @@ The call-question skipping defect was reproduced in code and fixed. Intake and v
 - Form and verified values are retained as a bounded context snapshot but no longer complete a current-call question.
 - `get_next_question` returns exactly one question. When an earlier value exists, the returned prompt asks the borrower to confirm or correct it.
 - `record_qualification_answer` accepts only the question currently selected by the server. Attempts to jump ahead are rejected.
-- Both the squad and single-assistant configurations include `get_next_question`, `record_qualification_answer`, `request_warm_transfer`, `get_callback_slots`, and `book_callback`.
-- Both configurations explicitly state that a known answer is context, not permission to skip.
+- The published saved assistant includes `get_next_question`, `record_qualification_answer`, `request_warm_transfer`, `get_callback_slots`, and `book_callback`.
+- Its reviewed prompt explicitly states that a known answer is context, not permission to skip.
 - Vapi `toolWithToolCallList` nested payloads are now parsed, including nested tool-call IDs and parameters. Tool failures use Vapi's per-result `error` field.
 - Inbound calls matched to exactly one E.164 borrower now initialize the same context snapshot and qualification progress used by outbound calls.
-- Existing endpointing controls remain administrator-editable: smart endpointing, 0.8-second wait, two-word interruption threshold, and one-second interruption backoff. Vapi documents that `waitSeconds` is applied after LLM/TTS processing and that `backoffSeconds` controls post-interruption silence, so these values must be tuned from recordings rather than treated as universal constants ([Vapi voice pipeline](https://docs.vapi.ai/customization/voice-pipeline-configuration)).
+- Endpointing controls live in the saved Vapi assistant and must be tuned from recorded tests rather than duplicated in CRM configuration ([Vapi voice pipeline](https://docs.vapi.ai/customization/voice-pipeline-configuration)).
 
-Vapi recommends Custom Credentials referenced by `credentialId`; its documented standard setup is an `Authorization` Bearer credential, while `X-Vapi-Secret` remains a compatibility option ([Vapi server authentication](https://docs.vapi.ai/server-url/server-authentication)). The receiver now supports both contracts. Vapi also documents nested `toolWithToolCallList` payloads ([Vapi custom tools](https://docs.vapi.ai/tools/custom-tools)) and recommends focused assistants with explicit handoff conditions and carefully bounded context ([Vapi squads](https://docs.vapi.ai/squads)).
+Vapi's documented standard server authentication setup is an `Authorization` Bearer credential, while `X-Vapi-Secret` remains a compatibility option ([Vapi server authentication](https://docs.vapi.ai/server-url/server-authentication)). The receiver supports both contracts. Vapi also documents nested `toolWithToolCallList` payloads, which the receiver parses ([Vapi custom tools](https://docs.vapi.ai/tools/custom-tools)).
 
 ### SMS
 
@@ -75,15 +74,15 @@ Vapi recommends Custom Credentials referenced by `credentialId`; its documented 
 
 ### Vapi
 
-1. In Admin → Integrations → Vapi, save `VAPI_API_KEY`, the exact `VAPI_PHONE_NUMBER_ID`, and a random `VAPI_WEBHOOK_SECRET`.
+1. In Admin → Integrations → Vapi, save `VAPI_API_KEY`, the exact `VAPI_PHONE_NUMBER_ID`, the published `VAPI_ASSISTANT_ID`, and a random `VAPI_WEBHOOK_SECRET`.
 2. In Vapi → Integrations/Server Configuration, create a Bearer Token Custom Credential:
    - Header: `Authorization`
    - Bearer prefix: enabled
    - Token: the exact value saved as `VAPI_WEBHOOK_SECRET`
-3. Save its ID as `VAPI_WEBHOOK_CREDENTIAL_ID` in the CRM.
-4. For CRM-originated outbound calls, the CRM sends a transient assistant or squad with the call. The separately published assistant shown on the phone number is not the source of truth for those outbound calls.
-5. For inbound calls, keep a published assistant on the number and configure its server URL as `https://www.equityflowgroup.com/api/webhooks/vapi`, use the same Custom Credential, enable `status-update`, `transcript`, `tool-calls`, `transfer-update`, `end-of-call-report`, and `hang`, and add the same five server tools. Its prompt must say: before every qualification question call `get_next_question`; ask only the returned prompt; record only the explicit answer; never choose or skip questions.
-6. Do not paste large lead records or restricted identifiers into the Vapi dashboard prompt. Runtime context comes from the CRM snapshot.
+3. Attach that credential in Vapi to the saved assistant and all five CRM tools. The CRM does not need the credential ID.
+4. For CRM-originated outbound calls, the CRM references the published saved assistant and supplies only bounded dynamic variables and correlation metadata.
+5. Configure its server URL as `https://www.equityflowgroup.com/api/webhooks/vapi`, enable `status-update`, `transcript`, `tool-calls`, `transfer-update`, `end-of-call-report`, and `hang`, and add the five server tools. Its prompt must say: before every qualification question call `get_next_question`; ask only the returned prompt; record only the explicit answer; never choose or skip questions.
+6. Do not paste lead records or restricted identifiers into the Vapi dashboard prompt. Runtime context comes from bounded CRM variables.
 
 ### Telnyx
 

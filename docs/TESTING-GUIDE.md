@@ -47,18 +47,19 @@ and refuses to save rather than storing keys in plaintext.
 
 ### 1b. Go live on Vapi
 
-Vapi needs **three** values together. With only the API key, the panel tells you
-exactly which two are missing rather than saying "not configured".
+Vapi needs **four** values together. A partial setup remains offline and the
+panel names the incomplete saved-assistant configuration.
 
 1. Create an account at vapi.ai; import or buy a phone number.
 2. **Admin → Integrations → Vapi**, enter:
    - `VAPI_API_KEY`
    - `VAPI_PHONE_NUMBER_ID` (the number's ID, not the number itself)
+   - `VAPI_ASSISTANT_ID` (the published saved assistant's ID)
    - `VAPI_WEBHOOK_SECRET` (invent a strong random string; you'll paste the same
      one into Vapi)
-3. In Vapi's dashboard set the assistant **Server URL** to
-   `https://<your-domain>/api/webhooks/vapi` and the **secret** to the same
-   value.
+3. In Vapi's dashboard configure and publish the assistant. Set its **Server URL**
+   and custom tools to `https://<your-domain>/api/webhooks/vapi`, attaching a
+   Bearer Custom Credential that uses the same webhook token.
 4. Reload. The banner should now read **LIVE**.
 
 ### 1c. Place a real AI call

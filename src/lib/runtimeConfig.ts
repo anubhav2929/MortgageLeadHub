@@ -69,9 +69,8 @@ export interface RuntimeCapabilities {
   hasResend: boolean;
   hasInboundEmail: boolean;
   hasVoiceAgent: boolean;
-  /** VAPI_API_KEY present but the phone number id and/or webhook secret are
-   *  not. Distinct from hasVoiceAgent so the admin panel can name the missing
-   *  field instead of saying "not configured" to someone who just entered a key. */
+  /** Some, but not all, saved-assistant Vapi fields are present. Distinct from
+   *  hasVoiceAgent so the admin panel can name the incomplete setup. */
   hasPartialVoiceAgent: boolean;
   hasLeadDiscovery: boolean;
   hasPropertySearch: boolean;
@@ -91,6 +90,10 @@ export async function getCapabilities(): Promise<RuntimeCapabilities> {
   const hasAnthropic = await hasAll(["ANTHROPIC_API_KEY"]);
   const hasNvidia = await hasAll(["NVIDIA_API_KEY"]);
   const hasResend = await hasAll(["RESEND_API_KEY", "RESEND_FROM_EMAIL"]);
+  const vapiKeys = ["VAPI_API_KEY", "VAPI_PHONE_NUMBER_ID", "VAPI_ASSISTANT_ID", "VAPI_WEBHOOK_SECRET"];
+  const vapiValues = await Promise.all(vapiKeys.map((key) => getConfigValue(key)));
+  const hasVoiceAgent = vapiValues.every(Boolean);
+  const hasPartialVoiceAgent = vapiValues.some(Boolean) && !hasVoiceAgent;
 
   // Telnyx voice needs strictly more than Telnyx SMS: TeXML fetches the call
   // script over HTTP rather than accepting it inline, which requires a TeXML
@@ -112,9 +115,8 @@ export async function getCapabilities(): Promise<RuntimeCapabilities> {
     hasAnyLlm: hasOpenAi || hasAnthropic || hasNvidia,
     hasResend,
     hasInboundEmail: hasResend && (await hasAll(["RESEND_REPLY_TO_EMAIL", "RESEND_INBOUND_WEBHOOK_SECRET"])),
-    hasVoiceAgent: await hasAll(["VAPI_API_KEY", "VAPI_PHONE_NUMBER_ID", "VAPI_WEBHOOK_SECRET"]),
-    hasPartialVoiceAgent:
-      (await hasAll(["VAPI_API_KEY"])) && !(await hasAll(["VAPI_PHONE_NUMBER_ID", "VAPI_WEBHOOK_SECRET"])),
+    hasVoiceAgent,
+    hasPartialVoiceAgent,
     // Arctic Shift is a public, read-only, no-auth source. Reddit OAuth and
     // commercial approval are required for publishing, not retrieval.
     hasLeadDiscovery: true,

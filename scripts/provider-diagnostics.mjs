@@ -62,9 +62,9 @@ try {
       api: telnyxKey ? await check("https://api.telnyx.com/v2/phone_numbers?page[size]=1", { Authorization: `Bearer ${telnyxKey}` }) : null,
     },
     vapi: {
-      configured: Boolean(vapiKey && value("VAPI_PHONE_NUMBER_ID") && value("VAPI_WEBHOOK_SECRET")),
-      customCredentialConfigured: Boolean(value("VAPI_WEBHOOK_CREDENTIAL_ID")),
-      api: vapiKey ? await check("https://api.vapi.ai/phone-number", { Authorization: `Bearer ${vapiKey}` }) : null,
+      configured: Boolean(vapiKey && value("VAPI_PHONE_NUMBER_ID") && value("VAPI_ASSISTANT_ID") && value("VAPI_WEBHOOK_SECRET")),
+      phoneNumber: vapiKey && value("VAPI_PHONE_NUMBER_ID") ? await check(`https://api.vapi.ai/phone-number/${encodeURIComponent(value("VAPI_PHONE_NUMBER_ID"))}`, { Authorization: `Bearer ${vapiKey}` }) : null,
+      assistant: vapiKey && value("VAPI_ASSISTANT_ID") ? await check(`https://api.vapi.ai/assistant/${encodeURIComponent(value("VAPI_ASSISTANT_ID"))}`, { Authorization: `Bearer ${vapiKey}` }) : null,
     },
     email: {
       configured: Boolean(resendKey && (value("RESEND_FROM_EMAIL") || row.value.config?.senderEmail)),

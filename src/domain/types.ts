@@ -454,7 +454,6 @@ export interface SystemConfig {
   };
   callbackReminderPolicy?: CallbackReminderPolicy;
   featureFlags?: {
-    vapiSquads?: boolean;
     automaticWarmTransfer?: boolean;
     callbackScheduling?: boolean;
     normalizedReads?: boolean;

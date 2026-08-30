@@ -27,7 +27,7 @@ export function OperationsPanel({ diagnostics }: { diagnostics: OperationalDiagn
           </CardHeader>
           <CardContent className="grid grid-cols-2 gap-3 text-[13px]">
             <Readiness label="Durable webhook queue" ready={diagnostics.queueAvailable} />
-            <Readiness label="Vapi custom credential" ready={diagnostics.vapiCredentialReady} />
+            <Readiness label="Vapi saved assistant" ready={diagnostics.capabilities.hasVoiceAgent} />
             <Readiness label={`Timezone: ${diagnostics.adminTimezone}`} ready={diagnostics.timezoneConfirmed} />
             <Readiness label="Any CRM AI provider" ready={diagnostics.capabilities.hasAnyLlm} />
           </CardContent>

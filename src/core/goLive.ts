@@ -106,13 +106,13 @@ export function evaluateGoLive(input: GoLiveInput): ReadinessItem[] {
     detail: caps.hasVoiceAgent
       ? "Real conversations. The borrower talks, the call is transcribed back into the lead, and answers feed extraction."
       : caps.hasPartialVoiceAgent
-        ? "Vapi key saved but the call cannot be placed — the phone number ID and/or webhook secret are missing."
+        ? "Vapi is partly configured, but the saved assistant, phone number, key, and webhook token are not all present."
         : "No AI calls are placed. Automated cadence VOICE steps will not dial.",
     missingKeys: caps.hasVoiceAgent
       ? []
       : caps.hasPartialVoiceAgent
-        ? ["VAPI_PHONE_NUMBER_ID", "VAPI_WEBHOOK_SECRET"]
-        : ["VAPI_API_KEY", "VAPI_PHONE_NUMBER_ID", "VAPI_WEBHOOK_SECRET"],
+        ? ["VAPI_PHONE_NUMBER_ID", "VAPI_ASSISTANT_ID", "VAPI_WEBHOOK_SECRET"]
+        : ["VAPI_API_KEY", "VAPI_PHONE_NUMBER_ID", "VAPI_ASSISTANT_ID", "VAPI_WEBHOOK_SECRET"],
     remedy: caps.hasVoiceAgent ? undefined : "Complete the Vapi setup in Admin → Integrations.",
     blocksAutomation: !caps.hasVoiceAgent,
   });

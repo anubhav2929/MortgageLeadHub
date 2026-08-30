@@ -118,6 +118,18 @@ describe("call-creation errors", () => {
     expect(v.detail).toMatch(/private key/i);
   });
 
+  it("names an invalid saved assistant specifically", () => {
+    const v = classifyVapiCreateError(400, '{"message":"assistantId must reference an available published assistant"}');
+    expect(v.failureClass).toBe("CONFIGURATION");
+    expect(v.detail).toMatch(/assistant ID.*invalid|unpublished|unavailable/i);
+  });
+
+  it("preserves a bounded provider message for an unknown schema error", () => {
+    const v = classifyVapiCreateError(400, '{"message":"assistantOverrides.variableValues must be an object"}');
+    expect(v.failureClass).toBe("CONFIGURATION");
+    expect(v.detail).toContain("assistantOverrides.variableValues must be an object");
+  });
+
   it("keeps rate limits and server errors retryable", () => {
     expect(classifyVapiCreateError(429, "too many requests").failureClass).toBe("TRANSIENT");
     expect(classifyVapiCreateError(503, "unavailable").failureClass).toBe("TRANSIENT");

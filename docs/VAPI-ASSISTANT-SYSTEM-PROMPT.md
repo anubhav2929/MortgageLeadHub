@@ -1,12 +1,12 @@
 # Equity Flow Group Vapi assistant configuration
 
-Use this configuration for the Vapi dashboard assistant assigned to the Equity Flow Group phone number. The CRM automatically sends the same rules plus lead-specific context in a transient assistant or squad for every outbound call. The dashboard assistant is the inbound fallback; it does not control CRM-created outbound calls.
+Use this configuration for the published Vapi assistant used by Equity Flow Group. The assistant's prompt, voice, model, transcriber, tools, server events, and speaking behavior live in Vapi. For outbound calls the CRM references this saved assistant and supplies only bounded lead variables and correlation metadata.
 
 ## Which configuration controls each call
 
 | Call path | Assistant source | Personalization available before speech |
 |---|---|---|
-| Call started from a CRM lead, call list, or automated cadence | CRM-created transient Vapi assistant or squad | Validated first name, last name, city, intake snapshot, prior calls, SMS, email, and approved officer notes |
+| Call started from a CRM lead, call list, or automated cadence | Published saved Vapi assistant selected by `VAPI_ASSISTANT_ID` | Validated first name, last name, city, intent, goal, prior context, and CRM correlation IDs through dynamic variables |
 | Call made to the Vapi number by a borrower | Published dashboard assistant assigned to the number | Caller number only unless Vapi `assistant-request` dynamic selection is enabled |
 | Dashboard **Talk** test | Dashboard assistant test session | No CRM lead context unless test variables are supplied manually |
 
@@ -24,7 +24,7 @@ The opening does not say “mortgage,” “loan,” the property address, or fo
 Thanks for calling Equity Flow Group. This is Anna. May I ask who I'm speaking with?
 ```
 
-This is the static dashboard assistant's inbound fallback message. Do not paste a specific borrower name into it. CRM-created outbound calls ignore this first message and receive the exact validated full name and city directly from the CRM.
+This is the assistant's generic inbound fallback. Do not paste a specific borrower name into it. For outbound behavior, reference Vapi's dynamic variables such as `{{firstName}}`, `{{lastName}}`, and `{{city}}`; the CRM supplies their bounded values in `assistantOverrides.variableValues`.
 
 ## System prompt
 
@@ -95,7 +95,7 @@ Also attach Vapi's built-in **End Call** tool (`endCall`). The older `end_mortga
 - Maximum call duration: `900` seconds
 - Server messages: `status-update`, `transcript`, `tool-calls`, `transfer-update`, `end-of-call-report`, `hang`
 
-These values are also configurable in CRM Admin. Tune them only from recorded test calls; do not change the question-order rules in the prompt to compensate for speech-recognition timing.
+These values are configured only in the saved Vapi assistant. Tune them from recorded test calls; do not change the question-order rules in the prompt to compensate for speech-recognition timing.
 
 ## Why the prior prompt skipped questions
 
@@ -105,34 +105,31 @@ The former prompt instructed the assistant to mentally track fields and skip any
 
 - [ ] In **Phone Numbers**, confirm the production number is active and outbound-capable. Copy its Vapi phone-number ID; do not copy only the displayed E.164 number.
 - [ ] In **API Keys**, create or select a private server key. Never place this key in the browser or in a public Vapi prompt.
-- [ ] In **Credentials**, create a Custom Credential that sends `Authorization: Bearer <VAPI_WEBHOOK_SECRET>`. Copy its credential ID into CRM Admin as `VAPI_WEBHOOK_CREDENTIAL_ID`.
-- [ ] In the published inbound assistant, use the inbound first message and system prompt in this document.
+- [ ] In **Credentials**, create a Custom Credential that sends `Authorization: Bearer <VAPI_WEBHOOK_SECRET>` and attach it to the assistant and every CRM tool. The credential itself remains Vapi-owned; its ID is not required by the CRM.
+- [ ] In the saved assistant, use the first message and system prompt in this document, with Vapi dynamic variables for outbound personalization.
 - [ ] Attach the five CRM custom tools with their exact names and attach Vapi's built-in End Call tool.
 - [ ] Point each CRM tool to `https://www.equityflowgroup.com/api/webhooks/vapi` and select the Custom Credential. Never expose `conversationId` as an LLM-editable argument.
 - [ ] Set the assistant Server URL to the same HTTPS webhook and select the same credential.
 - [ ] Enable these server messages: `status-update`, `transcript`, `tool-calls`, `transfer-update`, `end-of-call-report`, and `hang`.
-- [ ] Set assistant-speaks-first for outbound behavior. Keep the static inbound fallback as the published phone-number assistant.
+- [ ] Set assistant-speaks-first for outbound behavior and keep the generic inbound fallback safe for calls without CRM variables.
 - [ ] Enable smart endpointing, `0.8` second wait, two-word interruption threshold, `0.2` second voice threshold, and one-second backoff as the starting UAT values.
-- [ ] Publish the assistant and assign that published version to the intended number for inbound calls.
+- [ ] Publish the assistant, copy its UUID into CRM Admin as `VAPI_ASSISTANT_ID`, and assign it to the intended number for inbound calls when appropriate.
 - [ ] Do not judge CRM personalization by pressing **Talk** in Vapi. Start the test from a real CRM lead because that is the path that sends John Doe, Wichita, and the conversation snapshot.
 
-Vapi supports transient assistants for outbound calls, dynamic variables through call overrides, and server-selected assistants for inbound calls. The CRM uses a transient assistant for outbound calls so the system prompt, server tools, and bounded lead context are created together instead of relying on manually synchronized dashboard variables. See [Vapi outbound calling](https://docs.vapi.ai/calls/outbound-calling), [dynamic variables](https://docs.vapi.ai/assistants/dynamic-variables), and [server events/assistant request](https://docs.vapi.ai/server-url/events).
+Vapi supports saved assistant IDs for outbound calls and dynamic variables through call overrides. The CRM intentionally uses that minimal contract so changes to provider-specific voice, model, transcriber, tool, or endpointing schemas do not make call creation fail. See [Vapi outbound calling](https://docs.vapi.ai/calls/outbound-calling), [dynamic variables](https://docs.vapi.ai/assistants/dynamic-variables), and [server events](https://docs.vapi.ai/server-url/events).
 
 ## CRM-side checklist
 
 - [ ] In **Admin → Integrations → Vapi**, save the Vapi private API key.
 - [ ] Save the exact Vapi phone-number ID in `VAPI_PHONE_NUMBER_ID`.
+- [ ] Save the published saved-assistant ID in `VAPI_ASSISTANT_ID`.
 - [ ] Save the same random webhook token used by the Vapi Custom Credential in `VAPI_WEBHOOK_SECRET`.
-- [ ] Save the Vapi Custom Credential ID in `VAPI_WEBHOOK_CREDENTIAL_ID`.
-- [ ] Set **Assistant caller name** (`VAPI_ASSISTANT_NAME`) to `Anna` or the approved caller name.
-- [ ] Select a supported voice and model. The safe code defaults are Vapi voice `Savannah`, model provider `openai`, and model `gpt-4o-mini` unless Admin overrides them. To mirror the screenshot, set transcriber provider `soniox` and model `stt-rt-v5`; use voice provider `11labs` only with the exact ElevenLabs voice ID/model copied from Vapi.
 - [ ] Verify `APP_URL` resolves to the production HTTPS origin so Vapi receives `https://www.equityflowgroup.com/api/webhooks/vapi`, not localhost or a preview URL.
-- [ ] In **Admin → Settings**, enable **Vapi transient squads** only after single-assistant UAT passes.
 - [ ] Enable **Automatic warm transfer** only after active licensed officers have valid phone numbers and licensed states; otherwise configure the central transfer line.
 - [ ] Enable **In-call callback booking** only after officer working hours, borrower timezones, confirmation SMS, and reminder-worker configuration have passed UAT.
 - [ ] Confirm every lead intended for calling has a validated first name, last name, E.164 phone number, voice consent, city, and borrower timezone. Missing last name or city degrades the greeting safely instead of inventing a value.
 - [ ] Use the CRM **Verify** control for Vapi, then start an approved-number call from the lead page or calling center.
-- [ ] Confirm the Vapi create-call payload contains the CRM-generated transient assistant/squad and metadata with `leadId` and `conversationId`.
+- [ ] Confirm the create-call payload contains only `assistantId`, `phoneNumberId`, `customer`, `assistantOverrides.variableValues`, and metadata with `leadId` and `conversationId`.
 - [ ] Confirm the first message uses the full CRM name and city, while the system prompt contains only the redacted, bounded cross-channel summary.
 - [ ] Confirm the call timeline advances once through queued → ringing → in progress → ended, and transcripts/tool calls appear once.
 - [ ] Confirm all eight server questions are asked or confirmed exactly once and no earlier email/SMS value causes a skipped question.
@@ -149,4 +146,4 @@ Record one approved UAT call and retain screenshots or logs showing:
 5. One deterministic decision, followed by one confirmed transfer or callback path.
 6. One set of transcript, tool, status, and end-of-call events in the CRM timeline.
 
-The code-owned prompt version is `prompt_qualify_server_owned_v2`, implemented in `src/core/vapiSystemPrompt.ts` and applied by `src/adapters/voiceAgent.ts`.
+The runtime call-contract version is `vapi_saved_assistant_v1`. This document is the reviewed prompt source for the published Vapi assistant.

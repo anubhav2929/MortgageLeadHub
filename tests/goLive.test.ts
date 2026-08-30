@@ -106,12 +106,13 @@ describe("keys alone are not sufficient", () => {
 });
 
 describe("naming the exact missing thing", () => {
-  it("asks only for the two fields Vapi is short of, not all three", () => {
+  it("names the saved-assistant fields when Vapi is only partly configured", () => {
     // Telling someone to add an API key they already added is how a go-live
     // stalls for an afternoon.
     const items = evaluateGoLive(input({ caps: { ...input().caps, hasPartialVoiceAgent: true } }));
     expect(byId(items, "voice-agent").missingKeys).toEqual([
       "VAPI_PHONE_NUMBER_ID",
+      "VAPI_ASSISTANT_ID",
       "VAPI_WEBHOOK_SECRET",
     ]);
   });

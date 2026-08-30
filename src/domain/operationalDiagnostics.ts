@@ -20,13 +20,12 @@ export interface OperationalDiagnostics {
   resendDeliveryUrl: string;
   resendInboundUrl: string;
   telnyxSignedWebhooksReady: boolean;
-  vapiCredentialReady: boolean;
   capabilities: Awaited<ReturnType<typeof getCapabilities>>;
 }
 
 export async function getOperationalDiagnostics(): Promise<OperationalDiagnostics> {
-  const [db, publicUrl, capabilities, telnyxPublicKey, vapiCredential] = await Promise.all([
-    getDb(), getPublicUrlResolution(), getCapabilities(), getConfigValue("TELNYX_PUBLIC_KEY"), getConfigValue("VAPI_WEBHOOK_CREDENTIAL_ID"),
+  const [db, publicUrl, capabilities, telnyxPublicKey] = await Promise.all([
+    getDb(), getPublicUrlResolution(), getCapabilities(), getConfigValue("TELNYX_PUBLIC_KEY"),
   ]);
   const appUrl = publicUrl.url;
   let queueAvailable = false;
@@ -59,7 +58,6 @@ export async function getOperationalDiagnostics(): Promise<OperationalDiagnostic
     resendDeliveryUrl: `${appUrl}/api/webhooks/delivery/resend`,
     resendInboundUrl: `${appUrl}/api/webhooks/resend-inbound`,
     telnyxSignedWebhooksReady: Boolean(telnyxPublicKey),
-    vapiCredentialReady: Boolean(vapiCredential),
     capabilities,
   };
 }

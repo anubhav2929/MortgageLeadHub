@@ -192,6 +192,10 @@ export async function saveIntegrationKeysAction(
       return { ok: false, message: "Telnyx messaging profile ID must be the UUID shown on the Messaging Profile page." };
     }
 
+    if ((key === "VAPI_PHONE_NUMBER_ID" || key === "VAPI_ASSISTANT_ID") && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+      return { ok: false, message: `${key === "VAPI_PHONE_NUMBER_ID" ? "Vapi phone-number" : "Vapi assistant"} ID must be the UUID copied from the Vapi dashboard.` };
+    }
+
     // The panel sends back the mask for untouched secret fields. Saving that
     // literally would overwrite a real key with "sk-••••••••4f2a".
     if (value.includes("••")) continue;
@@ -393,12 +397,19 @@ async function runIntegrationTest(integrationId: string): Promise<TestResult> {
       case "vapi": {
         const key = await getConfigValue("VAPI_API_KEY");
         const phoneNumberId = await getConfigValue("VAPI_PHONE_NUMBER_ID");
+        const assistantId = await getConfigValue("VAPI_ASSISTANT_ID");
         const webhookSecret = await getConfigValue("VAPI_WEBHOOK_SECRET");
-        if (!key || !phoneNumberId || !webhookSecret) return { ok: false, message: "Vapi API key, phone-number ID, and webhook token are all required." };
-        const res = await fetch(`https://api.vapi.ai/phone-number/${encodeURIComponent(phoneNumberId)}`, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000) });
-        return res.ok
-          ? { ok: true, message: "Connected to Vapi; the configured phone-number ID exists." }
-          : { ok: false, message: `Vapi could not verify that phone-number ID (HTTP ${res.status}).` };
+        if (!key || !phoneNumberId || !assistantId || !webhookSecret) {
+          return { ok: false, message: "Vapi API key, phone-number ID, published assistant ID, and webhook token are all required." };
+        }
+        const headers = { Authorization: `Bearer ${key}` };
+        const [phoneResponse, assistantResponse] = await Promise.all([
+          fetch(`https://api.vapi.ai/phone-number/${encodeURIComponent(phoneNumberId)}`, { headers, signal: AbortSignal.timeout(10_000) }),
+          fetch(`https://api.vapi.ai/assistant/${encodeURIComponent(assistantId)}`, { headers, signal: AbortSignal.timeout(10_000) }),
+        ]);
+        if (!phoneResponse.ok) return { ok: false, message: `Vapi could not verify the saved phone-number ID (HTTP ${phoneResponse.status}).` };
+        if (!assistantResponse.ok) return { ok: false, message: `Vapi could not verify the saved assistant ID (HTTP ${assistantResponse.status}).` };
+        return { ok: true, message: "Connected to Vapi; the saved assistant and phone number both exist." };
       }
       case "rentcast": {
         const key = await getConfigValue("PROPERTY_DATA_API_KEY");

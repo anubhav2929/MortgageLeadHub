@@ -56,6 +56,46 @@ export async function currentVoiceStrategy(): Promise<VoiceStrategy> {
   });
 }
 
+function attemptTimestamp(attempt: { scheduledFor: string; startedAt?: string; endedAt?: string }): number {
+  const timestamp = Date.parse(attempt.endedAt ?? attempt.startedAt ?? attempt.scheduledFor);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+/** A historical provider failure must not permanently brick calling.
+ * Acknowledging the alert, successfully verifying Vapi after the failure, or
+ * completing a newer Vapi placement all prove that the old failure is no
+ * longer an active automation guard. */
+export function hasUnresolvedVapiConfigurationFailure(db: Database, leadId: string): boolean {
+  const conversationAttemptIds = new Set(
+    Array.from(db.conversations.values())
+      .filter((conversation) => conversation.leadId === leadId)
+      .map((conversation) => conversation.contactAttemptId)
+  );
+  const latestVapiAttempt = db.attempts
+    .filter(
+      (attempt) =>
+        attempt.leadId === leadId &&
+        attempt.channel === "VOICE" &&
+        (conversationAttemptIds.has(attempt.id) || /\bvapi\b/i.test(attempt.failureMessage ?? ""))
+    )
+    .sort((a, b) => attemptTimestamp(b) - attemptTimestamp(a))[0];
+
+  if (
+    !latestVapiAttempt ||
+    latestVapiAttempt.outcome !== "FAILED" ||
+    latestVapiAttempt.failureClass !== "CONFIGURATION" ||
+    latestVapiAttempt.acknowledgedAt
+  ) {
+    return false;
+  }
+
+  const verification = db.integrationHealth.get("vapi");
+  return !(
+    verification?.ok &&
+    Date.parse(verification.verifiedAt) > attemptTimestamp(latestVapiAttempt)
+  );
+}
+
 /**
  * Place an outbound call using the best available mechanism.
  *
@@ -88,9 +128,7 @@ export async function placeOutboundCall(
     ),
     // An unresolved configuration fault produces the identical failure on
     // every lead; dialling into it just multiplies what an admin must read.
-    providerMisconfigured: db.attempts.some(
-      (a) => a.leadId === lead.id && a.channel === "VOICE" && a.failureClass === "CONFIGURATION" && a.outcome === "FAILED"
-    ),
+    providerMisconfigured: hasUnresolvedVapiConfigurationFailure(db, lead.id),
     isAutomated: !actor,
   });
 

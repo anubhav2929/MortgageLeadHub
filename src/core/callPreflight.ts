@@ -30,7 +30,9 @@ export interface PreflightInput {
   hasAnnouncementVoice: boolean;
   /** A conversation for this lead that is still open. */
   hasLiveCall: boolean;
-  /** An unresolved CONFIGURATION-class failure on the voice channel. */
+  /** An unresolved CONFIGURATION-class failure on the voice channel. This
+   * pauses unattended cadence calls, but a manual retry remains available so
+   * an operator can prove a corrected provider configuration. */
   providerMisconfigured?: boolean;
   /** Manual officer action bypasses the "already on a call" guard — an
    *  officer may deliberately take over. */
@@ -75,12 +77,12 @@ export function evaluateCallPreflight(input: PreflightInput): PreflightDecision 
   // Checked before provider availability: a known-bad credential produces the
   // same failure on every lead, and dialling into it just multiplies the noise
   // an administrator has to read through.
-  if (input.providerMisconfigured) {
+  if (input.providerMisconfigured && input.isAutomated) {
     return {
       allowed: false,
       blocker: "PROVIDER_MISCONFIGURED",
-      reason: "The voice provider rejected the last call for a configuration reason.",
-      remedy: "Resolve the integration alert in Admin → Integrations, then try again.",
+      reason: "Automated calls are paused because the voice provider rejected the last call for a configuration reason.",
+      remedy: "Correct and verify Vapi in Admin → Integrations. A manual call can then confirm the repair.",
     };
   }
 

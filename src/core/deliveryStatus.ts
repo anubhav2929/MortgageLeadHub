@@ -396,9 +396,14 @@ export function countsAgainstAttemptCap(outcome: AttemptOutcome): boolean {
 export function describeFailure(channel: Channel, failure: DeliveryFailure): string {
   const label = channel === "VOICE" ? "Call" : channel === "SMS" ? "Text" : "Email";
   const code = failure.providerCode ? ` Provider code: ${failure.providerCode}.` : "";
-  const providerDetail = failure.message.startsWith("Telnyx API")
-    ? ` ${failure.message.replace(/\+[1-9]\d{7,14}/g, (phone) => `+••••${phone.slice(-4)}`).slice(0, 600)}`
-    : "";
+  const safeProviderMessage = failure.message
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/\+[1-9]\d{7,14}/g, (phone) => `+••••${phone.slice(-4)}`)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 600);
+  const providerDetail = safeProviderMessage ? ` Provider detail: ${safeProviderMessage}` : "";
   switch (failure.class) {
     case "PERMANENT":
       return `${label} could not be delivered to this contact — the address or number is invalid or has opted out. Marked undeliverable; try another channel.${code}${providerDetail}`;

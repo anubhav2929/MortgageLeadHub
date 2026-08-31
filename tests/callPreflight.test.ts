@@ -51,12 +51,17 @@ describe("provider problems", () => {
     // row an administrator has to read past to find the real problem.
     const d = evaluateCallPreflight(input({ providerMisconfigured: true }));
     expect(d.blocker).toBe("PROVIDER_MISCONFIGURED");
-    expect(d.remedy).toMatch(/integration alert/i);
+    expect(d.remedy).toMatch(/verify Vapi/i);
   });
 
   it("checks configuration before provider availability", () => {
     const d = evaluateCallPreflight(input({ providerMisconfigured: true, hasVoiceAgent: false }));
     expect(d.blocker).toBe("PROVIDER_MISCONFIGURED");
+  });
+
+  it("allows a manual retry so an operator can prove the configuration repair", () => {
+    const d = evaluateCallPreflight(input({ providerMisconfigured: true, isAutomated: false }));
+    expect(d.allowed).toBe(true);
   });
 });
 

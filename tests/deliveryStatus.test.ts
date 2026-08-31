@@ -317,6 +317,25 @@ describe("describeFailure", () => {
     expect(text).toMatch(/administrator|Integrations/i);
   });
 
+  it("shows the provider's safe validation detail instead of hiding it", () => {
+    const text = describeFailure("VOICE", {
+      class: "CONFIGURATION",
+      message: "Vapi rejected the request: assistantId is unpublished (HTTP 400)",
+      affectsAllLeads: true,
+    });
+    expect(text).toContain("assistantId is unpublished");
+  });
+
+  it("redacts bearer tokens and phone numbers from provider detail", () => {
+    const text = describeFailure("VOICE", {
+      class: "CONFIGURATION",
+      message: "Authorization Bearer secret-token failed for +13165550123",
+      affectsAllLeads: true,
+    });
+    expect(text).not.toContain("secret-token");
+    expect(text).not.toContain("+13165550123");
+  });
+
   it("says a transient failure will retry itself", () => {
     const text = describeFailure("VOICE", classifyFailure("twilio", undefined, "socket hang up"));
     expect(text).toMatch(/retried automatically/i);

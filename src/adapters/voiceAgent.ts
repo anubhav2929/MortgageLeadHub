@@ -64,6 +64,17 @@ function boundedVariable(value: string | undefined, maximum: number): string | u
   return cleaned || undefined;
 }
 
+function boundedContextVariable(value: string | undefined, maximum: number): string | undefined {
+  return boundedVariable(
+    value
+      ?.replaceAll("<", "[")
+      .replaceAll(">", "]")
+      .replaceAll("{{", "{ {")
+      .replaceAll("}}", "} }"),
+    maximum
+  );
+}
+
 /** Pure builder pinned by tests so optional provider configuration cannot
  * quietly creep back into the create-call request. */
 export function buildVapiSavedAssistantCallPayload(input: PlaceVoiceAgentCallInput & {
@@ -81,10 +92,11 @@ export function buildVapiSavedAssistantCallPayload(input: PlaceVoiceAgentCallInp
       city: boundedVariable(input.city, 120),
       intent: input.intent.replaceAll("_", " ").toLowerCase(),
       goal: input.goal.replaceAll("_", " ").toLowerCase(),
-      priorContext: boundedVariable(input.priorContext, 8_000),
+      priorContext: boundedContextVariable(input.priorContext, 8_000),
       initialQuestionId: input.initialQuestionId,
-      leadId: boundedVariable(input.leadId, 160),
-      conversationId: boundedVariable(input.conversationId, 160),
+      contextVersion: input.contextSnapshot?.contextVersion,
+      questionPlanVersion: input.contextSnapshot?.questionPlanVersion,
+      contextCompleteness: input.contextSnapshot ? String(input.contextSnapshot.completenessPercentage) : undefined,
     }).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0)
   );
 
@@ -104,7 +116,7 @@ export async function getVoiceAgentProfile(): Promise<VoiceAgentProfileSnapshot>
     assistantId: await getConfigValue("VAPI_ASSISTANT_ID"),
     phoneNumberId: await getConfigValue("VAPI_PHONE_NUMBER_ID"),
     promptVersionId: VOICE_PROMPT_VERSION,
-    variableNames: ["firstName", "lastName", "fullName", "city", "intent", "goal", "priorContext", "initialQuestionId", "leadId", "conversationId"],
+    variableNames: ["firstName", "lastName", "fullName", "city", "intent", "goal", "priorContext", "initialQuestionId", "contextVersion", "questionPlanVersion", "contextCompleteness"],
   };
 }
 

@@ -1,10 +1,13 @@
 import { maskPhone } from "@/core/rbac";
 import {
   QUALIFICATION_QUESTIONS,
-  REQUIRED_QUALIFICATION_QUESTIONS,
+  QUALIFICATION_PLAN_VERSION,
+  buildQualificationQuestionPlan,
+  computeCallContextCompleteness,
   decideQualification,
   nextQualificationQuestion,
   normalizeQualificationAnswer,
+  qualificationPlanItem,
   seedAnswersFromSnapshot,
 } from "@/core/qualification";
 import { generateCallbackSlots } from "@/core/callbackScheduling";
@@ -33,34 +36,65 @@ export function buildLeadContextSnapshot(input: {
   db: Database; lead: Lead; person: Person | undefined; conversationId: string; promptVersionId: string; profileVersionId: string;
 }): LeadContextSnapshot {
   const verifiedFields: Record<string, unknown> = {};
+  const fieldEvidence: LeadContextSnapshot["fieldEvidence"] = {};
   for (const field of input.db.leadFields.values()) {
-    if (field.leadId === input.lead.id && field.verificationStatus === "VERIFIED" && !EXCLUDED_SENSITIVE_FIELDS.some((key) => field.fieldPath.toLowerCase().includes(key.toLowerCase()))) {
-      verifiedFields[field.fieldPath] = field.value;
-    }
+    if (field.leadId !== input.lead.id || EXCLUDED_SENSITIVE_FIELDS.some((key) => field.fieldPath.toLowerCase().includes(key.toLowerCase()))) continue;
+    fieldEvidence[field.fieldPath] = {
+      sourceType: field.sourceType,
+      verificationStatus: field.verificationStatus,
+      confidence: field.confidence,
+      collectedAt: field.collectedAt,
+    };
+    if (field.verificationStatus === "VERIFIED") verifiedFields[field.fieldPath] = field.value;
   }
-  return {
+  const valuation = input.lead.propertyValuation;
+  const snapshot: LeadContextSnapshot = {
     id: newId("ctx"), leadId: input.lead.id, conversationId: input.conversationId, createdAt: nowIso(),
+    contextVersion: "call_context_v2", questionPlanVersion: QUALIFICATION_PLAN_VERSION, completenessPercentage: 0,
     promptVersionId: input.promptVersionId, profileVersionId: input.profileVersionId,
-    borrower: { firstName: input.person?.firstName ?? "there", timezone: input.person?.timezone ?? "UNKNOWN" },
+    borrower: {
+      firstName: input.person?.firstName ?? "there",
+      timezone: input.person?.timezone ?? "UNKNOWN",
+      preferredContactWindow: input.person?.preferredContactWindow,
+      dataQualityFlags: input.person?.dataQualityFlags,
+    },
     intake: {
+      submittedAt: input.lead.createdAt,
       intent: input.lead.intent, goal: input.lead.goal, timeline: input.lead.timeline, stateCode: input.lead.stateCode,
       occupancy: input.lead.occupancy, addressLine1: input.lead.addressLine1, city: input.lead.city,
       postalCode: input.lead.postalCode, estimatedValue: input.lead.estimatedValue,
       currentBalance: input.lead.currentBalance, creditRange: input.lead.creditRange,
+      missedPayments: input.lead.missedPayments, referralType: input.lead.referralType,
+      hasExistingHomeEquityLoan: input.lead.hasExistingHomeEquityLoan,
     },
-    verifiedFields, conversationBrief: redactRestrictedText(buildBriefForLead(input.db, input.lead)).text || undefined,
+    verifiedFields, fieldEvidence,
+    propertyEnrichment: valuation ? {
+      estimatedValue: valuation.estimatedValue,
+      estimatedMortgageBalance: valuation.estimatedMortgageBalance,
+      estimatedLTV: valuation.estimatedLTV,
+      usableEquity: valuation.usableEquity,
+      method: valuation.method,
+      confidence: valuation.confidence,
+      simulated: valuation.simulated,
+    } : undefined,
+    conversationBrief: redactRestrictedText(buildBriefForLead(input.db, input.lead)).text || undefined,
     excludedSensitiveFields: [...EXCLUDED_SENSITIVE_FIELDS],
   };
+  snapshot.completenessPercentage = computeCallContextCompleteness(snapshot);
+  return snapshot;
 }
 
 export function initializeQualification(db: Database, snapshot: LeadContextSnapshot) {
   const now = nowIso();
+  const questionPlan = buildQualificationQuestionPlan(snapshot);
   const progress: QualificationProgress = {
     leadId: snapshot.leadId,
     conversationId: snapshot.conversationId,
     snapshotId: snapshot.id,
     answers: seedAnswersFromSnapshot(snapshot, now),
-    requiredQuestionIds: [...REQUIRED_QUALIFICATION_QUESTIONS],
+    requiredQuestionIds: questionPlan.map((item) => item.questionId),
+    questionPlanVersion: QUALIFICATION_PLAN_VERSION,
+    questionPlan,
     updatedAt: now,
   };
   progress.nextQuestionId = nextQualificationQuestion(progress)?.id;
@@ -87,6 +121,7 @@ function confirmationPrompt(questionId: QualificationQuestionId, value: unknown)
   const leadIn: Record<QualificationQuestionId, string> = {
     timeline: `You previously said your timing was ${spoken}`,
     property_address: `I have the property address as ${spoken}`,
+    foreclosure_status: `I have your foreclosure status as ${spoken}`,
     occupancy: `I have this listed as ${spoken}`,
     estimated_value: `I have your estimated property value as about ${spoken}`,
     mortgage_balance: `I have the current mortgage balance as about ${spoken}`,
@@ -109,6 +144,7 @@ export function getNextQuestion(db: Database, conversationId: string) {
   // The newest form/verified value is supplied only to phrase a confirmation.
   // It never marks the question complete; the borrower still has to confirm or
   // correct it and record_qualification_answer must accept that exact turn.
+  const planItem = qualificationPlanItem(progress, question.id);
   const known = [...progress.answers]
     .reverse()
     .find((answer) => answer.questionId === question.id && answer.source !== "BORROWER_STATED" && !answer.conflict);
@@ -118,7 +154,7 @@ export function getNextQuestion(db: Database, conversationId: string) {
     : question.prompt;
   return {
     complete: false,
-    question: { ...question, prompt },
+    question: { ...question, prompt, mode: planItem.mode, reason: planItem.reason },
     knownAnswer: known ? { value: knownValue, source: known.source } : undefined,
     instruction: "Ask exactly this one question. Do not combine it with another question. Record only the borrower's explicit confirmation or correction.",
   };

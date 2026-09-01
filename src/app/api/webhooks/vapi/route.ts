@@ -84,7 +84,7 @@ interface VapiServerMessage {
 }
 
 const QUESTION_IDS = new Set<QualificationQuestionId>([
-  "timeline", "property_address", "occupancy", "estimated_value", "mortgage_balance", "cash_goal", "credit_range", "transfer_consent",
+  "timeline", "property_address", "foreclosure_status", "occupancy", "estimated_value", "mortgage_balance", "cash_goal", "credit_range", "transfer_consent",
 ]);
 
 function toolArguments(call: VapiToolCall): Record<string, unknown> {

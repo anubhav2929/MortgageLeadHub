@@ -144,6 +144,7 @@ export type LeadEventType =
 export type QualificationQuestionId =
   | "timeline"
   | "property_address"
+  | "foreclosure_status"
   | "occupancy"
   | "estimated_value"
   | "mortgage_balance"
@@ -151,15 +152,40 @@ export type QualificationQuestionId =
   | "credit_range"
   | "transfer_consent";
 
+export type QualificationQuestionMode = "ASK" | "CONFIRM" | "REVIEW" | "REUSE";
+
+export interface QualificationQuestionPlanItem {
+  questionId: QualificationQuestionId;
+  mode: QualificationQuestionMode;
+  reason: string;
+  source?: "FORM" | "VERIFIED_FIELD";
+}
+
+export interface LeadContextFieldEvidence {
+  sourceType: LeadField["sourceType"];
+  verificationStatus: LeadField["verificationStatus"];
+  confidence: number;
+  collectedAt: string;
+}
+
 export interface LeadContextSnapshot {
   id: string;
   leadId: string;
   conversationId: string;
   createdAt: string;
+  contextVersion: "call_context_v2";
+  questionPlanVersion: "adaptive_v2";
+  completenessPercentage: number;
   promptVersionId: string;
   profileVersionId: string;
-  borrower: { firstName: string; timezone: string | "UNKNOWN" };
+  borrower: {
+    firstName: string;
+    timezone: string | "UNKNOWN";
+    preferredContactWindow?: ContactWindow;
+    dataQualityFlags?: string[];
+  };
   intake: {
+    submittedAt?: string;
     intent: LoanIntent;
     goal: GoalType;
     timeline?: Timeline;
@@ -171,8 +197,21 @@ export interface LeadContextSnapshot {
     estimatedValue?: number;
     currentBalance?: number;
     creditRange?: CreditRange;
+    missedPayments?: MissedPayments;
+    referralType?: ReferralType;
+    hasExistingHomeEquityLoan?: boolean;
   };
   verifiedFields: Record<string, unknown>;
+  fieldEvidence: Record<string, LeadContextFieldEvidence>;
+  propertyEnrichment?: {
+    estimatedValue: number;
+    estimatedMortgageBalance: number;
+    estimatedLTV: number;
+    usableEquity: number;
+    method?: PropertyValuationResult["method"];
+    confidence?: PropertyValuationResult["confidence"];
+    simulated: boolean;
+  };
   conversationBrief?: string;
   excludedSensitiveFields: string[];
 }
@@ -197,6 +236,10 @@ export interface QualificationProgress {
   snapshotId: string;
   answers: QualificationAnswer[];
   requiredQuestionIds: QualificationQuestionId[];
+  /** Absent on calls opened before adaptive planning shipped. Those calls
+   * retain the original ask/confirm-everything behavior until completion. */
+  questionPlanVersion?: "adaptive_v2";
+  questionPlan?: QualificationQuestionPlanItem[];
   nextQuestionId?: QualificationQuestionId;
   completedAt?: string;
   updatedAt: string;

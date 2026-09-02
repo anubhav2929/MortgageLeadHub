@@ -87,7 +87,80 @@ function sameValue(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function mergeSerializedSnapshots(
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergeTranscriptTurns(base: unknown, current: unknown, latest: unknown): unknown[] {
+  const baseTurns = Array.isArray(base) ? base : [];
+  const currentTurns = Array.isArray(current) ? current : [];
+  const latestTurns = Array.isArray(latest) ? latest : [];
+  const identity = (value: unknown) => {
+    const turn = isPlainRecord(value) ? value : {};
+    return typeof turn.providerEventId === "string"
+      ? `provider:${turn.providerEventId}`
+      : `legacy:${String(turn.role)}:${String(turn.text)}:${String(turn.at)}`;
+  };
+  const baseIds = new Set(baseTurns.map(identity));
+  const merged = [...latestTurns];
+  const mergedIds = new Set(merged.map(identity));
+  for (const turn of currentTurns) {
+    const id = identity(turn);
+    if (!baseIds.has(id) && !mergedIds.has(id)) {
+      merged.push(turn);
+      mergedIds.add(id);
+    }
+  }
+  return merged
+    .sort((left, right) => {
+      const a = isPlainRecord(left) ? Date.parse(String(left.at ?? "")) : NaN;
+      const b = isPlainRecord(right) ? Date.parse(String(right.at ?? "")) : NaN;
+      return (Number.isFinite(a) ? a : 0) - (Number.isFinite(b) ? b : 0);
+    })
+    .map((turn, index) => isPlainRecord(turn) ? { ...turn, turn: index + 1 } : turn);
+}
+
+/** Three-way merge one durable record. A stale instance may have changed one
+ * field while a webhook changed another; replacing the whole object loses one
+ * of those writes. Apply only this writer's changed fields onto the newest
+ * record, with transcript-specific append/authoritative-artifact semantics. */
+function mergeRecord(base: unknown, current: unknown, latest: unknown, collection: string): unknown {
+  if (!isPlainRecord(current) || !isPlainRecord(latest)) return current;
+  const baseRecord = isPlainRecord(base) ? base : {};
+  const merged: Record<string, unknown> = { ...latest };
+
+  for (const key of Object.keys(current)) {
+    if (Object.prototype.hasOwnProperty.call(baseRecord, key) && sameValue(baseRecord[key], current[key])) continue;
+    if (collection === "conversations" && key === "transcript") {
+      const currentIsArtifact = current.transcriptSource === "VAPI_ARTIFACT";
+      const latestIsArtifact = latest.transcriptSource === "VAPI_ARTIFACT";
+      merged[key] = currentIsArtifact
+        ? current[key]
+        : latestIsArtifact
+          ? latest[key]
+          : mergeTranscriptTurns(baseRecord[key], current[key], latest[key]);
+    } else if (
+      collection === "conversations" &&
+      key === "transcriptSource" &&
+      latest.transcriptSource === "VAPI_ARTIFACT" &&
+      current.transcriptSource !== "VAPI_ARTIFACT"
+    ) {
+      // A delayed live-event writer must not demote a complete provider
+      // artifact back to a partial transcript after the final report landed.
+      continue;
+    } else {
+      merged[key] = current[key];
+    }
+  }
+  for (const key of Object.keys(baseRecord)) {
+    if (!Object.prototype.hasOwnProperty.call(current, key) && sameValue(latest[key], baseRecord[key])) delete merged[key];
+  }
+  return merged;
+}
+
+/** Exported for deterministic concurrency tests; production callers should
+ * use persist(), which also supplies locking and compare-and-swap retries. */
+export function mergeSerializedSnapshots(
   baseline: Record<string, unknown> | null,
   current: Record<string, unknown>,
   latest: Record<string, unknown>
@@ -102,7 +175,10 @@ function mergeSerializedSnapshots(
       const currentEntries = new Map((current[key] as [string, unknown][] | undefined) ?? []);
       const latestEntries = new Map((latest[key] as [string, unknown][] | undefined) ?? []);
       for (const [id, value] of currentEntries) {
-        if (!baseEntries.has(id) || !sameValue(baseEntries.get(id), value)) latestEntries.set(id, value);
+        if (!baseEntries.has(id)) latestEntries.set(id, value);
+        else if (!sameValue(baseEntries.get(id), value)) {
+          latestEntries.set(id, mergeRecord(baseEntries.get(id), value, latestEntries.get(id), key));
+        }
       }
       if (EPHEMERAL_DELETE_MAP_KEYS.has(key as keyof Database)) {
         for (const id of baseEntries.keys()) if (!currentEntries.has(id)) latestEntries.delete(id);
@@ -121,7 +197,10 @@ function mergeSerializedSnapshots(
       for (const item of currentItems) {
         if (typeof item?.id !== "string") continue;
         const id = String(item.id);
-        if (!baseById.has(id) || !sameValue(baseById.get(id), item)) latestById.set(id, item);
+        if (!baseById.has(id)) latestById.set(id, item);
+        else if (!sameValue(baseById.get(id), item)) {
+          latestById.set(id, mergeRecord(baseById.get(id), item, latestById.get(id), key) as Record<string, unknown>);
+        }
       }
       merged[key] = [...latestById.values(), ...unkeyed];
       continue;
@@ -266,7 +345,7 @@ async function ensureSchema() {
 // getDb() would seed fresh over it, silently discarding every real lead.
 // Letting the error propagate means the request fails loudly instead.
 /**
- * The `updated_at` of the stored snapshot, without transferring it.
+ * The monotonic revision of the stored snapshot, without transferring it.
  *
  * The whole database is one JSONB row cached per serverless instance and, until
  * now, never re-read. Two instances therefore served two different pasts: the
@@ -275,18 +354,18 @@ async function ensureSchema() {
  * vanished, and reappeared depending purely on which instance answered.
  *
  * This is the cheap check that lets an instance notice it is behind — a single
- * timestamp, not the document.
+ * revision number, not the document. Unlike a timestamp, the counter cannot
+ * collapse two writes that land inside the same clock tick.
  */
 export async function fetchStoreVersion(): Promise<string | null> {
   if (!capabilities.hasDatabase) return null;
   try {
     await ensureSchema();
     const rows = usesNeonDriver()
-      ? await getNeonSql()`SELECT updated_at FROM mlh_store WHERE key = 'main' LIMIT 1`
-      : (await getPostgresPool().query<{ updated_at: Date }>("SELECT updated_at FROM mlh_store WHERE key = 'main' LIMIT 1")).rows;
+      ? await getNeonSql()`SELECT revision FROM mlh_store WHERE key = 'main' LIMIT 1`
+      : (await getPostgresPool().query<{ revision: string }>("SELECT revision FROM mlh_store WHERE key = 'main' LIMIT 1")).rows;
     if (rows.length === 0) return null;
-    const v = (rows[0] as { updated_at: Date | string }).updated_at;
-    return v instanceof Date ? v.toISOString() : String(v);
+    return String((rows[0] as { revision: string | number }).revision);
   } catch {
     // Unreachable database: report "unknown" rather than "unchanged", so the
     // caller holds its current copy instead of concluding it is fresh.
@@ -301,9 +380,7 @@ async function loadFromPostgres(): Promise<Database | null> {
     : (await getPostgresPool().query<{ value: Record<string, unknown>; updated_at: Date; revision: string }>("SELECT value, updated_at, revision FROM mlh_store WHERE key = 'main' LIMIT 1")).rows;
   if (rows.length === 0) return null;
   const row = rows[0] as { value: Record<string, unknown>; updated_at?: Date | string; revision?: string | number };
-  if (row.updated_at) {
-    setLastKnownVersion(row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at));
-  }
+  if (row.revision !== undefined) setLastKnownVersion(String(row.revision));
   baselineSnapshot = structuredClone(row.value);
   return fromSerializable(row.value);
 }
@@ -311,7 +388,7 @@ async function loadFromPostgres(): Promise<Database | null> {
 async function saveToPostgres(db: Database) {
   await ensureSchema();
   const currentValue = toSerializable(db);
-  // RETURNING the new timestamp keeps this instance's idea of the stored
+  // RETURNING the new revision keeps this instance's idea of the stored
   // version aligned with what it just wrote. Without it, an instance would
   // immediately consider its own write "someone else's change" and reload the
   // document it had just produced.
@@ -334,8 +411,7 @@ async function saveToPostgres(db: Database) {
       if (!row) continue;
       baselineSnapshot = structuredClone(merged);
       replaceDatabaseContents(db, merged);
-      const v = row.updated_at;
-      if (v) setLastKnownVersion(v instanceof Date ? v.toISOString() : String(v));
+      setLastKnownVersion(String(row.revision));
       return;
     }
     throw new Error("[persistence] concurrent snapshot merge could not commit after four attempts");
@@ -362,7 +438,7 @@ async function saveToPostgres(db: Database) {
       const row = result.rows[0]!;
       baselineSnapshot = structuredClone(merged);
       replaceDatabaseContents(db, merged);
-      setLastKnownVersion(row.updated_at.toISOString());
+      setLastKnownVersion(String(row.revision));
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -412,7 +488,7 @@ let writeChain: Promise<void> = Promise.resolve();
 /**
  * Reloads the in-memory store if another instance has written since we loaded.
  *
- * Costs one `SELECT updated_at` — a timestamp, not the document — so it is
+ * Costs one `SELECT revision` — a counter, not the document — so it is
  * cheap enough to run before a volatile read. Returns the fresh Database when
  * a reload happened, or null when the cached copy is already current.
  *
@@ -433,11 +509,11 @@ let lastCheckedAt = 0;
  */
 const VERSION_CHECK_TTL_MS = 1000;
 
-export async function reloadIfStale(): Promise<Database | null> {
+export async function reloadIfStale(options: { force?: boolean } = {}): Promise<Database | null> {
   if (!capabilities.hasDatabase) return null;
 
   const now = Date.now();
-  if (now - lastCheckedAt < VERSION_CHECK_TTL_MS) return null;
+  if (!options.force && now - lastCheckedAt < VERSION_CHECK_TTL_MS) return null;
   lastCheckedAt = now;
 
   const current = await fetchStoreVersion();

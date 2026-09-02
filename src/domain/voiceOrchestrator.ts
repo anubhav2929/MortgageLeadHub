@@ -295,6 +295,7 @@ export async function placeOutboundCall(
   if (result.ok) {
     if (attempt) attempt.providerMessageId = result.providerCallId;
     if (conversation) {
+      conversation.providerCallId = result.providerCallId;
       conversation.listenUrl = protectBearerUrl(result.listenUrl);
       conversation.controlUrl = protectBearerUrl(result.controlUrl);
       conversation.profileSnapshot = result.profileSnapshot;

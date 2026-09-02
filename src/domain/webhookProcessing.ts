@@ -1,6 +1,8 @@
 import { applyDeliveryUpdate } from "@/domain/deliveryUpdates";
 import { claimWebhookBatch, settleWebhook, type WebhookEnvelope } from "@/domain/durableQueue";
 import { ingestInboundSms } from "@/domain/inboundSms";
+import { reconcileVapiConversation } from "@/domain/callReconciler";
+import { refreshDb, saveDb } from "@/domain/store";
 
 interface TelnyxPayload {
   data?: {
@@ -47,8 +49,44 @@ async function processTelnyx(envelope: WebhookEnvelope): Promise<void> {
   throw new Error(`Unsupported Telnyx event: ${body.data?.event_type ?? "unknown"}`);
 }
 
+interface VapiPayload {
+  message?: {
+    type?: string;
+    call?: { id?: string; metadata?: { conversationId?: string } };
+  };
+}
+
+/** Durable recovery for informational Vapi events. The provider API is the
+ * authoritative fallback: if inline webhook handling failed, retrieve the
+ * complete current call state and apply it to the already-correlated CRM
+ * conversation. Tool calls are intentionally excluded from the background
+ * queue because Vapi requires their result synchronously. */
+async function processVapi(envelope: WebhookEnvelope): Promise<void> {
+  const body = envelope.payload as VapiPayload;
+  const message = body.message;
+  if (!message?.call?.id) throw new Error("Vapi payload is missing message.call.id");
+  if (message.type === "tool-calls") throw new Error("Vapi tool calls require synchronous processing");
+
+  const db = await refreshDb({ force: true });
+  const conversationId = message.call.metadata?.conversationId;
+  const conversation = (conversationId ? db.conversations.get(conversationId) : undefined)
+    ?? Array.from(db.conversations.values()).find((candidate) => candidate.providerCallId === message.call?.id)
+    ?? Array.from(db.conversations.values()).find((candidate) =>
+      db.attempts.find((attempt) => attempt.id === candidate.contactAttemptId)?.providerMessageId === message.call?.id
+    );
+  if (!conversation) throw new Error(`Unknown Vapi call ${message.call.id}`);
+
+  conversation.providerCallId = message.call.id;
+  const attempt = db.attempts.find((candidate) => candidate.id === conversation.contactAttemptId);
+  if (attempt && !attempt.providerMessageId) attempt.providerMessageId = message.call.id;
+  const result = await reconcileVapiConversation(db, conversation);
+  if (!result.providerReachable) throw new Error("Vapi call state is temporarily unavailable");
+  await saveDb();
+}
+
 export async function processWebhookEnvelope(envelope: WebhookEnvelope): Promise<void> {
   if (envelope.provider === "TELNYX") return processTelnyx(envelope);
+  if (envelope.provider === "VAPI") return processVapi(envelope);
   throw new Error(`No processor registered for ${envelope.provider}`);
 }
 

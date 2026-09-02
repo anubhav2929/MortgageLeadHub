@@ -7,16 +7,16 @@
 // extraction/promotion pipeline the manual "Run AI extraction" button uses.
 
 import { after, NextResponse } from "next/server";
-import { pushEvent, runExtractionForConversation } from "@/domain/actions";
+import { pushEvent } from "@/domain/actions";
 import { newId, nowIso, refreshDb, saveDb } from "@/domain/store";
 import { verifyVapiWebhookAuth } from "@/core/vapiWebhookAuth";
 import { isAnsweredOutcome } from "@/core/deliveryStatus";
 import { advanceCallStatus, classifyEndedReason, mapVapiCallStatus } from "@/core/vapiLifecycle";
 import { transition, InvalidTransitionError } from "@/core/stateMachine";
 import { getConfigValue } from "@/lib/runtimeConfig";
-import { claimInlineWebhook, enqueueWebhook, stableWebhookId } from "@/domain/durableQueue";
+import { claimInlineWebhook, enqueueOutbox, enqueueWebhook, stableWebhookId } from "@/domain/durableQueue";
 import { settleWebhook } from "@/domain/durableQueue";
-import { generateCallWrapUp } from "@/domain/callWrapUp";
+import { processOutboxBatch } from "@/domain/outboxProcessing";
 import { controlLiveCall } from "@/adapters/vapiCallControl";
 import {
   bookCallbackForConversation,
@@ -31,6 +31,7 @@ import {
 import type { QualificationQuestionId } from "@/domain/types";
 import { protectBearerUrl, revealBearerUrl } from "@/core/secretBox";
 import { redactRestrictedText } from "@/core/sensitiveText";
+import { reconcileVapiTranscript, type VapiArtifactMessage } from "@/core/vapiTranscript";
 
 interface VapiToolCall {
   id?: string;
@@ -63,6 +64,8 @@ interface VapiServerMessage {
    *  transcript ingestion, which is the part that actually matters. */
   artifact?: {
     transcript?: string;
+    messages?: VapiArtifactMessage[];
+    logUrl?: string;
     recordingUrl?: string;
     recording?: {
       stereoUrl?: string;
@@ -77,6 +80,8 @@ interface VapiServerMessage {
   transferStatus?: string;
   call?: {
     id?: string;
+    startedAt?: string;
+    endedAt?: string;
     metadata?: { leadId?: string; conversationId?: string };
     customer?: { number?: string };
     monitor?: { controlUrl?: string };
@@ -113,7 +118,7 @@ function toolName(call: VapiToolCall): string {
 }
 
 async function processToolCalls(message: VapiServerMessage, conversationId: string) {
-  const db = await refreshDb();
+  const db = await refreshDb({ force: true });
   const conversation = db.conversations.get(conversationId);
   if (!conversation) throw new Error(`Unknown conversation ${conversationId}`);
   conversation.lastSignalAt = nowIso();
@@ -351,6 +356,11 @@ export async function POST(request: Request) {
     await settleWebhook(queued.id, "QUARANTINED", `Unknown conversation ${conversationId}`);
     return NextResponse.json({ ok: true, quarantined: true });
   }
+  if (message.call?.id) {
+    conversation.providerCallId = message.call.id;
+    const correlatedAttempt = db.attempts.find((attempt) => attempt.id === conversation.contactAttemptId);
+    if (correlatedAttempt && !correlatedAttempt.providerMessageId) correlatedAttempt.providerMessageId = message.call.id;
+  }
 
   if (message.type === "tool-calls") {
     const response = await processToolCalls(message, resolvedConversationId);
@@ -363,7 +373,8 @@ export async function POST(request: Request) {
   // conversation that keeps emitting transcript events is never reaped.
   conversation.lastSignalAt = nowIso();
 
-  switch (message.type) {
+  const eventType = message.type.startsWith('transcript[') ? "transcript" : message.type;
+  switch (eventType) {
     case "status-update": {
       // Mirror the carrier's own view onto callStatus so the board shows the
       // call progressing instead of claiming "connected" from the moment we
@@ -396,7 +407,8 @@ export async function POST(request: Request) {
     }
 
     case "transcript": {
-      if (message.transcriptType === "final" && message.transcript) {
+      const finalTranscript = message.transcriptType === "final" || message.type.includes('transcriptType="final"');
+      if (finalTranscript && message.transcript && conversation.transcriptSource !== "VAPI_ARTIFACT") {
         const role = message.role === "assistant" ? "AGENT" : "BORROWER";
         const sanitized = redactRestrictedText(message.transcript);
         const text = sanitized.text;
@@ -413,14 +425,18 @@ export async function POST(request: Request) {
         // "yes"), and dropping that would be worse than the duplicate. Only an
         // immediate, identical repeat from the same speaker is treated as a
         // redelivery.
+        const providerEventId = queued.id;
         const isImmediateRepeat = last?.role === role && last?.text === text;
-        if (!isImmediateRepeat) {
+        const alreadyStored = conversation.transcript.some((turn) => turn.providerEventId === providerEventId);
+        if (!isImmediateRepeat && !alreadyStored) {
           conversation.transcript.push({
             turn: conversation.transcript.length + 1,
             role,
             text,
             at: nowIso(),
+            providerEventId,
           });
+          conversation.transcriptSource = "LIVE_EVENTS";
           await saveDb();
         }
       }
@@ -460,14 +476,24 @@ export async function POST(request: Request) {
 
     case "end-of-call-report": {
       conversation.status = "COMPLETED";
-      conversation.endedAt = nowIso();
-      // Fallback: if per-turn "transcript" events were missed for any
-      // reason, Vapi's own concatenated transcript still gets us a result.
-      if (conversation.transcript.length === 0 && message.artifact?.transcript) {
-        const sanitized = redactRestrictedText(message.artifact.transcript);
-        conversation.transcript.push({ turn: 1, role: "BORROWER", text: sanitized.text, at: nowIso() });
-        if (sanitized.redacted) conversation.redactionApplied = true;
+      conversation.endedAt = message.call?.endedAt ?? nowIso();
+      // The final artifact is the authoritative record. It repairs a partially
+      // delivered live transcript as well as a completely missing one, while
+      // preserving speaker roles from artifact.messages.
+      const finalTranscript = reconcileVapiTranscript({
+        current: conversation.transcript,
+        messages: message.artifact?.messages,
+        transcript: message.artifact?.transcript,
+        startedAt: message.call?.startedAt ?? conversation.startedAt,
+        at: conversation.endedAt,
+      });
+      if (finalTranscript.authoritative) {
+        conversation.transcript = finalTranscript.turns;
+        conversation.transcriptSource = "VAPI_ARTIFACT";
       }
+      if (finalTranscript.redactionApplied) conversation.redactionApplied = true;
+      conversation.recordingAvailable = Boolean(message.artifact?.recording || message.artifact?.recordingUrl);
+      conversation.callLogAvailable = Boolean(message.artifact?.logUrl);
 
       // Settle the ContactAttempt. Without this every AI call sits at QUEUED
       // forever: the lead's history shows a call that never resolved, and
@@ -484,7 +510,8 @@ export async function POST(request: Request) {
       const attempt = db.attempts.find((a) => a.id === conversation.contactAttemptId);
       if (attempt) {
         attempt.outcome = outcome;
-        attempt.endedAt = nowIso();
+        attempt.endedAt = conversation.endedAt;
+        attempt.transcriptId = conversation.transcript.length > 0 ? conversation.id : undefined;
         if (verdict.failureClass !== "NONE") {
           attempt.failureClass = verdict.failureClass;
           attempt.failureMessage = verdict.detail;
@@ -493,10 +520,10 @@ export async function POST(request: Request) {
         const recordingUrl =
           rec?.stereoUrl ?? rec?.combinedUrl ?? rec?.url ?? rec?.mono?.combinedUrl ?? message.artifact?.recordingUrl;
         if (recordingUrl && (await getConfigValue("RETAIN_RECORDING_URLS")) === "true") attempt.recordingUrl = protectBearerUrl(recordingUrl);
-        if (conversation.startedAt) {
+        if (conversation.startedAt && conversation.endedAt) {
           attempt.durationSec = Math.max(
             0,
-            Math.round((Date.now() - new Date(conversation.startedAt).getTime()) / 1000)
+            Math.round((new Date(conversation.endedAt).getTime() - new Date(conversation.startedAt).getTime()) / 1000)
           );
         }
       }
@@ -507,13 +534,13 @@ export async function POST(request: Request) {
         // Marking a voicemail as IN_CONVERSATION would put it in front of an
         // officer as a live opportunity that never happened.
         if (isAnsweredOutcome(outcome)) {
-          lead.lastContactAt = nowIso();
+          lead.lastContactAt = conversation.endedAt;
           try {
             lead.state = transition(lead.state, "CONTACT_ANSWERED");
           } catch (err) {
             if (!(err instanceof InvalidTransitionError)) throw err;
           }
-          await pushEvent({ leadId: lead.id, type: "CONTACT_ANSWERED", actorType: "SYSTEM", occurredAt: nowIso(), channel: "VOICE" });
+          await pushEvent({ leadId: lead.id, type: "CONTACT_ANSWERED", actorType: "SYSTEM", occurredAt: nowIso(), channel: "VOICE", payload: { conversationId: conversation.id } });
         }
         lead.updatedAt = nowIso();
 
@@ -523,35 +550,22 @@ export async function POST(request: Request) {
           actorType: "SYSTEM",
           occurredAt: nowIso(),
           channel: "VOICE",
-          payload: { outcome, endedReason: message.endedReason },
+          payload: { conversationId: conversation.id, outcome, endedReason: message.endedReason },
         });
 
-        // Extraction only makes sense when somebody actually said something.
+        // Extraction/wrap-up is a durable outbox job. The best-effort `after`
+        // kick keeps the UI quick, while the cron worker retries if this
+        // instance disappears or the AI provider is temporarily unavailable.
         if (isAnsweredOutcome(outcome) && conversation.transcript.length > 0) {
-          const leadId = lead.id;
-          after(async () => {
-            try {
-              const freshDb = await refreshDb();
-              const freshLead = freshDb.leads.get(leadId);
-              const freshConversation = freshDb.conversations.get(resolvedConversationId);
-              if (!freshLead || !freshConversation) return;
-              await runExtractionForConversation(freshDb, freshLead, freshConversation, { actorType: "SYSTEM" });
-              const wrapUp = await generateCallWrapUp(freshConversation);
-              freshConversation.profileSnapshot = {
-                ...(freshConversation.profileSnapshot ?? {}),
-                ...(wrapUp.ok
-                  ? { wrapUpProvider: wrapUp.provider, wrapUpModel: wrapUp.model }
-                  : { wrapUpError: wrapUp.error }),
-              };
-              if (wrapUp.ok) {
-                freshConversation.summary = wrapUp.summary;
-                freshConversation.actionItems = wrapUp.actionItems;
-              }
-              await saveDb();
-            } catch (error) {
-              console.error("[vapi-webhook] deferred extraction/wrap-up failed:", error);
-            }
+          await saveDb();
+          await enqueueOutbox({
+            jobType: "VAPI_CALL_POST_PROCESSING",
+            idempotencyKey: `vapi:${conversation.id}:post-processing`,
+            aggregateType: "ConversationSession",
+            aggregateId: conversation.id,
+            payload: { leadId: lead.id, conversationId: conversation.id },
           });
+          after(async () => { await processOutboxBatch(5); });
         }
       }
       await saveDb();
@@ -559,6 +573,9 @@ export async function POST(request: Request) {
     }
   }
 
+  // Persist lastSignalAt/provider correlation even for informational event
+  // types that do not otherwise mutate a visible status.
+  await saveDb();
   await settleWebhook(queued.id, "COMPLETED");
   return NextResponse.json({ ok: true });
   } catch (error) {

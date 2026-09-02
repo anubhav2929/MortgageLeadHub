@@ -287,10 +287,10 @@ export function resetDb(): Database {
  * single timestamp comparison, and reloads only when another writer has moved
  * the store on.
  */
-export async function refreshDb(): Promise<Database> {
+export async function refreshDb(options: { force?: boolean } = {}): Promise<Database> {
   const db = await getDb();
   try {
-    const fresh = await reloadIfStale();
+    const fresh = await reloadIfStale(options);
     if (fresh) {
       global.__mlh_db__ = fresh;
       return fresh;

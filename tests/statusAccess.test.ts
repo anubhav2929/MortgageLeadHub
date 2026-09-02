@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { issueStatusToken, matchesStatusToken } from "@/domain/statusAccess";
+import { issueAdditionalStatusToken, issueStatusToken, matchesStatusToken } from "@/domain/statusAccess";
 import type { Lead } from "@/domain/types";
 
 function lead(): Lead {
@@ -28,5 +28,23 @@ describe("borrower status access", () => {
     const second = issueStatusToken(target);
     expect(matchesStatusToken(target, first)).toBe(false);
     expect(matchesStatusToken(target, second)).toBe(true);
+  });
+
+  it("preserves an open post-submit link when an email mints another link", () => {
+    const target = lead();
+    const postSubmit = issueStatusToken(target);
+    const email = issueAdditionalStatusToken(target);
+    expect(matchesStatusToken(target, postSubmit)).toBe(true);
+    expect(matchesStatusToken(target, email)).toBe(true);
+  });
+
+  it("an explicit recovery rotation revokes all previously issued links", () => {
+    const target = lead();
+    const first = issueStatusToken(target);
+    const second = issueAdditionalStatusToken(target);
+    const recovered = issueStatusToken(target);
+    expect(matchesStatusToken(target, first)).toBe(false);
+    expect(matchesStatusToken(target, second)).toBe(false);
+    expect(matchesStatusToken(target, recovered)).toBe(true);
   });
 });

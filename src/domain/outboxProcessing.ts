@@ -5,9 +5,12 @@ import { claimOutboxBatch, settleOutbox, type OutboxJob } from "@/domain/durable
 import { getDb, newId, nowIso, refreshDb, saveDb } from "@/domain/store";
 import { callbackMessageEligibility } from "@/core/callbackReminder";
 import { reconcileCallbackOutbox } from "@/domain/callbackOutbox";
+import { runExtractionForConversation } from "@/domain/actions";
+import { generateCallWrapUp } from "@/domain/callWrapUp";
 
 interface CallbackSmsPayload { appointmentId: string; body: string }
 interface InquiryEmailPayload { leadId: string; subject: string; body: string }
+interface VapiPostProcessingPayload { leadId: string; conversationId: string }
 
 function appendTimeline(db: Awaited<ReturnType<typeof getDb>>, leadId: string, type: "CALLBACK_MESSAGE_SENT" | "CALLBACK_MESSAGE_SUPPRESSED", payload: Record<string, unknown>) {
   db.events.push({ id: newId("evt"), leadId, type, actorType: "SYSTEM", payload, occurredAt: nowIso(), recordedAt: nowIso(), correlationId: newId("corr") });
@@ -127,9 +130,43 @@ async function processInquiryEmail(job: OutboxJob): Promise<void> {
   await saveDb();
 }
 
+async function processVapiCallPostProcessing(job: OutboxJob): Promise<void> {
+  const payload = job.payload as VapiPostProcessingPayload;
+  const db = await refreshDb({ force: true });
+  const lead = db.leads.get(payload.leadId);
+  const conversation = db.conversations.get(payload.conversationId);
+  if (!lead || !conversation) throw new Error("Vapi call post-processing record is missing");
+  if (conversation.transcript.length === 0) return;
+
+  const extracted = db.events.some((event) =>
+    event.leadId === lead.id && event.type === "FIELDS_EXTRACTED" && event.payload?.conversationId === conversation.id
+  );
+  if (!extracted) {
+    await runExtractionForConversation(db, lead, conversation, { actorType: "SYSTEM" });
+    // Make extraction durable independently from summary generation. A model
+    // outage during wrap-up must not cause duplicate candidates on retry.
+    await saveDb();
+  }
+
+  if (!conversation.summary) {
+    const wrapUp = await generateCallWrapUp(conversation);
+    if (!wrapUp.ok) throw new Error(wrapUp.error ?? "Vapi call wrap-up failed");
+    conversation.summary = wrapUp.summary;
+    conversation.actionItems = wrapUp.actionItems;
+    conversation.profileSnapshot = {
+      ...(conversation.profileSnapshot ?? {}),
+      wrapUpProvider: wrapUp.provider,
+      wrapUpModel: wrapUp.model,
+      wrapUpCompletedAt: nowIso(),
+    };
+    await saveDb();
+  }
+}
+
 async function processOutboxJob(job: OutboxJob): Promise<void> {
   if (job.jobType === "CALLBACK_SMS_CONFIRMATION" || job.jobType === "CALLBACK_SMS_REMINDER") return processCallbackSms(job);
   if (job.jobType === "INQUIRY_CONFIRMATION_EMAIL") return processInquiryEmail(job);
+  if (job.jobType === "VAPI_CALL_POST_PROCESSING") return processVapiCallPostProcessing(job);
   throw new Error(`Unsupported outbox job type: ${job.jobType}`);
 }
 

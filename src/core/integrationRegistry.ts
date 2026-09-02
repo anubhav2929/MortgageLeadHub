@@ -219,7 +219,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
       "Create, test, and publish one outbound assistant in Vapi. Keep its model, voice, transcriber, prompt, speaking plans, duration, and End Call tool in Vapi—not in the CRM.",
       "Set the assistant Server URL and all five CRM custom tools to <APP_URL>/api/webhooks/vapi. Attach a Bearer Custom Credential whose token exactly matches the webhook token saved here.",
       "Enable the required server events in Vapi and use the prompt variables firstName, lastName, fullName, city, intent, goal, priorContext, initialQuestionId, leadId, and conversationId.",
-      "Copy the published assistant ID here. Verify confirms both the saved assistant and phone number exist before any billable call is attempted.",
+      "Copy the published assistant ID here. Verify checks the phone and assistant plus the exact authenticated CRM webhook, required status/transcript/end events, and artifact settings before UAT.",
     ],
     docsUrl: "https://vapi.ai",
   },

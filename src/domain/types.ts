@@ -587,6 +587,11 @@ export interface ConversationTurn {
   role: "AGENT" | "BORROWER";
   text: string;
   at: string;
+  /** Stable provider/event identity when one exists. This is what lets two
+   * serverless instances merge distinct transcript events without either
+   * dropping a turn or deduplicating a borrower who genuinely repeated a
+   * short answer later in the call. */
+  providerEventId?: string;
 }
 
 export interface ConversationSession {
@@ -606,6 +611,11 @@ export interface ConversationSession {
   profileSnapshot?: Record<string, unknown>;
   contextSnapshot?: Record<string, unknown>;
   providerCallId?: string;
+  /** The final Vapi artifact is authoritative over a partial live-event
+   * transcript. Once set, late transcript webhooks may not regress it. */
+  transcriptSource?: "LIVE_EVENTS" | "VAPI_ARTIFACT";
+  recordingAvailable?: boolean;
+  callLogAvailable?: boolean;
   redactionApplied: boolean;
   /** Live-call handles from the provider, captured when the call is placed.
    *  Per-call and short-lived — they cannot be rebuilt from the call id, so
@@ -755,6 +765,10 @@ export interface Lead {
    * borrower links and can be revoked by issuing a replacement. */
   statusTokenHash?: string;
   statusTokenIssuedAt?: string;
+  /** Older still-valid links. Email sends and idempotent intake retries mint
+   * a new link without invalidating the post-submit page already open in the
+   * borrower's browser. An explicit status recovery rotates all of them. */
+  previousStatusTokenHashes?: string[];
   state: LeadState;
   intent: LoanIntent;
   goal: GoalType;

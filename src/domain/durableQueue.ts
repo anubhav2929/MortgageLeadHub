@@ -85,7 +85,7 @@ export async function claimWebhookBatch(limit = 20): Promise<WebhookEnvelope[]> 
   if (!hasSqlDatabase()) {
     const out: WebhookEnvelope[] = [];
     for (const item of memoryInbox.values()) {
-      if ((item.status === "PENDING" || item.status === "RETRY") && out.length < limit) {
+      if ((item.status === "PENDING" || item.status === "RETRY") && !(item.provider === "VAPI" && item.eventType === "tool-calls") && out.length < limit) {
         item.status = "PROCESSING";
         item.attemptCount += 1;
         out.push(item);
@@ -102,7 +102,8 @@ export async function claimWebhookBatch(limit = 20): Promise<WebhookEnvelope[]> 
     }>(
       `WITH claimed AS (
          SELECT id FROM webhook_inbox
-         WHERE provider = 'TELNYX' AND status IN ('PENDING', 'RETRY') AND next_attempt_at <= now()
+         WHERE status IN ('PENDING', 'RETRY') AND next_attempt_at <= now()
+           AND NOT (provider = 'VAPI' AND event_type = 'tool-calls')
          ORDER BY received_at FOR UPDATE SKIP LOCKED LIMIT $1
        )
        UPDATE webhook_inbox w SET status = 'PROCESSING', locked_at = now(), attempt_count = attempt_count + 1

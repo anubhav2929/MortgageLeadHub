@@ -12,6 +12,7 @@
 // for a call we think is live but have not heard about recently, ask.
 
 import { getConfigValue } from "@/lib/runtimeConfig";
+import type { VapiArtifactMessage } from "@/core/vapiTranscript";
 
 export interface VapiCallState {
   /** queued | ringing | in-progress | forwarding | ended */
@@ -23,7 +24,9 @@ export interface VapiCallState {
   transcript?: string;
   recordingUrl?: string;
   /** Per-utterance messages, present on some in-flight calls. */
-  messages?: { role?: string; message?: string; time?: number }[];
+  messages?: VapiArtifactMessage[];
+  recordingAvailable?: boolean;
+  callLogAvailable?: boolean;
 }
 
 export type VapiCallStateResult =
@@ -56,7 +59,13 @@ export async function fetchVapiCallState(providerCallId: string): Promise<VapiCa
       endedReason?: string;
       startedAt?: string;
       endedAt?: string;
-      artifact?: { transcript?: string; recordingUrl?: string; messages?: VapiCallState["messages"] };
+      artifact?: {
+        transcript?: string;
+        recordingUrl?: string;
+        recording?: { stereoUrl?: string; combinedUrl?: string; url?: string; mono?: { combinedUrl?: string; assistantUrl?: string; customerUrl?: string } };
+        logUrl?: string;
+        messages?: VapiCallState["messages"];
+      };
       transcript?: string;
       recordingUrl?: string;
       messages?: VapiCallState["messages"];
@@ -70,8 +79,16 @@ export async function fetchVapiCallState(providerCallId: string): Promise<VapiCa
         startedAt: data.startedAt,
         endedAt: data.endedAt,
         transcript: data.artifact?.transcript ?? data.transcript,
-        recordingUrl: data.artifact?.recordingUrl ?? data.recordingUrl,
+        recordingUrl:
+          data.artifact?.recording?.stereoUrl ??
+          data.artifact?.recording?.combinedUrl ??
+          data.artifact?.recording?.url ??
+          data.artifact?.recording?.mono?.combinedUrl ??
+          data.artifact?.recordingUrl ??
+          data.recordingUrl,
         messages: data.artifact?.messages ?? data.messages,
+        recordingAvailable: Boolean(data.artifact?.recording || data.artifact?.recordingUrl || data.recordingUrl),
+        callLogAvailable: Boolean(data.artifact?.logUrl),
       },
     };
   } catch (err) {

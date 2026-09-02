@@ -107,7 +107,7 @@ export interface LeadListItem extends Lead {
  *  page component, so raw phone/email never needs to be added to
  *  LeadListItem and shipped to the client just to power a text search. */
 export async function listLeads(searchQuery?: string): Promise<LeadListItem[]> {
-  const db = await getDb();
+  const db = await refreshDb();
   const now = Date.now();
   const q = searchQuery?.trim().toLowerCase();
   const items = await Promise.all(
@@ -272,7 +272,7 @@ async function getPrimaryPerson(leadId: string) {
 }
 
 export async function getLeadByRef(publicRef: string): Promise<LeadDetail | null> {
-  const db = await getDb();
+  const db = await refreshDb();
   const lead = Array.from(db.leads.values()).find((l) => l.publicRef === publicRef);
   if (!lead) return null;
 
@@ -342,7 +342,7 @@ export interface PublicStatusDetail {
 }
 
 export async function getPublicStatusByAccessKey(accessKey: string): Promise<PublicStatusDetail | null> {
-  const db = await getDb();
+  const db = await refreshDb({ force: true });
   const lead = findPublicStatusLead(db, accessKey);
   if (!lead) return null;
   const person = Array.from(db.people.values()).find((item) => item.leadId === lead.id && item.role === "PRIMARY");
@@ -917,16 +917,17 @@ export async function reapStaleCalls(now = new Date(), providerReachable = true)
  * webhook auth was misconfigured — every call vanished at the five-minute
  * mark.
  */
-export async function syncCallState(): Promise<void> {
-  await singleFlight("call-sync", async () => {
+export async function syncCallState() {
+  return singleFlight("call-sync", async () => {
     // Reconcile and reap decide whether to CLOSE records. Doing that against a
     // stale snapshot is how a call another instance had just opened got
     // settled as unknown — so refresh before judging anything.
-    await refreshDb();
+    await refreshDb({ force: true });
     const reconciled = await reconcileLiveCalls();
     // Pass reachability through: if the provider could not be reached, nothing
     // is reaped except calls past the absolute ceiling.
-    await reapStaleCalls(new Date(), reconciled.providerReachable);
+    const settled = await reapStaleCalls(new Date(), reconciled.providerReachable);
+    return { reconciled, settled };
   });
 }
 

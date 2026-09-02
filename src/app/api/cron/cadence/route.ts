@@ -15,7 +15,7 @@
 
 import { NextResponse } from "next/server";
 import { runCadenceTick } from "@/domain/cadenceEngine";
-import { purgeStaleIntakeDrafts, reapStaleCalls } from "@/domain/queries";
+import { purgeStaleIntakeDrafts, syncCallState } from "@/domain/queries";
 import { safeCompare } from "@/core/auth";
 import { getConfigValue } from "@/lib/runtimeConfig";
 import { hasSqlDatabase, withAdvisoryLease } from "@/domain/sql";
@@ -46,19 +46,22 @@ export async function GET(request: Request) {
     const dialing = await processAutomatedDialingSessions(5);
     console.log(`[cadence-engine] processed=${summary.processed} delivered=${summary.delivered} blocked=${summary.blocked} heldForChannel=${summary.heldForChannel} exhausted=${summary.exhausted} errors=${summary.errors.length}`);
 
-    const settledCalls = await reapStaleCalls();
+    // Pull Vapi before reaping. This recovers a missing final webhook and its
+    // transcript from the provider API instead of closing the call as unknown.
+    const callSync = await syncCallState();
+    const settledCalls = callSync.settled;
     if (settledCalls > 0) console.log(`[call-reaper] settled ${settledCalls} call(s) with no end-of-call report`);
 
     const purgedDrafts = await purgeStaleIntakeDrafts();
     if (purgedDrafts > 0) console.log(`[intake-drafts] purged ${purgedDrafts} draft(s) past retention`);
-    return { summary, settledCalls, purgedDrafts, webhooks, dialing };
+    return { summary, settledCalls, reconciledCalls: callSync.reconciled, purgedDrafts, webhooks, dialing };
   };
 
   const execution = hasSqlDatabase() ? await withAdvisoryLease("mortgage-lead-hub:cadence", run) : { acquired: true, value: await run() };
   if (!execution.acquired || !execution.value) {
     return NextResponse.json({ ok: true, skipped: "another cadence tick holds the database lease" }, { status: 202 });
   }
-  const { summary, settledCalls, purgedDrafts, webhooks, dialing } = execution.value;
+  const { summary, settledCalls, reconciledCalls, purgedDrafts, webhooks, dialing } = execution.value;
 
   // Piggybacks on the same scheduled trigger rather than a second cron job —
   // pre-consent draft PII (src/domain/types.ts IntakeDraft) shouldn't outlive
@@ -67,5 +70,5 @@ export async function GET(request: Request) {
   // board, but doing it here means a stuck session settles even if nobody
   // opens the page — which matters because pre-flight refuses to call someone
   // whose previous call is still marked live.
-  return NextResponse.json({ ok: true, ...summary, purgedDrafts, settledCalls, webhooks, dialing });
+  return NextResponse.json({ ok: true, ...summary, purgedDrafts, settledCalls, reconciledCalls, webhooks, dialing });
 }

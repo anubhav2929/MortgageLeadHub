@@ -23,6 +23,7 @@ import { verifyArcticShiftConnection } from "@/adapters/leadDiscovery";
 import { verifyPropertyEvidenceConnection } from "@/adapters/propertyData";
 import { normalizePublicAppUrl } from "@/core/publicUrl";
 import { normalizePhone } from "@/core/intakeNormalization";
+import { evaluateVapiAssistantSetup, type VapiAssistantConfiguration } from "@/core/vapiSetup";
 
 export interface ActionResult {
   ok: boolean;
@@ -409,7 +410,13 @@ async function runIntegrationTest(integrationId: string): Promise<TestResult> {
         ]);
         if (!phoneResponse.ok) return { ok: false, message: `Vapi could not verify the saved phone-number ID (HTTP ${phoneResponse.status}).` };
         if (!assistantResponse.ok) return { ok: false, message: `Vapi could not verify the saved assistant ID (HTTP ${assistantResponse.status}).` };
-        return { ok: true, message: "Connected to Vapi; the saved assistant and phone number both exist." };
+        const assistant = await assistantResponse.json() as VapiAssistantConfiguration;
+        const expectedWebhookUrl = `${await getAppUrl()}/api/webhooks/vapi`;
+        const setup = evaluateVapiAssistantSetup(assistant, expectedWebhookUrl);
+        if (!setup.ok) {
+          return { ok: false, message: `Vapi credentials are valid, but the assistant is not CRM-ready: ${setup.issues.join("; ")}.` };
+        }
+        return { ok: true, message: "Connected to Vapi; phone, assistant, authenticated CRM webhook, transcript events, and call artifacts are configured." };
       }
       case "rentcast": {
         const key = await getConfigValue("PROPERTY_DATA_API_KEY");

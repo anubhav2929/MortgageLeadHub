@@ -46,7 +46,7 @@ import { callItemHasSettled, nextPendingDialItem } from "@/core/dialingQueue";
 import { consumeRateLimit } from "@/domain/rateLimit";
 import { enqueueOutbox } from "@/domain/durableQueue";
 import { getRequestContext } from "@/lib/requestContext";
-import { issueStatusToken, matchesStatusToken } from "@/domain/statusAccess";
+import { issueAdditionalStatusToken, issueStatusToken, matchesStatusToken } from "@/domain/statusAccess";
 import { revealBearerUrl } from "@/core/secretBox";
 import { STATE_NAMES } from "@/domain/stateTimezone";
 import { resolveActiveIntakeDisclosures } from "@/core/intakeDisclosures";
@@ -84,7 +84,7 @@ import type {
 } from "@/domain/types";
 
 async function requireLead(publicRef: string): Promise<Lead> {
-  const db = await getDb();
+  const db = await refreshDb({ force: true });
   const lead = Array.from(db.leads.values()).find((l) => l.publicRef === publicRef);
   if (!lead) throw new Error(`Lead not found: ${publicRef}`);
   return lead;
@@ -97,13 +97,19 @@ async function authorizationSubject(user: User): Promise<Subject> {
 }
 
 async function requireBorrowerLead(publicRef: string, statusToken: string): Promise<Lead | null> {
-  const db = await getDb();
+  // Public post-submit actions commonly land on a different serverless
+  // instance from intake. Force the monotonic revision check so read-your-own
+  // write never depends on which warm instance receives this click.
+  const db = await refreshDb({ force: true });
   const lead = Array.from(db.leads.values()).find((item) => item.publicRef === publicRef);
   if (!lead) return null;
   return matchesStatusToken(lead, statusToken) ? lead : null;
 }
 
 export async function pushEvent(partial: Omit<LeadEvent, "id" | "correlationId" | "recordedAt">) {
+  // Callers frequently invoke this after making other, not-yet-flushed
+  // changes to the same in-memory unit of work. Refreshing here could replace
+  // those changes before they are committed.
   const db = await getDb();
   db.events.push({
     id: newId("evt"),
@@ -613,7 +619,7 @@ export async function runExtractionForConversation(
     type: "FIELDS_EXTRACTED",
     actorType: actor.actorType,
     occurredAt: nowIso(),
-    payload: { fieldCount: fields.length, promotedCount, simulated, actorId: actor.actorId },
+    payload: { conversationId: conversation.id, fieldCount: fields.length, promotedCount, simulated, actorId: actor.actorId },
   });
 
   return { fieldCount: fields.length, promotedCount, simulated };
@@ -2279,7 +2285,10 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
     return { ok: false, fieldErrors };
   }
 
-  const db = await getDb();
+  // Intake can land on any warm serverless instance. Start from the newest
+  // revision so an idempotency lookup cannot miss a lead another instance
+  // committed moments ago.
+  const db = await refreshDb({ force: true });
   const activeDisclosures = resolveActiveIntakeDisclosures(db);
 
   const intakeRequestKey = clientDraftId && /^[A-Za-z0-9_-]{16,64}$/.test(clientDraftId)
@@ -2289,8 +2298,25 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
     const prior = db.events.find((event) => event.payload?.intakeRequestKey === intakeRequestKey);
     const existingLead = prior ? db.leads.get(prior.leadId) : undefined;
     if (existingLead) {
-      const statusToken = issueStatusToken(existingLead);
+      const statusToken = issueAdditionalStatusToken(existingLead);
+      if (clientDraftId) db.intakeDrafts.delete(clientDraftId);
       await saveDb();
+      if (input.consents.email) {
+        const appUrl = await getAppUrl();
+        await enqueueOutbox({
+          jobType: "INQUIRY_CONFIRMATION_EMAIL",
+          idempotencyKey: `inquiry:${existingLead.id}:confirmation`,
+          aggregateType: "Lead",
+          aggregateId: existingLead.id,
+          payload: {
+            leadId: existingLead.id,
+            subject: "We received your Equity Flow Group inquiry",
+            body: `Thanks for reaching out. We received your mortgage inquiry and a licensed team member will review it. This is not a loan approval or an appraisal.\n\nCheck your inquiry status: ${appUrl}/status/${encodeURIComponent(statusToken)}`,
+          },
+        });
+      }
+      revalidatePath("/workspace/leads");
+      revalidatePath("/workspace");
       return {
         ok: true,
         publicRef: existingLead.publicRef,
@@ -2463,6 +2489,12 @@ export async function submitIntakeAction(input: IntakeInput, clientDraftId?: str
       });
     }
   }
+
+  // Commit the complete CRM identity, consent record, form fields, timeline
+  // event, and first-contact task before any optional provider lookup. A slow
+  // valuation or credit vendor must never decide whether a submitted lead
+  // exists in the CRM.
+  await saveDb();
 
   // Scientific lead-quality scoring (Equity Flow Group business plan §5) —
   // routes hot leads to an instant officer alert instead of waiting for the
@@ -3013,7 +3045,7 @@ async function deliverOutreachLocked(
     body = smsBody;
   } else {
     subject = `${officerFirstName} from Equity Flow Group — following up on your inquiry`;
-    const statusToken = issueStatusToken(lead);
+    const statusToken = issueAdditionalStatusToken(lead);
     const statusUrl = `${await getAppUrl()}/status/${statusToken}`;
     const emailBody = `${content.body}\n\nTrack your inquiry anytime: ${statusUrl}`;
     result = await sendEmail({ to: person?.email ?? "", subject, text: emailBody, idempotencyKey, from: `${db.config.senderName} <${db.config.senderEmail}>`, leadPublicRef: lead.publicRef });

@@ -3,6 +3,7 @@ import { verifyTelnyxWebhook } from "@/core/telnyxWebhookAuth";
 import { enqueueWebhook, stableWebhookId } from "@/domain/durableQueue";
 import { processWebhookBatch } from "@/domain/webhookProcessing";
 import { getConfigValue } from "@/lib/runtimeConfig";
+import { processOutboxBatch } from "@/domain/outboxProcessing";
 
 export async function ingestTelnyxRequest(request: Request, source: "primary" | "failover") {
   const rawBody = await request.text();
@@ -36,6 +37,12 @@ export async function ingestTelnyxRequest(request: Request, source: "primary" | 
     headers: { "telnyx-timestamp": request.headers.get("telnyx-timestamp") ?? "" },
   });
 
-  if (!queued.duplicate) after(async () => { await processWebhookBatch(10); });
+  if (!queued.duplicate) after(async () => {
+    await processWebhookBatch(10);
+    // Ordinary inbound texts enqueue their AI response while the inbox batch
+    // runs. Kick the outbox in the same background lifetime for a fast reply;
+    // cron remains the durable recovery path if this instance disappears.
+    await processOutboxBatch(10);
+  });
   return NextResponse.json({ ok: true, duplicate: queued.duplicate }, { status: 200 });
 }

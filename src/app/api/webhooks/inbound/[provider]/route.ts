@@ -11,11 +11,12 @@
 //   Twilio — phone number → "A message comes in" →
 //            {APP_URL}/api/webhooks/inbound/twilio
 
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { ingestInboundSms } from "@/domain/inboundSms";
 import { getAppUrl, getConfigValue } from "@/lib/runtimeConfig";
 import { applyDeliveryUpdate } from "@/domain/deliveryUpdates";
 import { formParams, verifyTwilioWebhook } from "@/adapters/twilioWebhookAuth";
+import { processOutboxBatch } from "@/domain/outboxProcessing";
 
 const SUPPORTED = ["twilio", "telnyx"] as const;
 type Provider = (typeof SUPPORTED)[number];
@@ -99,6 +100,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ pro
   }
 
   const result = await ingestInboundSms({ from, body, providerMessageId });
+  if (result.handled && result.intent === "MESSAGE") after(async () => { await processOutboxBatch(10); });
 
   // Always 200 to the carrier. A non-2xx triggers retries, and for an opt-out
   // the suppression has already been written — replaying it helps nobody.

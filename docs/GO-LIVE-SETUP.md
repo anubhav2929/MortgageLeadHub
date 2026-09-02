@@ -30,8 +30,11 @@ Use these exact URLs in the provider portals:
 | Telnyx primary messaging webhook | `https://www.equityflowgroup.com/api/webhooks/telnyx` |
 | Telnyx failover messaging webhook | `https://www.equityflowgroup.com/api/webhooks/telnyx/failover` |
 | Cadence scheduler | `https://www.equityflowgroup.com/api/cron/cadence` |
+| Webhook/outbox recovery scheduler | `https://www.equityflowgroup.com/api/cron/process-webhooks` |
 
-Vapi needs no URL configured — the app attaches its own callback per call.
+Vapi's published assistant and CRM tools use
+`https://www.equityflowgroup.com/api/webhooks/vapi` with the Bearer Custom
+Credential described below.
 
 ### One confirmed gap
 
@@ -99,9 +102,10 @@ Set the signed primary webhook URL to:
 https://www.equityflowgroup.com/api/webhooks/telnyx
 ```
 
-Without this, a borrower's STOP reaches the carrier but never reaches us — the
-carrier blocks its own channel while the cadence keeps calling and emailing.
-That is the TCPA exposure ADR-0007 exists to close.
+Without this, a borrower's reply never reaches the CRM: there is no saved
+conversation, no automatic AI response, and STOP cannot update local
+suppression. This signed endpoint handles ordinary replies, STOP/START/HELP,
+and delivery events from the same messaging profile.
 
 ### A5. Delivery receipts
 Set the profile **failover** webhook to:
@@ -187,7 +191,7 @@ curl -H "Authorization: Bearer <VAPI_PRIVATE_KEY>" https://api.vapi.ai/phone-num
 
 Take the `id` field — a UUID, not the phone number itself.
 
-### B7 · APP — save the three values
+### B7 · APP — save the four values and publish the webhook contract
 **Admin → Integrations → Vapi** at
 `https://www.equityflowgroup.com/workspace/admin`:
 
@@ -195,12 +199,24 @@ Take the `id` field — a UUID, not the phone number itself.
 | --- | --- |
 | API key | Vapi **private** key (B3) |
 | Phone number ID | UUID from B6 |
+| Published assistant ID | UUID of the tested, published assistant |
 | Webhook secret | a value you generate — `openssl rand -hex 24` |
 
 Save. **Admin → Go live** should now show *AI voice agent — Live*.
 
-No webhook URL to configure anywhere: the app attaches its own callback and
-the shared secret to every call, and verifies that secret on every event.
+In Vapi, set the assistant **Server URL** and each CRM custom tool URL to:
+
+```
+https://www.equityflowgroup.com/api/webhooks/vapi
+```
+
+Attach a Bearer Custom Credential whose token exactly matches the saved webhook
+secret. Enable `status-update`, `conversation-update`, final transcript, and
+`end-of-call-report` server events. In artifact settings, enable transcript and
+logging (and recording only if your approved retention policy permits it).
+Publish the assistant, copy its ID into the app, then click **Test connection**;
+the verifier checks these event and artifact settings rather than only testing
+whether the API key exists.
 
 ### B8 · Test
 Open any lead → **Call**. Your phone rings, the agent speaks. Open
@@ -250,21 +266,28 @@ Use **your own mobile number** throughout. Do not test on a stranger.
    receive it. Check **Message centre** — the send appears immediately.
 2. **Delivery receipt.** Within a few seconds the attempt should advance from
    SENT to DELIVERED. If it stays SENT, step A5 is wrong.
-3. **Inbound.** Reply from your phone. It appears in the lead's Conversation
-   tab as a borrower message, and Message centre moves that lead to the top
-   with **"Replied — needs an answer"**.
+3. **Inbound + AI reply.** Reply from your phone. It appears once in the lead's
+   Conversation tab and an automatic reply returns to the same phone. Message
+   Centre shows both sides against the same lead. If the inbound appears but no
+   reply arrives, invoke `/api/cron/process-webhooks` and verify the LLM and
+   Telnyx cards in Admin → Integrations.
 4. **STOP.** Text `STOP`. You get one confirmation, the lead shows **Opted
    out**, and the send box disappears. Verify the suppression is **GLOBAL** —
    calls and email stop too, not just SMS.
 5. **AI call.** Lead → **Call**. Your phone rings and the agent speaks. Open
    **Call Centre** — the call appears under *In progress* with the transcript
-   filling in as you talk.
+   filling in as you talk. After hang-up, the lead's Conversation tab should
+   show **Vapi final**; delayed artifacts are pulled again with bounded backoff.
 6. **Context.** Before the call, send a message in the post-submit chat
    ("I'm away until Friday"). Then trigger the call. The agent should
    acknowledge it and must not re-ask what you already answered.
 7. **End to end.** Submit the public intake form with your own details, then
    fire the cron manually. The cadence should place the first call and, later,
    the first text — with no human action.
+8. **Property.** Submit a complete street/city/state/ZIP and rerun property
+   checks. With a valid RentCast key, the card should say **RentCast weighted**
+   (or **RentCast estimate** when no corroborating source is available) and list
+   the provider plus public evidence independently.
 
 To undo step 4, remove the suppression in **Admin → Suppression**.
 

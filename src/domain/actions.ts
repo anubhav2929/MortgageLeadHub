@@ -2806,6 +2806,9 @@ export async function submitBorrowerMessageAction(publicRef: string, statusToken
     authorName: "Borrower (via status chat)",
     body: trimmed,
     createdAt: nowIso(),
+    conversationChannel: "PORTAL",
+    conversationDirection: "INBOUND",
+    conversationRole: "BORROWER",
   });
 
   const taskId = newId("task");
@@ -2838,18 +2841,20 @@ export async function submitBorrowerMessageAction(publicRef: string, statusToken
     priorContext: redactRestrictedText(buildBriefForLead(db, lead)).text || undefined,
   });
 
-  if (!answer.simulated) {
-    // Record the AI's reply so it lands in the unified thread and the officer
-    // sees exactly what the borrower was told before they pick this up.
-    db.notes.push({
-      id: newId("note"),
-      leadId: lead.id,
-      authorId: "ai-agent",
-      authorName: "AI assistant (status chat)",
-      body: answer.reply,
-      createdAt: nowIso(),
-    });
-  }
+  // Record the exact automated reply, including the safe no-model fallback,
+  // so the CRM never shows only one side of a conversation the borrower saw.
+  db.notes.push({
+    id: newId("note"),
+    leadId: lead.id,
+    authorId: "ai-agent",
+    authorName: answer.simulated ? "Automated assistant (status chat)" : "AI assistant (status chat)",
+    body: answer.reply,
+    createdAt: nowIso(),
+    conversationChannel: "PORTAL",
+    conversationDirection: "OUTBOUND",
+    conversationRole: "AGENT",
+    aiGenerated: !answer.simulated,
+  });
 
   await saveDb();
   await revalidateLead(publicRef);
@@ -3339,7 +3344,7 @@ export async function rerunPropertyValuationAction(publicRef: string): Promise<A
 
   return valuation.method === "INSUFFICIENT_EVIDENCE"
     ? { ok: true, message: "Checks completed, but more property details are required for a supported value." }
-    : { ok: true, message: `Property checks completed using ${valuation.method === "RENTCAST" ? "RentCast" : "approved public evidence"}.` };
+    : { ok: true, message: `Property checks completed using ${valuation.method === "RENTCAST_WEIGHTED" ? "RentCast with public-source corroboration" : valuation.method === "RENTCAST" ? "RentCast" : "approved public evidence"}.` };
 }
 
 export interface EditableLeadFields {

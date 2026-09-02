@@ -130,6 +130,11 @@ export async function reconcileVapiConversation(
         convo.transcript = finalTranscript.turns;
         convo.transcriptSource = "VAPI_ARTIFACT";
         convo.redactionApplied ||= finalTranscript.redactionApplied;
+        convo.nextTranscriptRecoveryAt = undefined;
+      } else {
+        convo.transcriptRecoveryAttempts = (convo.transcriptRecoveryAttempts ?? 0) + 1;
+        const delayMinutes = Math.min(360, 2 ** convo.transcriptRecoveryAttempts);
+        convo.nextTranscriptRecoveryAt = new Date(now.getTime() + delayMinutes * 60_000).toISOString();
       }
       convo.recordingAvailable = state.recordingAvailable;
       convo.callLogAvailable = state.callLogAvailable;
@@ -202,11 +207,21 @@ export async function reconcileLiveCalls(now = new Date()): Promise<ReconcileSum
   const summary: ReconcileSummary = { checked: 0, updated: 0, settled: 0, providerReachable: true };
 
   const candidates = Array.from(db.conversations.values())
+    .filter((c) => {
+      const providerCallId = c.providerCallId ?? db.attempts.find((attempt) => attempt.id === c.contactAttemptId)?.providerMessageId;
+      return Boolean(providerCallId && !providerCallId.startsWith("sim_"));
+    })
     // A status-update can report `ended` before Vapi's final artifact arrives.
     // Keep that conversation eligible for pull recovery; otherwise a missing
     // end-of-call-report leaves it permanently IN_PROGRESS with no transcript.
-    .filter((c) => c.status === "IN_PROGRESS")
+    .filter((c) =>
+      c.status === "IN_PROGRESS" ||
+      (c.status === "COMPLETED" && c.transcriptSource !== "VAPI_ARTIFACT" && (c.transcriptRecoveryAttempts ?? 0) < 8)
+    )
     .filter((c) => {
+      if (c.status === "COMPLETED") {
+        return !c.nextTranscriptRecoveryAt || Date.parse(c.nextTranscriptRecoveryAt) <= now.getTime();
+      }
       const last = Date.parse(c.lastSignalAt ?? c.startedAt);
       // An unreadable timestamp is exactly the case worth checking.
       return !Number.isFinite(last) || now.getTime() - last > SILENCE_BEFORE_POLL_MS;

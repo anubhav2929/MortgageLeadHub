@@ -19,9 +19,10 @@ import {
 } from "@/core/inboundMessage";
 import { normalizePhone } from "@/core/intakeNormalization";
 import { sendSms } from "@/adapters/sms";
-import { pushEvent } from "@/domain/actions";
+import { autoAssignOfficer, pushEvent } from "@/domain/actions";
+import { enqueueOutbox } from "@/domain/durableQueue";
 import { getDb, refreshDb, newId, nowIso, saveDb } from "@/domain/store";
-import type { Lead, Person } from "@/domain/types";
+import type { ContactAttempt, Lead, Person } from "@/domain/types";
 
 export interface InboundSmsInput {
   from: string;
@@ -52,6 +53,34 @@ function leadsForPhone(
   return out;
 }
 
+const TERMINAL_STATES = new Set<Lead["state"]>(["SUPPRESSED", "CLOSED_WON", "CLOSED_LOST"]);
+const DELIVERED_SMS_OUTCOMES = new Set<ContactAttempt["outcome"]>(["SENT", "DELIVERED", "ANSWERED"]);
+
+/** A phone number can legitimately exist on several historical inquiries.
+ * Attach conversational replies to exactly one thread: the inquiry that most
+ * recently texted this number, then the newest still-active inquiry. */
+export function selectLeadForInboundSms(
+  matches: Array<{ lead: Lead; person: Person }>,
+  attempts: ContactAttempt[]
+): { lead: Lead; person: Person } | undefined {
+  if (matches.length <= 1) return matches[0];
+  const leadIds = new Set(matches.map(({ lead }) => lead.id));
+  const latestSms = attempts
+    .filter((attempt) =>
+      leadIds.has(attempt.leadId) &&
+      attempt.channel === "SMS" &&
+      attempt.direction === "OUTBOUND" &&
+      DELIVERED_SMS_OUTCOMES.has(attempt.outcome)
+    )
+    .sort((a, b) => Date.parse(b.startedAt ?? b.scheduledFor) - Date.parse(a.startedAt ?? a.scheduledFor))[0];
+  if (latestSms) return matches.find(({ lead }) => lead.id === latestSms.leadId);
+  return [...matches]
+    .sort((a, b) => {
+      const activeDifference = Number(!TERMINAL_STATES.has(b.lead.state)) - Number(!TERMINAL_STATES.has(a.lead.state));
+      return activeDifference || Date.parse(b.lead.createdAt) - Date.parse(a.lead.createdAt);
+    })[0];
+}
+
 export async function ingestInboundSms(input: InboundSmsInput): Promise<InboundSmsOutcome> {
   // Telnyx delivers at-least-once. Without this a retried delivery becomes a
   // second borrower message in the thread — and, for a STOP, a second
@@ -63,7 +92,7 @@ export async function ingestInboundSms(input: InboundSmsInput): Promise<InboundS
   const phone = normalizePhone(input.from);
   if (!phone || !input.body?.trim()) return { handled: false, reason: "unparseable" };
 
-  const db = await refreshDb();
+  const db = await refreshDb({ force: true });
   const intent = classifyInboundMessage(input.body);
   const matches = leadsForPhone(db, phone);
 
@@ -145,47 +174,71 @@ export async function ingestInboundSms(input: InboundSmsInput): Promise<InboundS
   // touch answer what they actually said.
   if (matches.length === 0) return { handled: false, reason: "unknown_number" };
 
-  for (const { lead } of matches) {
-    db.notes.push({
-      id: newId("note"),
-      leadId: lead.id,
-      authorId: "borrower",
-      authorName: "Borrower (via text reply)",
-      body: input.body.trim(),
-      createdAt: nowIso(),
-    });
+  const selected = selectLeadForInboundSms(matches, db.attempts);
+  if (!selected) return { handled: false, reason: "unknown_number" };
+  const { lead } = selected;
+  // Durable provider-level de-duplication. The inbox handles signed Telnyx
+  // retries; this second guard also covers direct Twilio webhook retries and
+  // worker restarts.
+  if (input.providerMessageId && db.notes.some((note) => note.providerMessageId === input.providerMessageId)) {
+    return { handled: false, reason: "duplicate" };
+  }
+  const receivedAt = nowIso();
+  const noteId = newId("note");
+  db.notes.push({
+    id: noteId,
+    leadId: lead.id,
+    authorId: "borrower",
+    authorName: "Borrower (via text reply)",
+    body: input.body.trim(),
+    createdAt: receivedAt,
+    conversationChannel: "SMS",
+    conversationDirection: "INBOUND",
+    conversationRole: "BORROWER",
+    providerMessageId: input.providerMessageId,
+  });
 
-    lead.lastContactAt = nowIso();
-    lead.updatedAt = nowIso();
+  lead.lastContactAt = receivedAt;
+  lead.lastEngagedAt = receivedAt;
+  lead.updatedAt = receivedAt;
 
     // A phrase that reads like an opt-out without being an exact keyword is
     // escalated to a human rather than acted on. Auto-suppressing on a fuzzy
     // match would silently kill live leads; ignoring it entirely would leave a
     // borrower who clearly asked us to stop being contacted by the cadence.
-    const ambiguousOptOut = looksLikeOptOutPhrase(input.body);
-    const taskId = newId("task");
-    db.tasks.set(taskId, {
-      id: taskId,
-      leadId: lead.id,
-      type: ambiguousOptOut ? "COMPLAINT" : "BORROWER_MESSAGE",
-      dueAt: nowIso(),
-      status: "OPEN",
-      assigneeId: lead.assignedOfficerId,
-      title: ambiguousOptOut
-        ? `Possible opt-out by text — review and confirm: "${input.body.trim().slice(0, 60)}"`
-        : `Borrower replied by text: "${input.body.trim().slice(0, 60)}"`,
-    });
+  const ambiguousOptOut = looksLikeOptOutPhrase(input.body);
+  const taskId = newId("task");
+  db.tasks.set(taskId, {
+    id: taskId,
+    leadId: lead.id,
+    type: ambiguousOptOut ? "COMPLAINT" : "BORROWER_MESSAGE",
+    dueAt: receivedAt,
+    status: "OPEN",
+    assigneeId: lead.assignedOfficerId,
+    title: ambiguousOptOut
+      ? `Possible opt-out by text — review and confirm: "${input.body.trim().slice(0, 60)}"`
+      : `Borrower replied by text: "${input.body.trim().slice(0, 60)}"`,
+  });
 
-    await pushEvent({
-      leadId: lead.id,
-      type: ambiguousOptOut ? "ESCALATED" : "NOTE_ADDED",
-      actorType: "BORROWER",
-      channel: "SMS",
-      occurredAt: nowIso(),
-      payload: { source: "sms_inbound", ambiguousOptOut },
-    });
-  }
+  await pushEvent({
+    leadId: lead.id,
+    type: ambiguousOptOut ? "ESCALATED" : "NOTE_ADDED",
+    actorType: "BORROWER",
+    channel: "SMS",
+    occurredAt: receivedAt,
+    payload: { source: "sms_inbound", ambiguousOptOut, providerMessageId: input.providerMessageId },
+  });
+  await autoAssignOfficer(db, lead, "inbound_sms");
 
   await saveDb();
-  return { handled: true, intent, leadsAffected: matches.length };
+  if (!ambiguousOptOut) {
+    await enqueueOutbox({
+      jobType: "INBOUND_SMS_AI_REPLY",
+      idempotencyKey: `sms-ai-reply:${input.providerMessageId ?? noteId}`,
+      aggregateType: "Lead",
+      aggregateId: lead.id,
+      payload: { leadId: lead.id, inboundNoteId: noteId, providerMessageId: input.providerMessageId },
+    });
+  }
+  return { handled: true, intent, leadsAffected: 1 };
 }

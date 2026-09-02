@@ -38,4 +38,27 @@ describe("Vapi transcript normalization", () => {
     const result = turnsFromVapiTranscript("AI: Welcome\nUser: Thank you", endedAt);
     expect(result.turns.map((turn) => turn.role)).toEqual(["AGENT", "BORROWER"]);
   });
+
+  it("accepts Vapi's structured artifact.transcript array shape", () => {
+    const result = reconcileVapiTranscript({
+      current: [],
+      transcript: [
+        { role: "assistant", content: [{ type: "text", text: "How can I help?" }] },
+        { role: "user", content: "I need cash out." },
+      ],
+      startedAt,
+      at: endedAt,
+    });
+    expect(result.authoritative).toBe(true);
+    expect(result.turns.map((turn) => [turn.role, turn.text])).toEqual([
+      ["AGENT", "How can I help?"],
+      ["BORROWER", "I need cash out."],
+    ]);
+  });
+
+  it("keeps multiline utterances intact in string artifacts", () => {
+    const result = turnsFromVapiTranscript("Assistant: First line\ncontinued answer\nUser: Thanks", endedAt);
+    expect(result.turns[0].text).toBe("First line\ncontinued answer");
+    expect(result.turns[1].role).toBe("BORROWER");
+  });
 });

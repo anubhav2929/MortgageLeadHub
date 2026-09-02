@@ -972,6 +972,65 @@ async function fetchRentCast(input: PropertyValuationInput, existingEvidence: Pr
   }
 }
 
+const RENTCAST_PRIMARY_WEIGHT = 0.75;
+
+/** RentCast is the parcel-level primary signal. Public/Census/FHFA evidence
+ * remains an independent corroboration layer instead of being discarded. */
+export function blendRentCastWithOpenEvidence(
+  rentCast: PropertyValuationResult,
+  open: PropertyValuationResult
+): PropertyValuationResult {
+  const publicWeight = 1 - RENTCAST_PRIMARY_WEIGHT;
+  const estimatedValue = Math.round(
+    (rentCast.estimatedValue * RENTCAST_PRIMARY_WEIGHT + open.estimatedValue * publicWeight) / 1000
+  ) * 1000;
+  const difference = Math.abs(rentCast.estimatedValue - open.estimatedValue) / rentCast.estimatedValue;
+  const { estimatedMortgageBalance: balance } = rentCast;
+  const evidence = [...(rentCast.evidence ?? []), ...(open.evidence ?? [])]
+    .filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index)
+    .map((item) => item.kind === "RENTCAST"
+      ? { ...item, notes: [item.notes, "Primary AVM signal; 75% of the final value calculation."].filter(Boolean).join(" ") }
+      : { ...item, notes: [item.notes, "Corroborating public/borrower evidence; combined layer contributes 25%."].filter(Boolean).join(" ") });
+  const rentCastPropertyMeasured = rentCast.provenance.propertyType === "MEASURED";
+  const rentCastYearMeasured = rentCast.provenance.yearBuilt === "MEASURED";
+  return {
+    ...rentCast,
+    estimatedValue,
+    confidenceLow: Math.min(
+      Math.round(rentCast.confidenceLow * RENTCAST_PRIMARY_WEIGHT + open.confidenceLow * publicWeight),
+      rentCast.confidenceLow,
+      open.confidenceLow
+    ),
+    confidenceHigh: Math.max(
+      Math.round(rentCast.confidenceHigh * RENTCAST_PRIMARY_WEIGHT + open.confidenceHigh * publicWeight),
+      rentCast.confidenceHigh,
+      open.confidenceHigh
+    ),
+    comparableCount: rentCast.comparableCount + open.comparableCount,
+    lastSaleDate: rentCast.lastSaleDate ?? open.lastSaleDate,
+    lastSalePrice: rentCast.lastSalePrice ?? open.lastSalePrice,
+    propertyType: rentCastPropertyMeasured ? rentCast.propertyType : open.propertyType,
+    yearBuilt: rentCastYearMeasured ? rentCast.yearBuilt : open.yearBuilt,
+    estimatedLTV: balance ? Math.round((balance / estimatedValue) * 1000) / 10 : 0,
+    usableEquity: balance ? Math.max(0, estimatedValue - balance) : 0,
+    method: "RENTCAST_WEIGHTED",
+    confidence: difference <= 0.15 && ["HIGH", "MEDIUM"].includes(open.confidence ?? "")
+      ? "HIGH"
+      : difference >= 0.25 ? "LOW" : "MEDIUM",
+    provenance: {
+      ...rentCast.provenance,
+      estimatedValue: "MODELED",
+      confidenceRange: "MODELED",
+      comparableCount: "MEASURED",
+      lastSale: rentCast.lastSalePrice || open.lastSalePrice ? "MEASURED" : "MODELED",
+      propertyType: rentCastPropertyMeasured || open.provenance.propertyType === "MEASURED" ? "MEASURED" : "MODELED",
+      yearBuilt: rentCastYearMeasured || open.provenance.yearBuilt === "MEASURED" ? "MEASURED" : "MODELED",
+    },
+    evidence,
+    freshnessAt: new Date().toISOString(),
+  };
+}
+
 export async function getPropertyValuation(input: PropertyValuationInput): Promise<PropertyValuationResult> {
   const evidence: PropertyValuationEvidence[] = [];
   if (input.estimatedValue && input.estimatedValue > 0) evidence.push({
@@ -979,6 +1038,13 @@ export async function getPropertyValuation(input: PropertyValuationInput): Promi
     retrievedAt: new Date().toISOString(), sourceLabel: "Borrower-provided estimate", reliability: 0.35,
   });
   if (input.useFreeEvidence === false) return fetchRentCast(input, evidence);
+  // Start the parcel AVM immediately and gather the public corroboration in
+  // parallel. Previously RentCast ran only after every weaker source failed.
+  const rentCastPromise = fetchRentCast(input, []);
+  const combinePrimary = async (open: PropertyValuationResult): Promise<PropertyValuationResult> => {
+    const rentCast = await rentCastPromise;
+    return rentCast.method === "RENTCAST" ? blendRentCastWithOpenEvidence(rentCast, open) : open;
+  };
   const rawAddress = input.addressLine1
     ? `${input.addressLine1}, ${input.city ?? ""}, ${input.stateCode}${input.postalCode ? ` ${input.postalCode}` : ""}`.trim()
     : "";
@@ -1022,7 +1088,7 @@ export async function getPropertyValuation(input: PropertyValuationInput): Promi
     await addFhfaAdjustment(input, records, evidence);
     const richestRecord = records.sort((a, b) => Object.values(b).filter(Boolean).length - Object.values(a).filter(Boolean).length)[0];
     const open = buildOpenEvidenceValuation(input, evidence, richestRecord);
-    if (open) return open;
+    if (open) return combinePrimary(open);
     // The keyless official summary file is intentionally last in the free
     // lane: it is a tract benchmark, not parcel evidence, and its first use
     // downloads a cached table. It still yields an honest planning range when
@@ -1034,10 +1100,16 @@ export async function getPropertyValuation(input: PropertyValuationInput): Promi
     if (summaryBenchmark) {
       evidence.push(summaryBenchmark);
       const contextual = buildOpenEvidenceValuation(input, evidence, richestRecord);
-      if (contextual) return contextual;
+      if (contextual) return combinePrimary(contextual);
     }
   } catch (error) {
     console.error(`[property-evidence] free chain failed: ${error instanceof Error ? error.message : "Unknown error"}`);
   }
-  return fetchRentCast(input, evidence);
+  const rentCast = await rentCastPromise;
+  if (rentCast.method === "RENTCAST") {
+    rentCast.evidence = [...(rentCast.evidence ?? []), ...evidence]
+      .filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index);
+    return rentCast;
+  }
+  return emptyResult(input, evidence);
 }

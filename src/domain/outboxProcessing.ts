@@ -7,10 +7,14 @@ import { callbackMessageEligibility } from "@/core/callbackReminder";
 import { reconcileCallbackOutbox } from "@/domain/callbackOutbox";
 import { runExtractionForConversation } from "@/domain/actions";
 import { generateCallWrapUp } from "@/domain/callWrapUp";
+import { answerBorrowerQuestion } from "@/adapters/llm";
+import { buildBriefForLead } from "@/domain/leadContext";
+import { redactRestrictedText } from "@/core/sensitiveText";
 
 interface CallbackSmsPayload { appointmentId: string; body: string }
 interface InquiryEmailPayload { leadId: string; subject: string; body: string }
 interface VapiPostProcessingPayload { leadId: string; conversationId: string }
+interface InboundSmsAiReplyPayload { leadId: string; inboundNoteId: string; providerMessageId?: string }
 
 function appendTimeline(db: Awaited<ReturnType<typeof getDb>>, leadId: string, type: "CALLBACK_MESSAGE_SENT" | "CALLBACK_MESSAGE_SUPPRESSED", payload: Record<string, unknown>) {
   db.events.push({ id: newId("evt"), leadId, type, actorType: "SYSTEM", payload, occurredAt: nowIso(), recordedAt: nowIso(), correlationId: newId("corr") });
@@ -130,6 +134,113 @@ async function processInquiryEmail(job: OutboxJob): Promise<void> {
   await saveDb();
 }
 
+/** Immediate replies are transactional responses to a borrower who just
+ * texted us, not another cadence solicitation. They therefore bypass cadence
+ * spacing/volume and officer-owned-state rules, while the non-negotiable
+ * safety gates (kill switch, suppression, consent, terminal state) remain. */
+function inboundSmsReplyBlockReason(
+  db: Awaited<ReturnType<typeof getDb>>,
+  leadId: string,
+  phoneE164: string
+): string | undefined {
+  const lead = db.leads.get(leadId);
+  if (!lead) return "Lead is missing";
+  if (db.killSwitch.isOn) return "KILL_SWITCH";
+  const suppression = db.suppressions.get(phoneE164);
+  if (suppression && (!suppression.expiresAt || Date.parse(suppression.expiresAt) > Date.now())) {
+    if (suppression.scope === "GLOBAL" || suppression.channel === "SMS") return "SUPPRESSED";
+  }
+  const consent = db.consents
+    .filter((item) => item.leadId === leadId && item.scope === "CONTACT_SMS")
+    .sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt))[0];
+  if (!consent?.granted) return consent ? "CONSENT_REVOKED" : "NO_CONSENT";
+  if (["SUPPRESSED", "CLOSED_WON", "CLOSED_LOST"].includes(lead.state)) return "LEAD_TERMINAL";
+  return undefined;
+}
+
+async function processInboundSmsAiReply(job: OutboxJob): Promise<void> {
+  const payload = job.payload as InboundSmsAiReplyPayload;
+  const db = await refreshDb({ force: true });
+  const lead = db.leads.get(payload.leadId);
+  const inbound = db.notes.find((note) => note.id === payload.inboundNoteId && note.leadId === payload.leadId);
+  if (!lead || !inbound) throw new Error("Inbound SMS reply record is missing");
+  const person = Array.from(db.people.values()).find((item) => item.leadId === lead.id && item.role === "PRIMARY");
+  if (!person?.phoneE164) throw new Error("Inbound SMS borrower phone is missing");
+
+  const existing = db.attempts.find((item) => item.idempotencyKey === job.idempotencyKey);
+  if (existing && ["SENT", "DELIVERED", "ANSWERED"].includes(existing.outcome)) return;
+  const blockedReason = inboundSmsReplyBlockReason(db, lead.id, person.phoneE164);
+  if (blockedReason) {
+    if (!existing) {
+      db.attempts.push({
+        id: newId("attempt"), leadId: lead.id, channel: "SMS", direction: "OUTBOUND",
+        idempotencyKey: job.idempotencyKey, outcome: "BLOCKED", blockedReason,
+        attemptNumber: lead.attemptsTotal + 1, scheduledFor: nowIso(),
+        body: "Automated reply withheld.", aiGenerated: true,
+        loggedById: "ai-agent", loggedByName: "AI SMS assistant",
+      });
+      await saveDb();
+    }
+    return;
+  }
+
+  let attempt = existing;
+  if (!attempt?.body || attempt.body === "Automated reply withheld.") {
+    const officer = lead.assignedOfficerId ? db.officers.get(lead.assignedOfficerId) : undefined;
+    const answer = await answerBorrowerQuestion({
+      question: inbound.body,
+      firstName: person.firstName || "there",
+      intent: lead.intent,
+      goal: lead.goal,
+      stateCode: lead.stateCode,
+      officerFirstName: officer?.name.split(" ")[0],
+      priorContext: redactRestrictedText(buildBriefForLead(db, lead)).text || undefined,
+    });
+    attempt = existing ?? {
+      id: newId("attempt"), leadId: lead.id, channel: "SMS" as const, direction: "OUTBOUND" as const,
+      idempotencyKey: job.idempotencyKey, outcome: "QUEUED" as const,
+      attemptNumber: lead.attemptsTotal + 1, scheduledFor: nowIso(),
+    };
+    Object.assign(attempt, {
+      body: answer.reply,
+      aiGenerated: true,
+      loggedById: "ai-agent",
+      loggedByName: answer.simulated ? "Automated SMS assistant" : "AI SMS assistant",
+      outcome: "QUEUED",
+      blockedReason: undefined,
+    });
+    if (!existing) db.attempts.push(attempt);
+    // Store the exact reply before the carrier call. Retries reuse it instead
+    // of asking the model again and changing the response mid-conversation.
+    await saveDb();
+  }
+
+  const result = await sendSms({ to: person.phoneE164, body: attempt.body!, idempotencyKey: job.idempotencyKey });
+  const wasSuccessful = ["SENT", "DELIVERED", "ANSWERED"].includes(attempt.outcome);
+  Object.assign(attempt, {
+    providerMessageId: result.ok ? result.providerMessageId : undefined,
+    outcome: result.ok ? "SENT" : "FAILED",
+    failureClass: result.ok ? undefined : result.failure.class,
+    failureMessage: result.ok ? undefined : result.failure.message,
+    startedAt: attempt.startedAt ?? nowIso(),
+  });
+  if (!result.ok) {
+    await saveDb();
+    throw new Error(result.failure.message);
+  }
+  if (!wasSuccessful) {
+    lead.attemptsTotal += 1;
+    lead.lastAttemptAt = nowIso();
+    lead.updatedAt = nowIso();
+  }
+  db.events.push({
+    id: newId("evt"), leadId: lead.id, type: "NOTE_ADDED", actorType: "SYSTEM", channel: "SMS",
+    payload: { source: "sms_ai_reply", attemptId: attempt.id, inReplyToProviderMessageId: payload.providerMessageId },
+    occurredAt: nowIso(), recordedAt: nowIso(), correlationId: newId("corr"),
+  });
+  await saveDb();
+}
+
 async function processVapiCallPostProcessing(job: OutboxJob): Promise<void> {
   const payload = job.payload as VapiPostProcessingPayload;
   const db = await refreshDb({ force: true });
@@ -166,6 +277,7 @@ async function processVapiCallPostProcessing(job: OutboxJob): Promise<void> {
 async function processOutboxJob(job: OutboxJob): Promise<void> {
   if (job.jobType === "CALLBACK_SMS_CONFIRMATION" || job.jobType === "CALLBACK_SMS_REMINDER") return processCallbackSms(job);
   if (job.jobType === "INQUIRY_CONFIRMATION_EMAIL") return processInquiryEmail(job);
+  if (job.jobType === "INBOUND_SMS_AI_REPLY") return processInboundSmsAiReply(job);
   if (job.jobType === "VAPI_CALL_POST_PROCESSING") return processVapiCallPostProcessing(job);
   throw new Error(`Unsupported outbox job type: ${job.jobType}`);
 }

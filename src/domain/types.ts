@@ -614,6 +614,10 @@ export interface ConversationSession {
   /** The final Vapi artifact is authoritative over a partial live-event
    * transcript. Once set, late transcript webhooks may not regress it. */
   transcriptSource?: "LIVE_EVENTS" | "VAPI_ARTIFACT";
+  /** Backoff state for calls whose end report arrived before Vapi finished
+   * assembling the final artifact. */
+  transcriptRecoveryAttempts?: number;
+  nextTranscriptRecoveryAt?: string;
   recordingAvailable?: boolean;
   callLogAvailable?: boolean;
   redactionApplied: boolean;
@@ -756,6 +760,14 @@ export interface Note {
   authorName: string;
   body: string;
   createdAt: string;
+  /** Optional conversation metadata. Notes without it remain private officer
+   * notes unless they use the legacy borrower/AI author ids. */
+  conversationChannel?: Channel | "PORTAL";
+  conversationDirection?: "INBOUND" | "OUTBOUND";
+  conversationRole?: "BORROWER" | "AGENT" | "OFFICER" | "SYSTEM";
+  aiGenerated?: boolean;
+  providerMessageId?: string;
+  inReplyToProviderMessageId?: string;
 }
 
 export interface Lead {
@@ -840,7 +852,7 @@ export interface PropertyValuationResult {
   provenance: Record<PropertyValuationField, "MEASURED" | "MODELED">;
   /** The estimate is informational and must not be represented as an appraisal. */
   disclaimer?: string;
-  method?: "OPEN_EVIDENCE" | "RENTCAST" | "INSUFFICIENT_EVIDENCE" | "SIMULATED";
+  method?: "OPEN_EVIDENCE" | "RENTCAST" | "RENTCAST_WEIGHTED" | "INSUFFICIENT_EVIDENCE" | "SIMULATED";
   confidence?: "HIGH" | "MEDIUM" | "LOW" | "INSUFFICIENT";
   evidence?: PropertyValuationEvidence[];
   freshnessAt?: string;

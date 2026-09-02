@@ -77,7 +77,7 @@ export function PropertyValuationCard({
         <CardContent className="space-y-3" aria-busy={isPending}>
           {isPending && (
             <div role="status" aria-live="polite" className="rounded-[var(--radius-md)] border border-[var(--info-border)] bg-[var(--info-tint)] p-3 text-xs text-[var(--info)]">
-              Rechecking Census normalization, approved public records, FHFA adjustments, and the RentCast fallback…
+            Rechecking RentCast, Census normalization, approved public records, and FHFA corroboration…
             </div>
           )}
           <p className="font-medium text-[var(--foreground)]">No supported value is available yet</p>
@@ -100,7 +100,7 @@ export function PropertyValuationCard({
             <Home className="h-3.5 w-3.5" /> Property valuation
           </CardTitle>
           <span className="flex items-center gap-1 rounded-full bg-[var(--success-tint)] px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--success)]">
-            <CheckCircle2 className="h-3 w-3" /> {valuation.method === "RENTCAST" ? "Provider estimate" : neighborhoodOnly ? "Neighborhood benchmark" : "Public evidence"}
+            <CheckCircle2 className="h-3 w-3" /> {valuation.method === "RENTCAST_WEIGHTED" ? "RentCast weighted" : valuation.method === "RENTCAST" ? "RentCast estimate" : neighborhoodOnly ? "Neighborhood benchmark" : "Public evidence"}
           </span>
         </div>
       </CardHeader>
@@ -156,7 +156,9 @@ export function PropertyValuationCard({
         <p className="pt-1 text-[11px] text-[var(--muted-foreground)]">
           {valuation.method === "OPEN_EVIDENCE"
             ? `${neighborhoodOnly ? "Low-confidence planning range using the official Census neighborhood benchmark and any borrower-provided estimate" : "Deterministically weighted approved property evidence"} (${valuation.confidence?.toLowerCase()} confidence). ${modeledCount} field${modeledCount === 1 ? "" : "s"} marked "est" were derived rather than parcel facts.`
-            : `Valuation from RentCast. ${modeledCount} field${modeledCount === 1 ? "" : "s"} marked "est" were derived rather than supplied by the provider.`}
+            : valuation.method === "RENTCAST_WEIGHTED"
+              ? `RentCast is the primary parcel signal (75%), corroborated by public/Census/FHFA and borrower evidence (25%). ${modeledCount} field${modeledCount === 1 ? "" : "s"} marked "est" were derived.`
+              : `Valuation from RentCast. ${modeledCount} field${modeledCount === 1 ? "" : "s"} marked "est" were derived rather than supplied by the provider.`}
         </p>
         {valuation.disclaimer && <p className="text-[11px] text-[var(--muted-foreground)]">{valuation.disclaimer}</p>}
         {valuation.freshnessAt && <p className="text-[10px] text-[var(--muted-foreground)]">Last checked {formatDate(valuation.freshnessAt)}</p>}
@@ -213,7 +215,7 @@ function EvidenceList({ evidence }: { evidence: NonNullable<PropertyValuationRes
           </div>
         ))}
         <p className="text-[10px] leading-relaxed text-[var(--muted-foreground)]">
-          Search ranks configured official sources; it never supplies the dollar value. Values are extracted from allowlisted JSON/ArcGIS public records, time-adjusted with FHFA where possible, and weighted deterministically.
+          RentCast supplies the primary parcel AVM when configured. Approved public/ArcGIS records, Census context, borrower input, and FHFA time adjustments independently corroborate and widen the range when sources disagree.
         </p>
       </div>
     </details>

@@ -63,6 +63,14 @@ and opens with a continuation line rather than a fresh introduction. Before
 this, voice was the only channel that started cold: a borrower who had texted
 "call me after 5" would get an AI call that re-asked everything.
 
+The same derived thread begins with the intake form and includes portal chat,
+inbound and outbound SMS, email, and speaker-attributed Vapi turns. Ordinary
+inbound texts are attached to one inquiry (most recent successful outbound SMS
+wins), saved before any network call, and enqueue an automatic AI response.
+STOP/START/HELP and possible opt-out language never enter the AI reply path.
+The protected outbox worker retries replies and records the exact sent copy as
+an outbound contact attempt, so Message Centre and the lead view share one truth.
+
 ## Outbound messaging (SMS · Email)
 
 ### Unconfigured
@@ -74,8 +82,10 @@ hardcoded — so it stops claiming "no real calls are sent" the moment a key is
 entered.
 
 ### Live and healthy
-1. `PolicyGate` decides whether the touch is permitted at all. It is the only
-   gate; nothing bypasses it.
+1. `PolicyGate` decides whether a new outreach touch is permitted. An immediate
+   reply to an inbound borrower SMS uses a narrower transactional gate: kill
+   switch, suppression, SMS consent, and terminal state still fail closed, but
+   cadence spacing and attempt caps do not delay the borrower-facing answer.
 2. The adapter sends and returns `{ ok: true, providerMessageId }`.
 3. The attempt is recorded as **SENT** — meaning *the provider accepted it*,
    not that it arrived.
@@ -196,7 +206,9 @@ higher-stakes than qualification chat.
 
 ## Property valuation (RentCast)
 
-Partially live even when configured, and the UI now says so per field.
+RentCast is the primary parcel-level valuation source when configured. Public
+records, Census context, FHFA time adjustments, and the borrower's estimate are
+still collected as an independent corroboration layer.
 
 | Field | Live with RentCast | Simulated |
 | --- | --- | --- |
@@ -210,6 +222,11 @@ publishes outstanding mortgage balances — that is private lender data, never
 public record — so those three are an assumed-LTV calculation on top of whatever
 value we have. They carry an `est` marker in the valuation card, because an
 officer quoting a borrower's equity from a modelled number is a real problem.
+
+When both layers return a supported value, the final planning estimate is 75%
+RentCast and 25% corroborating evidence. Source disagreement widens the range
+and lowers confidence; all evidence remains visible in the CRM. This remains an
+informational estimate, never an appraisal.
 
 ## Lead discovery (Reddit)
 
@@ -237,8 +254,10 @@ borrower who submitted an intake form.
 4. **LLM key** (Anthropic, or NVIDIA for the free tier) — without it the AI
    features are templates.
 5. **Resend**, including the delivery-events webhook, not just the API key.
-6. **Vapi** — needs all three of API key, phone number id, and webhook secret.
-   With only the key entered, the panel now names the missing fields.
+6. **Vapi** — needs API key, phone-number id, published assistant id, and
+   webhook secret. The assistant must use the authenticated CRM Server URL,
+   emit status-update, conversation-update, final transcript, and
+   end-of-call-report events, and have transcript/log artifacts enabled.
 7. **Verify with an approved test number**, then check the attempt actually
    reaches DELIVERED. If it stays SENT, step 3 is not finished.
 

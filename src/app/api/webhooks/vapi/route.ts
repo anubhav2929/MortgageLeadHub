@@ -31,7 +31,7 @@ import {
 import type { QualificationQuestionId } from "@/domain/types";
 import { protectBearerUrl, revealBearerUrl } from "@/core/secretBox";
 import { redactRestrictedText } from "@/core/sensitiveText";
-import { reconcileVapiTranscript, type VapiArtifactMessage } from "@/core/vapiTranscript";
+import { reconcileVapiTranscript, spokenRoleOf, type VapiArtifactMessage, type VapiTranscriptArtifact } from "@/core/vapiTranscript";
 
 interface VapiToolCall {
   id?: string;
@@ -54,6 +54,8 @@ interface VapiServerMessage {
   role?: "assistant" | "user";
   transcriptType?: "partial" | "final";
   transcript?: string;
+  messages?: VapiArtifactMessage[];
+  messagesOpenAIFormatted?: VapiArtifactMessage[];
   /** Why the call ended — the only signal distinguishing a real conversation
    *  from a voicemail, a no-answer, or a pipeline error. */
   endedReason?: string;
@@ -63,7 +65,7 @@ interface VapiServerMessage {
    *  the first present URL wins — a missing recording must never break
    *  transcript ingestion, which is the part that actually matters. */
   artifact?: {
-    transcript?: string;
+    transcript?: VapiTranscriptArtifact;
     messages?: VapiArtifactMessage[];
     logUrl?: string;
     recordingUrl?: string;
@@ -406,10 +408,32 @@ export async function POST(request: Request) {
       break;
     }
 
+    case "conversation-update": {
+      // Vapi emits the complete conversation-so-far here. This is more
+      // reliable than reconstructing a call from individual final transcript
+      // events and lets the CRM show useful text while the call is live.
+      if (conversation.transcriptSource !== "VAPI_ARTIFACT") {
+        const live = reconcileVapiTranscript({
+          current: conversation.transcript,
+          messages: message.messages ?? message.messagesOpenAIFormatted,
+          startedAt: message.call?.startedAt ?? conversation.startedAt,
+          at: nowIso(),
+        });
+        if (live.authoritative) {
+          conversation.transcript = live.turns;
+          conversation.transcriptSource = "LIVE_EVENTS";
+          conversation.redactionApplied ||= live.redactionApplied;
+          await saveDb();
+        }
+      }
+      break;
+    }
+
     case "transcript": {
       const finalTranscript = message.transcriptType === "final" || message.type.includes('transcriptType="final"');
       if (finalTranscript && message.transcript && conversation.transcriptSource !== "VAPI_ARTIFACT") {
-        const role = message.role === "assistant" ? "AGENT" : "BORROWER";
+        const role = spokenRoleOf(message.role);
+        if (!role) break;
         const sanitized = redactRestrictedText(message.transcript);
         const text = sanitized.text;
         if (sanitized.redacted) conversation.redactionApplied = true;
@@ -482,7 +506,10 @@ export async function POST(request: Request) {
       // preserving speaker roles from artifact.messages.
       const finalTranscript = reconcileVapiTranscript({
         current: conversation.transcript,
-        messages: message.artifact?.messages,
+        messages: message.artifact?.messages
+          ?? (Array.isArray(message.artifact?.transcript) ? message.artifact.transcript : undefined)
+          ?? message.messages
+          ?? message.messagesOpenAIFormatted,
         transcript: message.artifact?.transcript,
         startedAt: message.call?.startedAt ?? conversation.startedAt,
         at: conversation.endedAt,
@@ -490,6 +517,11 @@ export async function POST(request: Request) {
       if (finalTranscript.authoritative) {
         conversation.transcript = finalTranscript.turns;
         conversation.transcriptSource = "VAPI_ARTIFACT";
+        conversation.nextTranscriptRecoveryAt = undefined;
+      } else {
+        // Vapi can send the end report a few seconds before its final artifact
+        // is queryable. Keep the completed call eligible for pull recovery.
+        conversation.nextTranscriptRecoveryAt = new Date(Date.now() + 30_000).toISOString();
       }
       if (finalTranscript.redactionApplied) conversation.redactionApplied = true;
       conversation.recordingAvailable = Boolean(message.artifact?.recording || message.artifact?.recordingUrl);

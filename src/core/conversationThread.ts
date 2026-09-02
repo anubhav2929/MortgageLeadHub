@@ -34,6 +34,8 @@ export interface ThreadMessage {
   outcome?: AttemptOutcome;
   /** Short display note — "voicemail", "no answer", "blocked". */
   meta?: string;
+  /** Identity of the underlying attempt, conversation, or provider message. */
+  sourceId?: string;
 }
 
 /** Borrower-authored notes are tagged with this authorId by
@@ -174,6 +176,7 @@ export function buildLeadThread(input: {
           role: turn.role === "BORROWER" ? "BORROWER" : "AGENT",
           text: turn.text,
           aiGenerated: turn.role !== "BORROWER",
+          sourceId: convo.id,
         });
       }
       continue;
@@ -187,12 +190,13 @@ export function buildLeadThread(input: {
       at,
       channel: a.channel,
       direction: a.direction,
-      role: a.direction === "INBOUND" ? "BORROWER" : a.loggedById ? "OFFICER" : a.aiGenerated ? "AGENT" : "SYSTEM",
+      role: a.direction === "INBOUND" ? "BORROWER" : a.aiGenerated ? "AGENT" : a.loggedById ? "OFFICER" : "SYSTEM",
       text: text || "Outreach blocked before sending.",
       subject: a.subject,
       aiGenerated: a.aiGenerated,
       outcome: a.outcome,
       meta: a.blockedReason ? "blocked" : undefined,
+      sourceId: a.providerMessageId ?? a.id,
     });
   }
 
@@ -212,19 +216,24 @@ export function buildLeadThread(input: {
         role: turn.role === "BORROWER" ? "BORROWER" : "AGENT",
         text: turn.text,
         aiGenerated: turn.role !== "BORROWER",
+        sourceId: c.id,
       });
     }
   }
 
   for (const n of input.notes) {
-    if (n.authorId !== BORROWER_AUTHOR_ID) continue; // officer's private note, not the conversation
+    const legacyBorrower = n.authorId === BORROWER_AUTHOR_ID;
+    const legacyAgent = n.authorId === "ai-agent";
+    if (!n.conversationChannel && !legacyBorrower && !legacyAgent) continue; // officer's private note
     messages.push({
       id: n.id,
       at: n.createdAt,
-      channel: inboundChannelFromAuthor(n.authorName),
-      direction: "INBOUND",
-      role: "BORROWER",
+      channel: n.conversationChannel ?? inboundChannelFromAuthor(n.authorName),
+      direction: n.conversationDirection ?? (legacyAgent ? "OUTBOUND" : "INBOUND"),
+      role: n.conversationRole ?? (legacyAgent ? "AGENT" : "BORROWER"),
       text: n.body,
+      aiGenerated: n.aiGenerated ?? legacyAgent,
+      sourceId: n.providerMessageId ?? n.id,
     });
   }
 

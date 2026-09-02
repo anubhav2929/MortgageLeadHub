@@ -12,7 +12,7 @@
 // for a call we think is live but have not heard about recently, ask.
 
 import { getConfigValue } from "@/lib/runtimeConfig";
-import type { VapiArtifactMessage } from "@/core/vapiTranscript";
+import type { VapiArtifactMessage, VapiTranscriptArtifact } from "@/core/vapiTranscript";
 
 export interface VapiCallState {
   /** queued | ringing | in-progress | forwarding | ended */
@@ -21,7 +21,7 @@ export interface VapiCallState {
   startedAt?: string;
   endedAt?: string;
   /** Full transcript, available once the call has ended. */
-  transcript?: string;
+  transcript?: VapiTranscriptArtifact;
   recordingUrl?: string;
   /** Per-utterance messages, present on some in-flight calls. */
   messages?: VapiArtifactMessage[];
@@ -60,13 +60,13 @@ export async function fetchVapiCallState(providerCallId: string): Promise<VapiCa
       startedAt?: string;
       endedAt?: string;
       artifact?: {
-        transcript?: string;
+        transcript?: VapiTranscriptArtifact;
         recordingUrl?: string;
         recording?: { stereoUrl?: string; combinedUrl?: string; url?: string; mono?: { combinedUrl?: string; assistantUrl?: string; customerUrl?: string } };
         logUrl?: string;
         messages?: VapiCallState["messages"];
       };
-      transcript?: string;
+      transcript?: VapiTranscriptArtifact;
       recordingUrl?: string;
       messages?: VapiCallState["messages"];
     };
@@ -86,7 +86,7 @@ export async function fetchVapiCallState(providerCallId: string): Promise<VapiCa
           data.artifact?.recording?.mono?.combinedUrl ??
           data.artifact?.recordingUrl ??
           data.recordingUrl,
-        messages: data.artifact?.messages ?? data.messages,
+        messages: data.artifact?.messages ?? (Array.isArray(data.artifact?.transcript) ? data.artifact.transcript : undefined) ?? data.messages,
         recordingAvailable: Boolean(data.artifact?.recording || data.artifact?.recordingUrl || data.recordingUrl),
         callLogAvailable: Boolean(data.artifact?.logUrl),
       },

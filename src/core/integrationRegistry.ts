@@ -256,7 +256,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     name: "Free Property Valuation & Public Records",
     category: "Data",
     powers:
-      "An independent valuation lane that normalizes addresses, discovers compatible public ArcGIS assessor layers, uses the official keyless Census ACS summary file for neighborhood housing values, applies FHFA sale adjustments, and falls back to RentCast when configured.",
+      "An independent valuation lane for corroboration that normalizes addresses, discovers compatible public ArcGIS assessor layers, uses Census housing context, and applies FHFA sale adjustments. When RentCast is configured, RentCast remains the primary parcel signal.",
     requiredKeys: [],
     fields: [
       {

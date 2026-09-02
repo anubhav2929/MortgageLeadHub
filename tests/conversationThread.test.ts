@@ -101,6 +101,31 @@ describe("buildLeadThread — assembly", () => {
     });
     expect(thread).toEqual([]);
   });
+
+  it("includes AI replies with their explicit channel and direction", () => {
+    const thread = buildLeadThread({
+      attempts: [],
+      conversations: [],
+      notes: [note({
+        authorId: "ai-agent",
+        authorName: "AI assistant (status chat)",
+        conversationChannel: "PORTAL",
+        conversationDirection: "OUTBOUND",
+        conversationRole: "AGENT",
+        aiGenerated: true,
+      })],
+    });
+    expect(thread[0]).toMatchObject({ channel: "PORTAL", direction: "OUTBOUND", role: "AGENT", aiGenerated: true });
+  });
+
+  it("labels an AI-generated logged attempt as the AI agent, not an officer", () => {
+    const thread = buildLeadThread({
+      attempts: [attempt({ aiGenerated: true, loggedById: "ai-agent", loggedByName: "AI SMS assistant" })],
+      conversations: [],
+      notes: [],
+    });
+    expect(thread[0].role).toBe("AGENT");
+  });
 });
 
 describe("buildLeadThread — de-duplication", () => {

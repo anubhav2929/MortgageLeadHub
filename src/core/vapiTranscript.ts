@@ -4,23 +4,34 @@ import type { ConversationTurn } from "@/domain/types";
 export interface VapiArtifactMessage {
   role?: string;
   message?: string;
-  content?: string;
+  content?: string | Array<{ type?: string; text?: string }>;
   time?: number;
   secondsFromStart?: number;
 }
+
+export type VapiTranscriptArtifact = string | VapiArtifactMessage[];
 
 export interface ReconciledVapiTranscript {
   turns: ConversationTurn[];
   redactionApplied: boolean;
 }
 
-function roleOf(role: string | undefined): ConversationTurn["role"] | null {
+export function spokenRoleOf(role: string | undefined): ConversationTurn["role"] | null {
   const normalized = role?.toLowerCase();
   if (normalized === "assistant" || normalized === "bot" || normalized === "ai") return "AGENT";
   if (normalized === "user" || normalized === "customer" || normalized === "borrower") return "BORROWER";
   // System/tool messages are useful in Vapi's diagnostic log but are not
   // spoken conversation and must not appear as borrower claims in the CRM.
   return null;
+}
+
+function messageText(message: VapiArtifactMessage): string {
+  if (typeof message.message === "string") return message.message.trim();
+  if (typeof message.content === "string") return message.content.trim();
+  if (Array.isArray(message.content)) {
+    return message.content.map((part) => part.text ?? "").filter(Boolean).join(" ").trim();
+  }
+  return "";
 }
 
 function turnTimestamp(startedAt: string, offset: number | undefined, fallbackAt: string): string {
@@ -40,8 +51,8 @@ export function turnsFromVapiMessages(
   const turns: ConversationTurn[] = [];
   let redactionApplied = false;
   for (const [index, message] of (messages ?? []).entries()) {
-    const role = roleOf(message.role);
-    const raw = (message.message ?? message.content ?? "").trim();
+    const role = spokenRoleOf(message.role);
+    const raw = messageText(message);
     if (!role || !raw) continue;
     const sanitized = redactRestrictedText(raw);
     redactionApplied ||= sanitized.redacted;
@@ -63,9 +74,9 @@ export function turnsFromVapiTranscript(transcript: string | undefined, at: stri
   const raw = typeof transcript === "string" ? transcript.trim() : "";
   if (!raw) return { turns: [], redactionApplied: false };
 
-  const matches = [...raw.matchAll(/(?:^|\n)\s*(AI|Assistant|Agent|User|Customer|Borrower)\s*:\s*([^\n]+)/gi)];
+  const matches = [...raw.matchAll(/(?:^|\n)\s*(AI|Assistant|Agent|User|Customer|Borrower)\s*:\s*([\s\S]*?)(?=\n\s*(?:AI|Assistant|Agent|User|Customer|Borrower)\s*:|$)/gi)];
   const segments = matches.length > 0
-    ? matches.map((match) => ({ role: roleOf(match[1]), text: match[2] }))
+    ? matches.map((match) => ({ role: spokenRoleOf(match[1]), text: match[2] }))
     : [{ role: "BORROWER" as const, text: raw }];
   let redactionApplied = false;
   const turns: ConversationTurn[] = [];
@@ -89,13 +100,14 @@ export function turnsFromVapiTranscript(transcript: string | undefined, at: stri
 export function reconcileVapiTranscript(input: {
   current: ConversationTurn[];
   messages?: VapiArtifactMessage[];
-  transcript?: string;
+  transcript?: VapiTranscriptArtifact;
   startedAt: string;
   at: string;
 }): ReconciledVapiTranscript & { authoritative: boolean } {
-  const fromMessages = turnsFromVapiMessages(input.messages, input.startedAt, input.at);
+  const transcriptMessages = Array.isArray(input.transcript) ? input.transcript : undefined;
+  const fromMessages = turnsFromVapiMessages(input.messages ?? transcriptMessages, input.startedAt, input.at);
   if (fromMessages.turns.length > 0) return { ...fromMessages, authoritative: true };
-  const fromTranscript = turnsFromVapiTranscript(input.transcript, input.at);
+  const fromTranscript = turnsFromVapiTranscript(typeof input.transcript === "string" ? input.transcript : undefined, input.at);
   if (fromTranscript.turns.length > 0) return { ...fromTranscript, authoritative: true };
   return { turns: input.current, redactionApplied: false, authoritative: false };
 }

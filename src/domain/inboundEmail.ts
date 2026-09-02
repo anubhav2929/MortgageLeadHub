@@ -89,6 +89,9 @@ export async function ingestInboundEmail(input: InboundEmailInput): Promise<{ ma
     authorName: "Borrower (via email reply)",
     body: preview || "(empty message body)",
     createdAt: nowIso(),
+    conversationChannel: "EMAIL",
+    conversationDirection: "INBOUND",
+    conversationRole: "BORROWER",
   });
 
   const taskId = newId("task");

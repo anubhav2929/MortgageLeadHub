@@ -16,13 +16,14 @@ export default async function TasksPage({ searchParams }: PageProps) {
 
   const isOfficer = user.role === "OFFICER";
   const scope = isOfficer ? "mine" : "all";
-  const status = params.status === "all" ? "all" : params.status === "completed" ? "completed" : "open";
+  const status = params.status === "all" ? "all" : params.status === "completed" ? "completed" : params.status === "cancelled" ? "cancelled" : "open";
   const type = params.type ?? "";
 
   let tasks = allTasks;
   if (scope === "mine") tasks = tasks.filter((t) => t.leadAssignedOfficerId === user.officerId);
   if (status === "open") tasks = tasks.filter((t) => t.status === "OPEN");
   else if (status === "completed") tasks = tasks.filter((t) => t.status === "COMPLETED");
+  else if (status === "cancelled") tasks = tasks.filter((t) => t.status === "CANCELLED");
   if (type) tasks = tasks.filter((t) => t.type === type);
 
   const isComplianceQueue = type === "COMPLAINT";

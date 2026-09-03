@@ -15,7 +15,7 @@ export function TaskQueueFilters({
   type,
 }: {
   isOfficer: boolean;
-  status: "open" | "completed" | "all";
+  status: "open" | "completed" | "cancelled" | "all";
   type: string;
 }) {
   const router = useRouter();
@@ -37,7 +37,7 @@ export function TaskQueueFilters({
         </span>
       )}
       <div className="flex items-center gap-1 rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] p-0.5">
-        {(["open", "completed", "all"] as const).map((s) => (
+        {(["open", "completed", "cancelled", "all"] as const).map((s) => (
           <button
             key={s}
             onClick={() => setParam("status", s === "open" ? "" : s)}

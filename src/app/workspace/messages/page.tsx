@@ -52,19 +52,19 @@ export default async function MessageCentrePage() {
       {/* Delivery receipts are what turn "we sent it" into "it arrived".
           Without them every text looks successful, including the ones a
           carrier silently dropped. */}
-      {caps.hasSms && !caps.hasInboundEmail && threads.length > 0 && (
+      {!caps.hasSms && threads.length > 0 && (
         <Card className="mb-5 border-[var(--warning)] bg-[var(--warning-tint)]">
           <CardContent className="flex items-start gap-2.5 p-4">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
             <p className="text-[13px] text-[var(--foreground)]">
-              Replies and delivery receipts require provider-signed Telnyx or Twilio webhooks. Until they are configured,
-              texts can send but nothing comes back — including STOP.
+              Live SMS is not ready. Connect Telnyx (including its webhook verification key) or Twilio before officers send;
+              the centre will keep destinations disabled so a simulated send cannot be mistaken for customer outreach.
             </p>
           </CardContent>
         </Card>
       )}
 
-      <MessageCentre threads={threads} />
+      <MessageCentre threads={threads} providerReady={caps.hasSms} />
     </div>
   );
 }

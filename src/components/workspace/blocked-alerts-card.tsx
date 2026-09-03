@@ -1,6 +1,13 @@
+"use client";
+
 import Link from "next/link";
-import { AlertOctagon, ArrowRight, PlugZap, UserX } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useTransition } from "react";
+import { AlertOctagon, ArrowRight, PlugZap, UserX, X } from "lucide-react";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
+import { dismissDashboardBlockedAlertsAction } from "@/domain/actions";
 import type { TaskWithLead } from "@/domain/queries";
 
 /**
@@ -23,9 +30,13 @@ import type { TaskWithLead } from "@/domain/queries";
  * Rendered as a band above the work queue and hidden entirely when clear, so
  * it carries signal rather than becoming furniture.
  */
-export function BlockedAlertsCard({ tasks }: { tasks: TaskWithLead[] }) {
+export function BlockedAlertsCard({ tasks, dismissedIds = [] }: { tasks: TaskWithLead[]; dismissedIds?: string[] }) {
+  const [isPending, startTransition] = useTransition();
+  const router = useRouter();
+  const { push } = useToast();
+  const dismissed = new Set(dismissedIds);
   const blocked = tasks.filter(
-    (t) => t.status === "OPEN" && (t.type === "NO_ELIGIBLE_OFFICER" || t.type === "INTEGRATION_ALERT")
+    (t) => !dismissed.has(t.id) && t.status === "OPEN" && (t.type === "NO_ELIGIBLE_OFFICER" || t.type === "INTEGRATION_ALERT")
   );
   if (blocked.length === 0) return null;
 
@@ -74,12 +85,27 @@ export function BlockedAlertsCard({ tasks }: { tasks: TaskWithLead[] }) {
           </div>
         </div>
 
-        <Link
-          href="/workspace/tasks?type=NO_ELIGIBLE_OFFICER"
-          className="focus-ring flex shrink-0 items-center gap-1 rounded-[var(--radius-sm)] px-2 py-1 text-[13px] font-medium text-[var(--danger)] hover:underline"
-        >
-          View <ArrowRight className="h-3.5 w-3.5" />
-        </Link>
+        <div className="flex shrink-0 items-center gap-1">
+          <Link
+            href="/workspace/tasks?type=NO_ELIGIBLE_OFFICER"
+            className="focus-ring flex items-center gap-1 rounded-[var(--radius-sm)] px-2 py-1 text-[13px] font-medium text-[var(--danger)] hover:underline"
+          >
+            View <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
+          <Button
+            variant="ghost"
+            size="icon"
+            loading={isPending}
+            title="Dismiss this dashboard alert"
+            onClick={() => startTransition(async () => {
+              const result = await dismissDashboardBlockedAlertsAction(blocked.map((task) => task.id));
+              push({ title: result.message, tone: result.ok ? "success" : "danger" });
+              if (result.ok) router.refresh();
+            })}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
     </Card>
   );

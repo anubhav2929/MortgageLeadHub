@@ -38,8 +38,8 @@ import type { CallCentreEntry } from "@/domain/queries";
  *
  * So it always polls; it just slows down when there is nothing happening.
  */
-const POLL_ACTIVE_MS = 3000;
-const POLL_IDLE_MS = 8000;
+const POLL_ACTIVE_MS = 2000;
+const POLL_IDLE_MS = 3000;
 
 /**
  * What to show for each stage of the call.
@@ -261,7 +261,7 @@ export function LiveCallBoard({ calls }: { calls: CallCentreEntry[] }) {
                   <Radio className={`h-3.5 w-3.5 ${stage.pulse ? "animate-pulse" : ""}`} /> {stage.label}
                 </span>
                 <Link
-                  href={`/workspace/leads/${c.leadPublicRef}`}
+                  href={`/workspace/leads/${c.leadPublicRef}?tab=conversation`}
                   className="text-[14px] font-medium text-[var(--foreground)] hover:text-[var(--primary)]"
                 >
                   {c.borrowerName}

@@ -891,6 +891,9 @@ export interface User {
   isActive?: boolean;
   createdAt?: string;
   createdById?: string;
+  /** Per-user acknowledgement of dashboard blockers. New blocker task ids
+   * still appear, while acknowledged ones remain available in Tasks. */
+  dismissedDashboardAlertIds?: string[];
   /** "salt:hash" (scrypt) — absent until the user completes their invite/reset link. */
   passwordHash?: string;
   failedLoginAttempts?: number;

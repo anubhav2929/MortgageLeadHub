@@ -150,8 +150,14 @@ export default async function LeadDetailPage({ params }: PageProps) {
             </span>
           </TabsTrigger>
           <TabsTrigger value="calls">
-            <PhoneCall className="mr-1.5 h-3.5 w-3.5" /> Calls
-            {calls.length > 0 && <span className="ml-1.5 text-[var(--muted-foreground)]">{calls.length}</span>}
+            <span className="flex items-center gap-1.5">
+              <PhoneCall className="h-3.5 w-3.5" /> Calls
+              {calls.length > 0 && (
+                <span className="rounded-full bg-[var(--background)] px-1.5 text-[10px] text-[var(--muted-foreground)]">
+                  {calls.length}
+                </span>
+              )}
+            </span>
           </TabsTrigger>
           <TabsTrigger value="conversation">
             <span className="flex items-center gap-1.5">

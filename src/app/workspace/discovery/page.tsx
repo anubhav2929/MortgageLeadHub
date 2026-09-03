@@ -6,6 +6,7 @@ import { ReadMore } from "@/components/ui/read-more";
 import { EmptyState } from "@/components/ui/empty-state";
 import { RunDiscoveryButton } from "@/components/discovery/run-discovery-button";
 import { SignalActions } from "@/components/discovery/signal-actions";
+import { DiscoveryFilters } from "@/components/discovery/discovery-filters";
 import { RedditConnectionControls } from "@/components/discovery/reddit-connection-controls";
 import { can } from "@/core/rbac";
 import { listSignals } from "@/domain/queries";
@@ -29,7 +30,12 @@ const STATUS_TONE: Record<DiscoveredSignal["status"], "neutral" | "success" | "w
   ACTIONED: "success",
 };
 
-export default async function DiscoveryPage() {
+interface PageProps {
+  searchParams: Promise<{ q?: string; status?: string; intent?: string; urgency?: string; source?: string; sort?: string }>;
+}
+
+export default async function DiscoveryPage({ searchParams }: PageProps) {
+  const params = await searchParams;
   const user = await getCurrentUser();
   const subject = { role: user.role, officerId: user.officerId };
 
@@ -44,16 +50,36 @@ export default async function DiscoveryPage() {
     );
   }
 
-  const signals = await listSignals();
+  const allSignals = await listSignals();
   const db = await getDb();
   const commercialApproved = (await getConfigValue("REDDIT_COMMERCIAL_APPROVED")) === "true";
   const redditConnection = Array.from(db.redditConnections.values()).find((item) => !item.revokedAt);
   const canPublish = commercialApproved && Boolean(redditConnection) && db.config.featureFlags?.redditPosting === true;
-  // Highest intent first. A reviewer works top-down and rarely reaches the
-  // bottom of a 50-item queue, so insertion order silently decides which
-  // leads get seen — it should be the score that decides.
-  const newSignals = signals.filter((s) => s.status === "NEW").sort((a, b) => b.confidence - a.confidence);
-  const reviewedSignals = signals.filter((s) => s.status !== "NEW");
+  const values = {
+    q: params.q?.trim() ?? "",
+    status: ["NEW", "REVIEWED", "ACTIONED", "DISMISSED"].includes(params.status ?? "") ? params.status! : "all",
+    intent: ["REFINANCE", "CASH_OUT", "HOME_EQUITY", "UNKNOWN"].includes(params.intent ?? "") ? params.intent! : "",
+    urgency: ["IMMEDIATE", "WEEKS", "RESEARCHING", "UNKNOWN"].includes(params.urgency ?? "") ? params.urgency! : "",
+    source: ["REDDIT", "FORUM"].includes(params.source ?? "") ? params.source! : "",
+    sort: ["priority", "confidence", "newest", "oldest"].includes(params.sort ?? "") ? params.sort! : "priority",
+  };
+  const needle = values.q.toLowerCase();
+  const signals = allSignals
+    .filter((signal) => values.status === "all" || signal.status === values.status)
+    .filter((signal) => !values.intent || signal.detectedIntent === values.intent)
+    .filter((signal) => !values.urgency || (signal.assessment?.urgency ?? "UNKNOWN") === values.urgency)
+    .filter((signal) => !values.source || signal.source === values.source)
+    .filter((signal) => !needle || [signal.title, signal.snippet, signal.authorHandle, signal.sourceLabel, ...signal.matchedKeywords].some((part) => part?.toLowerCase().includes(needle)))
+    .sort((a, b) => {
+      if (values.sort === "newest") return Date.parse(b.postedAt) - Date.parse(a.postedAt);
+      if (values.sort === "oldest") return Date.parse(a.postedAt) - Date.parse(b.postedAt);
+      if (values.sort === "confidence") return b.confidence - a.confidence;
+      const statusWeight = (signal: DiscoveredSignal) => signal.status === "NEW" ? 1 : 0;
+      const urgencyWeight = (signal: DiscoveredSignal) => ({ IMMEDIATE: 3, WEEKS: 2, RESEARCHING: 1, UNKNOWN: 0 })[signal.assessment?.urgency ?? "UNKNOWN"];
+      return statusWeight(b) - statusWeight(a) || urgencyWeight(b) - urgencyWeight(a) || b.confidence - a.confidence;
+    });
+  const awaitingReview = allSignals.filter((signal) => signal.status === "NEW").length;
+  const urgent = allSignals.filter((signal) => signal.status === "NEW" && signal.assessment?.urgency === "IMMEDIATE").length;
 
   return (
     <div className="animate-fade-in">
@@ -68,20 +94,23 @@ export default async function DiscoveryPage() {
         <Badge tone="neutral">Free read-only source · human review only</Badge>
         {redditConnection && <Badge tone="neutral">Connected u/{redditConnection.accountName}</Badge>}
         <Badge tone="neutral">Last 14 days</Badge>
-        <Badge tone="neutral">{newSignals.length} awaiting review</Badge>
+        <Badge tone="neutral">{awaitingReview} awaiting review</Badge>
+        {urgent > 0 && <Badge tone="warning">{urgent} acting now</Badge>}
       </div>
+
+      <DiscoveryFilters values={values} />
 
       {signals.length === 0 ? (
         <Card>
           <EmptyState
             icon={Radar}
             title="No signals yet"
-            description="Click Run discovery to search for public posts mentioning refinancing or home equity."
+            description={allSignals.length === 0 ? "Click Run discovery to search for public posts mentioning refinancing or home equity." : "No signals match the current filters."}
           />
         </Card>
       ) : (
         <div className="space-y-3">
-          {[...newSignals, ...reviewedSignals].map((signal) => (
+          {signals.map((signal) => (
             <Card key={signal.id}>
               <CardContent className="p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">

@@ -77,6 +77,7 @@ import type {
   SuppressionReason,
   SystemConfig,
   Task,
+  TaskStatus,
   TaskType,
   LeadDocument,
   DialingSessionMode,
@@ -1565,6 +1566,72 @@ export async function completeTaskAction(publicRef: string, taskId: string): Pro
   return { ok: true, message: "Task completed." };
 }
 
+export async function bulkUpdateTasksAction(taskIds: string[], status: TaskStatus): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  if (!(["OPEN", "COMPLETED", "CANCELLED"] satisfies TaskStatus[]).includes(status)) {
+    return { ok: false, message: "Choose a valid task stage." };
+  }
+  const ids = [...new Set(taskIds.filter((id) => typeof id === "string" && id.length <= 100))].slice(0, 100);
+  if (ids.length === 0) return { ok: false, message: "Select at least one task." };
+
+  const db = await refreshDb({ force: true });
+  const subject = await authorizationSubject(user);
+  const affectedRefs = new Set<string>();
+  let updated = 0;
+  let skipped = 0;
+  const changedAt = nowIso();
+
+  for (const id of ids) {
+    const task = db.tasks.get(id);
+    const lead = task ? db.leads.get(task.leadId) : undefined;
+    if (!task || !lead || !can(subject, "MANAGE_TASK", lead)) {
+      skipped += 1;
+      continue;
+    }
+    task.status = status;
+    if (status === "COMPLETED") {
+      task.completedAt = changedAt;
+      task.completedById = user.id;
+    } else {
+      task.completedAt = undefined;
+      task.completedById = undefined;
+    }
+    affectedRefs.add(lead.publicRef);
+    updated += 1;
+  }
+
+  if (updated === 0) return { ok: false, message: "No authorized tasks were updated." };
+  await audit(user.id, user.name, "TASKS_BULK_UPDATED", "Task", ids.join(","), "ALLOW", { status, updated, skipped });
+  await saveDb();
+  revalidatePath("/workspace/tasks");
+  revalidatePath("/workspace");
+  for (const publicRef of affectedRefs) revalidatePath(`/workspace/leads/${publicRef}`);
+  return { ok: true, message: `${updated} task${updated === 1 ? "" : "s"} moved to ${status.toLowerCase()}${skipped ? `; ${skipped} skipped` : ""}.` };
+}
+
+export async function dismissDashboardBlockedAlertsAction(taskIds: string[]): Promise<ActionResult> {
+  const user = await getCurrentUser();
+  const ids = [...new Set(taskIds.filter((id) => typeof id === "string" && id.length <= 100))].slice(0, 100);
+  if (ids.length === 0) return { ok: false, message: "There are no alerts to dismiss." };
+
+  const db = await refreshDb({ force: true });
+  const storedUser = db.users.get(user.id);
+  if (!storedUser) return { ok: false, message: "Your user record could not be found." };
+  const subject = await authorizationSubject(user);
+  const authorizedIds = ids.filter((id) => {
+    const task = db.tasks.get(id);
+    const lead = task ? db.leads.get(task.leadId) : undefined;
+    return Boolean(task && lead && task.status === "OPEN" && ["NO_ELIGIBLE_OFFICER", "INTEGRATION_ALERT"].includes(task.type) && can(subject, "MANAGE_TASK", lead));
+  });
+  if (authorizedIds.length === 0) return { ok: false, message: "No authorized alerts were dismissed." };
+
+  storedUser.dismissedDashboardAlertIds = [...new Set([...(storedUser.dismissedDashboardAlertIds ?? []), ...authorizedIds])].slice(-500);
+  await audit(user.id, user.name, "DASHBOARD_ALERTS_DISMISSED", "Task", authorizedIds.join(","), "ALLOW", { count: authorizedIds.length });
+  await saveDb();
+  revalidatePath("/workspace");
+  return { ok: true, message: "Alert hidden for you. The underlying tasks remain open." };
+}
+
 // Post-action follow-up: pushing a task's due date out, instead of either
 // completing it (loses the reminder) or leaving it to just sit overdue.
 export async function snoozeTaskAction(publicRef: string, taskId: string, snoozeHours: number): Promise<ActionResult> {
@@ -1739,8 +1806,18 @@ export async function sendSmsComposedAction(publicRef: string, body: string): Pr
   }
   if (!body.trim()) return { ok: false, message: "Message cannot be empty." };
 
-  const decision = await evaluateForLead(lead, "SMS", true);
   const db = await getDb();
+  const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
+  const recipient = normalizePhone(person?.phoneE164 ?? "");
+  if (!recipient || !/^\+[1-9]\d{7,14}$/.test(recipient)) {
+    return { ok: false, message: "This lead does not have a valid SMS destination. Add a complete phone number before sending." };
+  }
+  // Keep the canonical destination normalized so provider callbacks can map
+  // replies back to this exact lead instead of creating a split conversation.
+  if (person && person.phoneE164 !== recipient) person.phoneE164 = recipient;
+  const messageBody = clampSms(body.trim());
+
+  const decision = await evaluateForLead(lead, "SMS", true);
   db.policyDecisions.push({
     id: newId("policy"),
     leadId: lead.id,
@@ -1758,9 +1835,8 @@ export async function sendSmsComposedAction(publicRef: string, body: string): Pr
     return { ok: false, message: `Blocked by PolicyGate: ${decision.reasons.join(", ")}` };
   }
 
-  const person = Array.from(db.people.values()).find((p) => p.leadId === lead.id && p.role === "PRIMARY");
   const idempotencyKey = newId("idem");
-  const result = await sendSms({ to: person?.phoneE164 ?? "", body, idempotencyKey });
+  const result = await sendSms({ to: recipient, body: messageBody, idempotencyKey });
 
   lead.attemptsTotal += 1;
   lead.attemptsToday += 1;
@@ -1783,7 +1859,7 @@ export async function sendSmsComposedAction(publicRef: string, body: string): Pr
     attemptNumber: lead.attemptsTotal,
     scheduledFor: nowIso(),
     startedAt: nowIso(),
-    body,
+    body: messageBody,
     loggedById: user.id,
     loggedByName: user.name,
   });

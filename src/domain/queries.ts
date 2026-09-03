@@ -565,6 +565,14 @@ export async function listReferralPartners() {
 // ---------------------------------------------------------------------------
 export interface DashboardMetrics {
   totalLeads: number;
+  activeLeads: number;
+  newLeadsAwaitingFirstContact: number;
+  borrowersAwaitingReply: number;
+  openTasks: number;
+  overdueTasks: number;
+  callsAnsweredToday: number;
+  smsDeliveredToday: number;
+  deliveryFailuresLast24h: number;
   leadsByState: { state: string; count: number }[];
   medianTimeToFirstContactMinutes: number | null;
   slaBreaches: number;
@@ -584,9 +592,13 @@ function median(nums: number[]): number | null {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
-export async function getDashboardMetrics(): Promise<DashboardMetrics> {
+export async function getDashboardMetrics(officerId?: string): Promise<DashboardMetrics> {
   const db = await getDb();
-  const leads = Array.from(db.leads.values());
+  const leads = Array.from(db.leads.values()).filter((lead) => !officerId || lead.assignedOfficerId === officerId);
+  const leadIds = new Set(leads.map((lead) => lead.id));
+  const attempts = db.attempts.filter((attempt) => leadIds.has(attempt.leadId));
+  const tasks = Array.from(db.tasks.values()).filter((task) => leadIds.has(task.leadId));
+  const events = db.events.filter((event) => leadIds.has(event.leadId));
 
   const leadsByState = Object.entries(
     leads.reduce<Record<string, number>>((acc, l) => {
@@ -600,6 +612,26 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
     .map((l) => (new Date(l.firstContactAt!).getTime() - new Date(l.createdAt).getTime()) / 60000);
 
   const now = Date.now();
+  const terminalStates = new Set(["SUPPRESSED", "CLOSED_WON", "CLOSED_LOST"]);
+  const activeLeads = leads.filter((lead) => !terminalStates.has(lead.state)).length;
+  const newLeadsAwaitingFirstContact = leads.filter((lead) => !lead.firstContactAt && !terminalStates.has(lead.state)).length;
+  const openTasks = tasks.filter((task) => task.status === "OPEN").length;
+  const overdueTasks = tasks.filter((task) => task.status === "OPEN" && Date.parse(task.dueAt) < now).length;
+  const adminTimezone = db.config.adminTimezone;
+  const callsAnsweredToday = attempts.filter((attempt) => attempt.channel === "VOICE" && attempt.outcome === "ANSWERED" && sameCalendarDay(attempt.endedAt ?? attempt.startedAt ?? attempt.scheduledFor, new Date(), adminTimezone)).length;
+  const smsDeliveredToday = attempts.filter((attempt) => attempt.channel === "SMS" && attempt.direction === "OUTBOUND" && attempt.outcome === "DELIVERED" && sameCalendarDay(attempt.endedAt ?? attempt.startedAt ?? attempt.scheduledFor, new Date(), adminTimezone)).length;
+  const deliveryFailuresLast24h = attempts.filter((attempt) => attempt.outcome === "FAILED" && Date.parse(attempt.endedAt ?? attempt.startedAt ?? attempt.scheduledFor) >= now - 86_400_000).length;
+  let borrowersAwaitingReply = 0;
+  for (const lead of leads) {
+    if (terminalStates.has(lead.state)) continue;
+    const latestInbound = db.notes
+      .filter((note) => note.leadId === lead.id && note.conversationDirection === "INBOUND" && note.conversationRole === "BORROWER")
+      .reduce((latest, note) => Math.max(latest, Date.parse(note.createdAt)), 0);
+    const latestOutbound = attempts
+      .filter((attempt) => attempt.leadId === lead.id && attempt.direction === "OUTBOUND" && attempt.outcome !== "FAILED" && attempt.outcome !== "BLOCKED")
+      .reduce((latest, attempt) => Math.max(latest, Date.parse(attempt.startedAt ?? attempt.scheduledFor)), 0);
+    if (latestInbound > latestOutbound) borrowersAwaitingReply += 1;
+  }
   const slaBreaches = leads.filter(
     (l) => !l.firstContactAt && now > new Date(l.slaDueAt).getTime() && !["SUPPRESSED", "CLOSED_WON", "CLOSED_LOST"].includes(l.state)
   ).length;
@@ -609,7 +641,7 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
     SMS: { attempts: 0, connected: 0 },
     EMAIL: { attempts: 0, connected: 0 },
   };
-  for (const a of db.attempts) {
+  for (const a of attempts) {
     if (a.outcome === "BLOCKED") continue;
     channelStats[a.channel].attempts += 1;
     if (a.outcome === "ANSWERED" || a.outcome === "DELIVERED") channelStats[a.channel].connected += 1;
@@ -621,7 +653,7 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
     rate: s.attempts > 0 ? Math.round((s.connected / s.attempts) * 100) : 0,
   }));
 
-  const blockedOrDeferred = db.events.filter((e) => e.type === "OUTREACH_BLOCKED" || e.type === "OUTREACH_DEFERRED");
+  const blockedOrDeferred = events.filter((e) => e.type === "OUTREACH_BLOCKED" || e.type === "OUTREACH_DEFERRED");
   const reasonCounts: Record<string, number> = {};
   for (const e of blockedOrDeferred) {
     const reasons = (e.payload?.reasons as string[] | undefined) ?? ["UNKNOWN"];
@@ -629,31 +661,39 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   }
   const blockDeferRate = Object.entries(reasonCounts).map(([reason, count]) => ({ reason, count }));
 
-  const convCompleted = db.events.filter((e) => e.type === "CONVERSATION_COMPLETED").length;
-  const convStarted = db.events.filter((e) => e.type === "CONTACT_ANSWERED").length;
+  const convCompleted = events.filter((e) => e.type === "CONVERSATION_COMPLETED").length;
+  const convStarted = events.filter((e) => e.type === "CONTACT_ANSWERED").length;
   const conversationCompletionRate = convStarted > 0 ? Math.round((convCompleted / convStarted) * 100) : 0;
 
-  const escalations = db.events.filter((e) => e.type === "ESCALATED").length;
+  const escalations = events.filter((e) => e.type === "ESCALATED").length;
   const escalationRate = convStarted > 0 ? Math.round((escalations / convStarted) * 100) : 0;
 
   // Recomputed fresh per lead (not the stale `lead.completenessScore` field,
   // which is only ever set at creation) — see computeLeadCompleteness.
   const completenessScores = (await Promise.all(leads.map((l) => computeLeadCompleteness(l.id)))).map((c) => c.score);
 
-  const ackEvents = db.events.filter((e) => e.type === "OFFICER_ACKNOWLEDGED");
+  const ackEvents = events.filter((e) => e.type === "OFFICER_ACKNOWLEDGED");
   const ackLatencies: number[] = [];
   for (const ack of ackEvents) {
-    const assigned = db.events.find((e) => e.leadId === ack.leadId && e.type === "OFFICER_ASSIGNED");
+    const assigned = events.find((e) => e.leadId === ack.leadId && e.type === "OFFICER_ASSIGNED");
     if (assigned) {
       ackLatencies.push((new Date(ack.occurredAt).getTime() - new Date(assigned.occurredAt).getTime()) / 60000);
     }
   }
 
-  const optOuts = db.events.filter((e) => e.type === "OPT_OUT_RECEIVED").length;
+  const optOuts = events.filter((e) => e.type === "OPT_OUT_RECEIVED").length;
   const optOutRate = leads.length > 0 ? Math.round((optOuts / leads.length) * 1000) / 10 : 0;
 
   return {
     totalLeads: leads.length,
+    activeLeads,
+    newLeadsAwaitingFirstContact,
+    borrowersAwaitingReply,
+    openTasks,
+    overdueTasks,
+    callsAnsweredToday,
+    smsDeliveredToday,
+    deliveryFailuresLast24h,
     leadsByState,
     medianTimeToFirstContactMinutes: median(ttfc),
     slaBreaches,
@@ -960,7 +1000,10 @@ export interface MessageThreadSummary {
   borrowerName: string;
   stateCode: string;
   leadAssignedOfficerId?: string;
-  phoneE164: string;
+  maskedPhone: string;
+  phoneValid: boolean;
+  smsConsent: "GRANTED" | "REVOKED" | "MISSING";
+  terminal: boolean;
   officerName?: string;
   lastOutboundAt?: string;
   lastOutboundBody?: string;
@@ -978,6 +1021,15 @@ export interface MessageThreadSummary {
   /** Next automated cadence touch, if one is scheduled. */
   nextStepAt?: string;
   nextStepChannel?: Channel;
+  history: Array<{
+    id: string;
+    direction: "INBOUND" | "OUTBOUND";
+    body: string;
+    at: string;
+    sender: string;
+    outcome?: ContactAttempt["outcome"];
+    aiGenerated?: boolean;
+  }>;
 }
 
 /**
@@ -1011,7 +1063,9 @@ function nextCadenceTouch(
 }
 
 /**
- * One row per lead with SMS history, newest activity first.
+ * One row per lead, including leads which have not been texted yet. That is
+ * important operationally: a message centre that hides an uncontacted lead
+ * cannot be used to safely initiate the first conversation.
  *
  * Built as a summary rather than returning whole threads: the centre is a
  * triage surface, and loading every message of every conversation to render a
@@ -1031,21 +1085,21 @@ export async function listMessageThreads(limit = 60): Promise<MessageThreadSumma
 
   const summaries: MessageThreadSummary[] = [];
 
-  for (const [leadId, attempts] of byLead) {
-    const lead = db.leads.get(leadId);
-    if (!lead) continue;
+  for (const lead of db.leads.values()) {
+    const leadId = lead.id;
+    const attempts = byLead.get(leadId) ?? [];
     const person = Array.from(db.people.values()).find((p) => p.leadId === leadId && p.role === "PRIMARY");
 
     const sorted = [...attempts].sort(
       (a, b) => new Date(a.startedAt ?? a.scheduledFor).getTime() - new Date(b.startedAt ?? b.scheduledFor).getTime()
     );
-    const lastOutbound = [...sorted].reverse().find((a) => a.direction === "OUTBOUND" && a.outcome !== "FAILED");
+    const lastOutbound = [...sorted].reverse().find((a) => a.direction === "OUTBOUND" && a.outcome !== "FAILED" && a.outcome !== "BLOCKED");
 
     // Borrower replies are stored as borrower-authored notes, not attempts —
     // same source the unified conversation thread reads from, so the centre
     // cannot disagree with the lead page about who spoke last.
     const inbound = db.notes
-      .filter((n) => n.leadId === leadId && n.authorId === "borrower")
+      .filter((n) => n.leadId === leadId && n.authorId === "borrower" && (n.conversationChannel === "SMS" || (!n.conversationChannel && /text reply/i.test(n.authorName))))
       .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     const lastInbound = inbound[inbound.length - 1];
 
@@ -1053,6 +1107,30 @@ export async function listMessageThreads(limit = 60): Promise<MessageThreadSumma
 
     const lastOutAt = lastOutbound ? (lastOutbound.startedAt ?? lastOutbound.scheduledFor) : undefined;
     const lastInAt = lastInbound?.createdAt;
+    const latestConsent = db.consents
+      .filter((consent) => consent.leadId === leadId && consent.scope === "CONTACT_SMS")
+      .sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt))[0];
+    const history = [
+      ...sorted
+        .filter((attempt) => attempt.direction === "OUTBOUND" && attempt.outcome !== "BLOCKED" && Boolean(attempt.body))
+        .map((attempt) => ({
+          id: attempt.id,
+          direction: "OUTBOUND" as const,
+          body: attempt.body!,
+          at: attempt.startedAt ?? attempt.scheduledFor,
+          sender: attempt.loggedByName ?? (attempt.aiGenerated ? "AI SMS assistant" : "Equity Flow Group"),
+          outcome: attempt.outcome,
+          aiGenerated: attempt.aiGenerated,
+        })),
+      ...inbound.map((note) => ({
+        id: note.id,
+        direction: "INBOUND" as const,
+        body: note.body,
+        at: note.createdAt,
+        sender: person?.firstName || "Borrower",
+      })),
+    ].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).slice(-20);
+    const phone = person?.phoneE164 ?? "";
 
     summaries.push({
       leadPublicRef: lead.publicRef,
@@ -1060,7 +1138,10 @@ export async function listMessageThreads(limit = 60): Promise<MessageThreadSumma
       borrowerName: person ? `${person.firstName} ${person.lastName}` : "Unknown borrower",
       stateCode: lead.stateCode,
       leadAssignedOfficerId: lead.assignedOfficerId,
-      phoneE164: person?.phoneE164 ?? "",
+      maskedPhone: phone ? maskPhone(phone) : "No phone on file",
+      phoneValid: /^\+[1-9]\d{7,14}$/.test(phone),
+      smsConsent: latestConsent ? (latestConsent.granted ? "GRANTED" : "REVOKED") : "MISSING",
+      terminal: ["SUPPRESSED", "CLOSED_WON", "CLOSED_LOST"].includes(lead.state),
       officerName: lead.assignedOfficerId ? db.officers.get(lead.assignedOfficerId)?.name : undefined,
       lastOutboundAt: lastOutAt,
       lastOutboundBody: lastOutbound?.body,
@@ -1068,7 +1149,7 @@ export async function listMessageThreads(limit = 60): Promise<MessageThreadSumma
       lastInboundBody: lastInbound?.body,
       awaitingUs: Boolean(lastInAt && (!lastOutAt || new Date(lastInAt) > new Date(lastOutAt))),
       awaitingBorrower: Boolean(lastOutAt && (!lastInAt || new Date(lastOutAt) > new Date(lastInAt))),
-      sentCount: sorted.filter((a) => a.direction === "OUTBOUND" && a.outcome !== "FAILED").length,
+      sentCount: sorted.filter((a) => a.direction === "OUTBOUND" && a.outcome !== "FAILED" && a.outcome !== "BLOCKED").length,
       lastFailure: failure
         ? {
             message: failure.failureMessage!,
@@ -1077,6 +1158,7 @@ export async function listMessageThreads(limit = 60): Promise<MessageThreadSumma
           }
         : undefined,
       suppressed: Boolean(person && suppressedNumbers.has(person.phoneE164)),
+      history,
       ...nextCadenceTouch(db, lead),
     });
   }
@@ -1088,7 +1170,7 @@ export async function listMessageThreads(limit = 60): Promise<MessageThreadSumma
       if (a.awaitingUs !== b.awaitingUs) return a.awaitingUs ? -1 : 1;
       const at = Math.max(Date.parse(a.lastInboundAt ?? "0") || 0, Date.parse(a.lastOutboundAt ?? "0") || 0);
       const bt = Math.max(Date.parse(b.lastInboundAt ?? "0") || 0, Date.parse(b.lastOutboundAt ?? "0") || 0);
-      return bt - at;
+      return bt - at || a.borrowerName.localeCompare(b.borrowerName);
     })
     .slice(0, limit);
 }

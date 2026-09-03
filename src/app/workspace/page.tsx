@@ -1,4 +1,4 @@
-import { Clock, PhoneCall, ShieldOff, Gauge, TimerReset, Ban, MessageSquareWarning, UserCheck } from "lucide-react";
+import { AlertTriangle, Clock, ListTodo, MessageSquareReply, PhoneCall, Send, ShieldOff, TimerReset, UserCheck } from "lucide-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatCard } from "@/components/ui/stat-card";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -13,7 +13,11 @@ import { RULE_DESCRIPTIONS } from "@/core/policyGate";
 import type { RuleCode } from "@/domain/types";
 
 export default async function DashboardPage() {
-  const [m, allTasks, user] = await Promise.all([getDashboardMetrics(), listAllTasks(), getCurrentUser()]);
+  const user = await getCurrentUser();
+  const [m, allTasks] = await Promise.all([
+    getDashboardMetrics(user.role === "OFFICER" ? user.officerId : undefined),
+    listAllTasks(),
+  ]);
   const maxStateCount = Math.max(1, ...m.leadsByState.map((s) => s.count));
   const maxReasonCount = Math.max(1, ...m.blockDeferRate.map((r) => r.count));
   const isOfficer = user.role === "OFFICER";
@@ -23,12 +27,12 @@ export default async function DashboardPage() {
     <div className="animate-fade-in">
       <PageHeader
         title="Dashboard"
-        description="Every metric here is computed from LeadEvent — never an ad-hoc counter that can drift from the record."
+        description="A live operating view of customer response, first-touch work, tasks, calls, and delivery health."
       />
 
       {/* Blocked-automation band sits above everything: these are the items
           where the system has stopped and only a person can restart it. */}
-      <BlockedAlertsCard tasks={queueTasks} />
+      <BlockedAlertsCard tasks={queueTasks} dismissedIds={user.dismissedDashboardAlertIds} />
 
       {/* Hero metrics first. The work queue used to sit above these and,
           with eight near-identical task rows, it pushed every number below
@@ -36,37 +40,38 @@ export default async function DashboardPage() {
           with no sense of how the business was actually doing. */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
-          label="Total leads"
-          value={String(m.totalLeads)}
+          label="Active leads"
+          value={String(m.activeLeads)}
           icon={<UserCheck />}
           variant="hero"
+          hint={`${m.totalLeads} total records, excluding closed and suppressed from active workload.`}
           index={0}
         />
         <StatCard
-          label="Median time to first contact"
-          value={m.medianTimeToFirstContactMinutes !== null ? `${Math.round(m.medianTimeToFirstContactMinutes)}m` : "—"}
-          icon={<Clock />}
-          tone="success"
+          label="Need first contact"
+          value={String(m.newLeadsAwaitingFirstContact)}
+          icon={<TimerReset />}
+          tone={m.newLeadsAwaitingFirstContact > 0 ? "warning" : "success"}
           variant="hero"
-          hint="Lower is better — speed is the strongest predictor of contact."
+          hint={`${m.slaBreaches} currently past the promised response window.`}
           index={1}
         />
         <StatCard
-          label="SLA breaches"
-          value={String(m.slaBreaches)}
-          icon={<TimerReset />}
-          tone={m.slaBreaches > 0 ? "danger" : "success"}
+          label="Borrowers waiting"
+          value={String(m.borrowersAwaitingReply)}
+          icon={<MessageSquareReply />}
+          tone={m.borrowersAwaitingReply > 0 ? "warning" : "success"}
           variant="hero"
-          hint={m.slaBreaches > 0 ? "Leads that waited longer than the promise." : "Every lead contacted inside the window."}
+          hint="Latest customer message is newer than the latest outbound response."
           index={2}
         />
         <StatCard
-          label="Opt-out rate"
-          value={`${m.optOutRate}%`}
-          icon={<ShieldOff />}
-          tone={m.optOutRate > 5 ? "danger" : "warning"}
+          label="Overdue tasks"
+          value={String(m.overdueTasks)}
+          icon={<ListTodo />}
+          tone={m.overdueTasks > 0 ? "danger" : "success"}
           variant="hero"
-          hint="A rising number usually means messaging, not targeting."
+          hint={`${m.openTasks} open tasks across the workspace.`}
           index={3}
         />
       </div>
@@ -78,13 +83,14 @@ export default async function DashboardPage() {
           <WorkQueueCard tasks={queueTasks} scopeLabel={isOfficer ? "across your leads" : "across all leads"} />
         </div>
         <div className="grid gap-4 sm:grid-cols-2 lg:col-span-2 lg:content-start">
-          <StatCard label="Conversation completion" value={`${m.conversationCompletionRate}%`} icon={<PhoneCall />} index={4} />
-          <StatCard label="Escalation rate" value={`${m.escalationRate}%`} icon={<MessageSquareWarning />} tone="warning" index={5} />
-          <StatCard label="Median completeness" value={`${Math.round(m.medianCompleteness)}/100`} icon={<Gauge />} index={6} />
+          <StatCard label="Calls answered today" value={String(m.callsAnsweredToday)} icon={<PhoneCall />} hint="Provider-confirmed answered voice attempts today." index={4} />
+          <StatCard label="Texts delivered today" value={String(m.smsDeliveredToday)} icon={<Send />} hint="Carrier-confirmed delivery, not merely queued sends." index={5} />
+          <StatCard label="Delivery failures · 24h" value={String(m.deliveryFailuresLast24h)} icon={<AlertTriangle />} tone={m.deliveryFailuresLast24h > 0 ? "danger" : "success"} index={6} />
           <StatCard
-            label="Handoff ack latency"
-            value={m.handoffAckLatencyMinutes !== null ? `${Math.round(m.handoffAckLatencyMinutes)}m` : "—"}
-            icon={<Ban />}
+            label="Median first response"
+            value={m.medianTimeToFirstContactMinutes !== null ? `${Math.round(m.medianTimeToFirstContactMinutes)}m` : "—"}
+            icon={<Clock />}
+            hint="Time from lead creation to the first real contact attempt."
             index={7}
           />
         </div>

@@ -660,7 +660,7 @@ export interface SignalReplyInput {
 const SIGNAL_REPLY_SYSTEM_PROMPT =
   "You write short, genuinely helpful Reddit replies from a licensed mortgage lending company's official account, responding to a stranger's post about refinancing or home equity. " +
   "Hard rules, never break these: never quote a rate, payment amount, or approval odds; never say \"you qualify\" or \"you're approved\"; " +
-  "sound like a knowledgeable person adding value to the thread, not an ad; one soft, low-pressure mention that the company can help them compare options if they want, with no link or contact info (that goes in a profile, not the reply body); keep it under 80 words.";
+  "sound like a knowledgeable person adding value to the public thread, not an ad; answer the specific question first, then add one soft, low-pressure invitation to use equityflowgroup.com if they want to compare their own numbers; never ask them to send personal data in public or by unsolicited direct message; keep it under 90 words.";
 
 export async function generateSignalReply(input: SignalReplyInput): Promise<{ body: string; simulated: boolean }> {
   const gateway = await runAiJson({
@@ -726,7 +726,7 @@ function simulateSignalReply(input: SignalReplyInput): { body: string; simulated
   return {
     body:
       `Re: "${input.title}" — happy to share a general perspective here. The right call really depends on your rate, timeline, and how long you plan to stay in the home. ` +
-      `If it'd help to run your specific numbers, feel free to reach out through our team — no pressure either way, just want to make sure you're comparing apples to apples before deciding.`,
+      `If it would help to compare your specific numbers privately, you can use the consent-based form at equityflowgroup.com — no pressure either way.`,
     simulated: true,
   };
 }
